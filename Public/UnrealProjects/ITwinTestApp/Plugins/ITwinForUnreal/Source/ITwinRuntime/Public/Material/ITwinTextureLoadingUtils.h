@@ -50,10 +50,12 @@ namespace ITwin
 		std::string const& TextureId,
 		AdvViz::SDK::ETextureSource eSource);
 
-	void ResolveITwinTextures(
-		std::unordered_map<AdvViz::SDK::TextureKey, std::string> const& iTwinTextures,
+	size_t ResolveITwinTextures(
+		std::unordered_map<AdvViz::SDK::TextureKey,
+		std::string> const& iTwinTextures,
 		BeUtils::GltfMaterialHelperPtr GltfMatHelper,
-		std::filesystem::path const& textureDir);
+		std::filesystem::path const& TextureDir,
+		BeUtils::WLock const* pLock = nullptr);
 
 	//! Given a texture identifier, returns the corresponding texture buffer (read from a local file or
 	//! retrieved from a server or cesium cache, depending on the source of the texture).

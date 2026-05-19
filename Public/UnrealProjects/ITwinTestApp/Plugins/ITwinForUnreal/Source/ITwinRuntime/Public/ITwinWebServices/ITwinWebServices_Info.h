@@ -93,7 +93,7 @@ struct FIModelInfo
 {
 	GENERATED_USTRUCT_BODY()
 
-	UPROPERTY(BlueprintReadOnly, Category = "iModelInfo")
+	UPROPERTY(BlueprintReadOnly, Category = "iModelInfo", VisibleAnywhere)
 		FString Id;
 
 	UPROPERTY(BlueprintReadOnly, Category = "iModelInfo", VisibleAnywhere)
@@ -292,7 +292,7 @@ struct FITwinRealityDataInfo
 {
 	GENERATED_USTRUCT_BODY()
 
-	UPROPERTY(BlueprintReadOnly, Category = "RealityData")
+	UPROPERTY(BlueprintReadOnly, Category = "RealityData", VisibleAnywhere)
 		FString Id;
 
 	UPROPERTY(BlueprintReadOnly, Category = "RealityData", VisibleAnywhere)

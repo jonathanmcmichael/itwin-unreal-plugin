@@ -122,7 +122,7 @@ void FITwinDefaultWebServicesObserver::OnIModelQueried(bool bSuccess, FString co
 {
 	ensureMsgf(false, TEXT("%s does not handle querying iModels"), GetObserverName());
 }
-void FITwinDefaultWebServicesObserver::OnMaterialPropertiesRetrieved(bool bSuccess, AdvViz::SDK::ITwinMaterialPropertiesMap const& )
+void FITwinDefaultWebServicesObserver::OnMaterialPropertiesRetrieved(bool bSuccess, AdvViz::SDK::ITwinRenderMaterialPropertiesMap const& )
 {
 	ensureMsgf(false, TEXT("%s does not handle querying material properties"), GetObserverName());
 }

@@ -42,7 +42,7 @@ namespace BeUtils
 	};
 }
 
-// In Carrot, we only deal with population zone of path
+// In iTwin Engage, we only deal with population zone of path
 #define HAS_SPLINE_RIBBON_PATTERN() 0
 
 // Former e-on "Dev" mode

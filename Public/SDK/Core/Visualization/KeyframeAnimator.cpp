@@ -12,9 +12,7 @@
 #include "KeyframeAnimation.h"
 #include "InstancesManager.h"
 #include "Core/Tools/FactoryClassInternalHelper.h"
-#ifndef GLM_ENABLE_EXPERIMENTAL
-#define GLM_ENABLE_EXPERIMENTAL
-#endif
+
 #include <glm/gtx/quaternion.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include "Core/Tools/Log.h"

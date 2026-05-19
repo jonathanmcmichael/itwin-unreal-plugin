@@ -35,7 +35,7 @@ FITwinGltfMeshComponentWrapper::FITwinGltfMeshComponentWrapper(ICesiumLoadedTile
 	if (pMeshPrimitive)
 	{
 		// Test if this primitive is linked to a specific ITwin Material ID (test extension specially added
-		// by our gltf tuning process.
+		// by our glTF tuning process.
 		auto const* matIdExt = pMeshPrimitive->getExtension<BeUtils::ExtensionITwinMaterialID>();
 		if (matIdExt)
 		{

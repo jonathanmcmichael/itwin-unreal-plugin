@@ -1,3 +1,19 @@
+function(get_cesium_glm_compile_definitions)
+    if (CESIUM_GLM_STRICT_ENABLED)
+        list (APPEND glm_options GLM_FORCE_XYZW_ONLY) # Disable .rgba and .stpq to make it easier to view values from debugger
+        list (APPEND glm_options GLM_FORCE_EXPLICIT_CTOR) # Disallow implicit conversions between dvec3 <-> dvec4, dvec3 <-> fvec3, etc
+    endif()
+    # GLM defines that should be enabled regardless of strict mode
+    list (APPEND glm_options GLM_FORCE_INTRINSICS) # Force SIMD code paths
+    list (APPEND glm_options GLM_ENABLE_EXPERIMENTAL) # Allow use of experimental extensions
+
+    if (ARGV0)
+        set(${ARGV0} ${glm_options} PARENT_SCOPE)
+    else ()
+        message(FATAL_ERROR "variable for GLM options name was not specified")
+    endif ()
+endfunction()
+
 function(configure_cesium_library targetName)
 
     if (CMAKE_VERSION VERSION_GREATER_EQUAL 3.31)
@@ -32,21 +48,12 @@ function(configure_cesium_library targetName)
         target_compile_options(${targetName} PRIVATE -Wno-dangling-reference -Wno-stringop-overflow)
     endif()
 
-    if (CESIUM_GLM_STRICT_ENABLED)
-        target_compile_definitions(
-            ${targetName}
-            PUBLIC
-                GLM_FORCE_XYZW_ONLY # Disable .rgba and .stpq to make it easier to view values from debugger
-                GLM_FORCE_EXPLICIT_CTOR # Disallow implicit conversions between dvec3 <-> dvec4, dvec3 <-> fvec3, etc
-        )
-    endif()
-
-    # GLM defines that should be enabled regardless of strict mode
+    # GLM defines
+    get_cesium_glm_compile_definitions(cesium_glm_defs)
     target_compile_definitions(
         ${targetName} 
         PUBLIC 
-            GLM_FORCE_INTRINSICS # Force SIMD code paths
-            GLM_ENABLE_EXPERIMENTAL # Allow use of experimental extensions
+            ${cesium_glm_defs}
     )
 
     if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CESIUM_CLANG_TIME_TRACE)

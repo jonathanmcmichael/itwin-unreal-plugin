@@ -10,6 +10,7 @@
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
+#include <Interfaces/IHttpResponse.h>
 #include <ITwinFwd.h>
 #include <ITwinIModelSettings.h> // for EITwin4DGlTFTranslucencyRule enum (temp?)
 
@@ -21,6 +22,7 @@
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FScheduleQueryingDelegate, bool, bIsRunning);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FScheduleTimeRangeDelegate, FDateTime, StartTime, FDateTime, EndTime);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnScheduleInformationReceived, AITwinIModel*, IModel, FString, ScheduleId, FString, ScheduleName);
 
 /// Component of an AITwinIModel handling the Synchro4D schedules for a given iModel: it will query the
 /// REST api to compute the animation scripts for all tasks, and store the result for the iTwin's
@@ -105,8 +107,11 @@ public:
 		BlueprintCallable)
 	void QueryElementsTasks(TArray<FString> const& Elements);
 
-	/// Tells whether the whole 4D Schedule is available locally (possibly with errors:
-	/// @see IsAvailableWithErrors()). Until then, the 4D animation cannot be replayed.
+	UFUNCTION(Category = "Schedules Querying",
+		BlueprintCallable)
+	bool HasValidId() const;
+
+	/// Tells whether the whole 4D Schedule is available locally. Until then, the 4D animation cannot be replayed.
 	/// Note that the total time range of the project can be known before the whole Schedule is
 	/// ready (see OnScheduleTimeRangeKnown)
 	UFUNCTION(Category = "Schedules Querying",
@@ -119,21 +124,47 @@ public:
 		BlueprintCallable)
 	bool IsAvailableAsNextGenSchedule() const;
 
-	/// When IsAvailable() returns true, tells whether there has been an error to any request, ie.
-	/// a request that remained unsuccessful, even after the allocated amount of retries. Errors during
-	/// schedule streaming means the schedule can be replayed but may be incomplete. A manual action on
-	/// ResetSchedules() will try streaming again from the server, in case errors come from temporary
-	/// downtime (successful requests have been cached and will not be retried from scratch, unless the
-	/// cache is manually cleared with ClearCacheOnlyThis() or ClearCacheAllSchedules()).
+	/// Tells whether merely listing the schedules has failed, ie. the lack of schedule Id does not necessarily mean
+	/// that the owner iModel has no schedule.
 	UFUNCTION(Category = "Schedules Querying",
 		BlueprintCallable)
-	bool IsAvailableWithErrors() const;
+	bool SchedulesListingFailed() const;
 
-	/// When IsAvailableWithErrors() returns true, returns the description message for the first encountered
-	/// error.
+	/// When IsAvailable() returns false, tells whether there has been an error to any request, ie.
+	/// a request that remained unsuccessful, even after the allocated amount of retries.
+	UFUNCTION(Category = "Schedules Querying",
+		BlueprintCallable)
+	bool HasFetchingErrors() const;
+
+	/// When HasFetchingErrors() returns true, tells whether there has been an error specifically to a
+	/// 4D API request (and not to an iModel metadata request).
+	UFUNCTION(Category = "Schedules Querying",
+		BlueprintCallable)
+	bool Has4DAPIFetchingErrors() const;
+
+	/// When SchedulesListingFailed() or HasFetchingErrors() returns true, returns the description message for
+	/// the first encountered error
+	UFUNCTION(Category = "Schedules Querying",
+		BlueprintCallable)
+	FString FirstRequestErrorString() const;
+
+	/// @deprecated Use FirstRequestErrorString()
 	UFUNCTION(Category = "Schedules Querying",
 		BlueprintCallable)
 	FString FirstFetchingErrorString() const;
+
+	EHttpResponseCodes::Type FirstRequestErrorCode() const;
+
+	/// Percentage of the data needed to replay a 4D schedule (if any) that was loaded directly from the local caches.
+	/// Only available once Synchro4DSchedules->IsAvailable() returns true, otherwise returns 0.
+	double PercentageLoadedFromCache() const;
+
+	/// Called as soon as we have determined whether a Schedule is available for this component's owner iModel,
+	/// which can be substantially earlier than OnScheduleTimeRangeKnown (which requires the list of tasks to be
+	/// known). The schedule's name and Id are passed even if the schedule actually has no animation (eg. no tasks
+	/// or no animation bindings). Empty strings are passed when no schedule was found for the iModel.
+	UPROPERTY(BlueprintAssignable)
+	FOnScheduleInformationReceived OnScheduleInformationReceived;
 
 	/// Called when the time range of the whole Schedule is known, with the StartTime and EndTime passed as
 	/// arguments. FDateTime::MinValue() is passed twice when there is on schedule, or no tasks were found
@@ -174,12 +205,14 @@ public:
 	/// the cache. Does *not* clear the existing cache.
 	UPROPERTY(Category = "Schedules Querying|Advanced", EditAnywhere)
 	bool bDisableCaching = false;
-	/// Clear the persistence cache (for this schedule only)
+	/// Clear the persistence cache (for this schedule only). See also the equivalent function on AITwinIModel, for the
+	/// Elements metadata cache which the schedule relies on for interpretation.
+	/// @return True when the schedule was able to delete its cache
+	UFUNCTION(Category = "Schedules Querying", BlueprintCallable, CallInEditor)
+	bool ClearCacheWithConfirmation();
+	/// Same as ClearCacheWithConfirmation, but no return value in order to have a button in the Editor
 	UFUNCTION(Category = "Schedules Querying", BlueprintCallable, CallInEditor)
 	void ClearCacheOnlyThis();
-	/// Clear the persistence cache (for all currently cached schedules of the current Environment)
-	UFUNCTION(Category = "Schedules Querying", BlueprintCallable, CallInEditor)
-	void ClearCacheAllSchedules();
 
 	UPROPERTY(Category = "Schedules Querying|Advanced", EditAnywhere)
 	int ScheduleQueriesServerPagination = 10000;
@@ -408,7 +441,7 @@ public:
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	#endif
 	void TickSchedules(float DeltaTime);
-	void OnVisibilityChanged(FITwinSceneTile& SceneTile, bool bVisible);
+	void OnVisibilityChanged(const TITwinSceneTilePtr& SceneTilePtr, bool bVisible);
 	void OnQueryLoopStatusChange(bool bQueryLoopIsRunning, bool logFullScheduleStats = true);
 
 	UFUNCTION()

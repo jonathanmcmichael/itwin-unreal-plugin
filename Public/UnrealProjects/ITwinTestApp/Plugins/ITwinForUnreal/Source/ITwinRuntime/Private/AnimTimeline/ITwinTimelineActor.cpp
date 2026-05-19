@@ -689,7 +689,7 @@ public:
 			vTimes.Add(fAccumTime); // append theoretical start time of the next clip
 	}
 
-	void GetEnabledClipIndices(TArray<int>& vIndices)
+	void GetEnabledClipIndices(TArray<int>& vIndices, bool bSkipEmpty = false)
 	{
 		vIndices.Empty();
 		if (timeline_->GetClipCount() == 0)
@@ -697,12 +697,25 @@ public:
 
 		for (size_t i(0); i < timeline_->GetClipCount(); i++)
 		{
-			if (auto clip = GetClip(i))
+			if (auto const clip = GetClip(i))
 			{
-				if (clip->IsEnabled())
+				if (clip->IsEnabled() && (!bSkipEmpty || clip->GetKeyframeCount() > 1))
 					vIndices.Add(i);
 			}
 		}
+	}
+
+	bool HasClipsToExport()
+	{
+		for (size_t i(0); i < timeline_->GetClipCount(); i++)
+		{
+			if (auto clip = GetClip(i))
+			{
+				if (clip->IsEnabled() && clip->GetKeyframeCount() > 1)
+					return true;
+			}
+		}
+		return false;
 	}
 
 	FString GetNextFreeClipName()
@@ -743,7 +756,8 @@ public:
 			}
 
 			int newClipIdx = timeline_->GetClipCount();
-			auto newClip = AppendClip(sNewName);
+			AppendClip(sNewName);
+			auto newClip = GetClip(newClipIdx);
 			BE_ASSERT(newClip);
 			for (int i(0); i < clip->GetKeyframeCount(); ++i)
 			{
@@ -752,6 +766,9 @@ public:
 					AddOrUpdateKeyFrame((*kf)->GetData().time, newClipIdx, (*kf)->GetData());
 				}
 			}
+
+			newClip->bSynchroAnim = clip->bSynchroAnim;
+			newClip->bAtmoAnim = clip->bAtmoAnim;
 		}
 	}
 
@@ -1487,9 +1504,14 @@ void AITwinTimelineActor::GetClipsStartTimes(TArray<float>& vTimes, bool bAppend
 	Impl->GetClipsStartTimes(vTimes, bAppendLastDuration);
 }
 
-void AITwinTimelineActor::GetEnabledClipIndices(TArray<int>& vIndices) const
+void AITwinTimelineActor::GetEnabledClipIndices(TArray<int>& vIndices, bool bSkipEmpty/* = false*/) const
 {
-	Impl->GetEnabledClipIndices(vIndices);
+	Impl->GetEnabledClipIndices(vIndices, bSkipEmpty);
+}
+
+bool AITwinTimelineActor::HasClipsToExport() const
+{
+	return Impl->HasClipsToExport();
 }
 
 float AITwinTimelineActor::GetClipStartTime(int clipIdx) const

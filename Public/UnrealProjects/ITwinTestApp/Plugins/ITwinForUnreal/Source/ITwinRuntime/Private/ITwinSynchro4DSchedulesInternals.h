@@ -31,6 +31,7 @@ class FIModelUninitializer;
 struct FITwinCoordConversions;
 class FITwinSchedule;
 class FITwinSceneTile;
+class TITwinSceneTilePtr;
 class FITwinSynchro4DAnimator;
 class UMaterialInstanceDynamic;
 
@@ -83,8 +84,8 @@ class FITwinSynchro4DSchedulesInternals
 
 	void CheckInitialized(AITwinIModel& IModel);
 	void MutateSchedules(std::function<void(std::optional<FITwinSchedule>&)> const& Func);
-	void SetupAndApply4DAnimationSingleTile(FITwinSceneTile& SceneTile);
-	void Setup4DAnimationSingleTile(FITwinSceneTile& SceneTile, std::optional<ITwinScene::TileIdx> TileRank,
+	void SetupAndApply4DAnimationSingleTile(const TITwinSceneTilePtr& SceneTilePtr);
+	void Setup4DAnimationSingleTile(const TITwinSceneTilePtr& SceneTilePtr, std::optional<ITwinScene::TileIdx> TileRank,
 		std::unordered_set<ITwinScene::ElemIdx> const* Elements);
 	/// Deferred processing of the Elements which were notified during the last tick ('last' to avoid doing
 	/// anything before the whole tile has been loaded, since we are notified of the tile meshes one by one)
@@ -94,8 +95,7 @@ class FITwinSynchro4DSchedulesInternals
 	void Reset();
 	bool IsReadyToQuery() const;
 	bool TileCompatibleWithSchedule(ITwinScene::TileIdx const& TileRank) const;
-	bool TileCompatibleWithSchedule(FITwinSceneTile const& SceneTile) const;
-
+	bool TileCompatibleWithSchedule(const TITwinSceneTilePtr& SceneTilePtr) const;
 	bool useDynamicShadows = false;
 	bool bDoNotReuseScheduleMetadata = false;
 
@@ -109,7 +109,7 @@ public:
 	/// When Owner.IsAvailable() returns true, returns the minimum gltf tuning version for which the loaded
 	/// meshes will be compatible with this Schedule's 4D animation. Otherwise, returns -1.
 	int64_t GetMinGltfTunerVersionForAnimation() const { return MinGltfTunerVersionForAnimation; }
-	bool TileTunedForSchedule(FITwinSceneTile const& SceneTile) const;
+	bool TileTunedForSchedule(const TITwinSceneTilePtr& SceneTilePtr) const;
 	void SetGltfTuner(std::shared_ptr<BeUtils::GltfTuner> const& Tuner);
 	[[nodiscard]] FITwinScheduleTimeline& Timeline();
 	[[nodiscard]] FITwinScheduleTimeline const& GetTimeline() const;
@@ -122,12 +122,12 @@ public:
 	bool PrefetchWholeSchedule() const;
 	bool IsPrefetchedAvailableAndApplied() const;
 	/// \return Whether the tile's render-readiness was toggled *off*
-	bool OnNewTileBuilt(FITwinSceneTile& SceneTile);
-	void UnloadKnownTile(FITwinSceneTile& SceneTile, ITwinScene::TileIdx const& TileRank);
+	bool OnNewTileBuilt(const TITwinSceneTilePtr& SceneTilePtr);
+	void UnloadKnownTile(const TITwinSceneTilePtr& SceneTilePtr, ITwinScene::TileIdx const& TileRank);
 	void OnNewTileMeshBuilt(ITwinScene::TileIdx const& TileRank,
 							std::unordered_set<ITwinScene::ElemIdx>&& MeshElements);
 	void SetScheduleTimeRangeIsKnown();
-	void HideNonAnimatedDuplicates(FITwinSceneTile& SceneTile, FElementsGroup const& NonAnimatedDuplicates);
+	void HideNonAnimatedDuplicates(const TITwinSceneTilePtr& SceneTilePtr, FElementsGroup const& NonAnimatedDuplicates);
 	void OnDownloadProgressed(double PercentComplete, bool bHasPlayableSchedule = false);
 	FITwinSchedulesImport& GetSchedulesApiReadyForUnitTesting();
 

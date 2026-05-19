@@ -1,4 +1,4 @@
-include("${CMAKE_CURRENT_LIST_DIR}/../Public/Extern/cesium-unreal/extern/vcpkg-overlays/triplets/x64-windows-unreal.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/../Extern/cesium-unreal/extern/vcpkg-overlays/triplets/x64-windows-unreal.cmake")
 
 # AdvViz: despite setting CESIUM_VCPKG_RELEASE_ONLY in the CMake preset environment,
 # and adding VCPKG_BUILD_TYPE in the preset's "cache variables", vcpkg was still

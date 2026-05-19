@@ -26,6 +26,8 @@ struct FITwinClippingPlaneInfo : public FITwinClippingInfoBase
 		double PlaneW = 0.;
 	};
 
+	void BeforeDestroy();
+
 protected:
 	virtual void DoSetInvertEffect(bool bInvert) override;
 

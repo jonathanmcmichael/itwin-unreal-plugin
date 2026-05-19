@@ -21,6 +21,7 @@ class FITwinIModelInternals;
 class FITwinRealityData;
 class FITwinSynchro4DAnimator;
 class FITwinSceneTile;
+class TITwinSceneTilePtr;
 class UITwinSynchro4DSchedules;
 class FITwinSynchro4DSchedulesInternals;
 class UITwinWebServices;

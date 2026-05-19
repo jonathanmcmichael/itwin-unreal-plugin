@@ -204,6 +204,11 @@ void FReusableJsonQueries::FImpl::FRequestHandler::ProcessResponse(TSharedPtr<FJ
 	{
 		if (!FromPool.bTryFromCache && ensure(Response))
 		{
+			// Note: CacheHits already incremented elsewhere
+			{
+				ITwinHttp::FLock Lock(JsonQueries.Mutex);
+				JsonQueries.SuccessfulRequestsFromRemote++;
+			}
 			FString const ContinuationToken = Response->GetHeader(TEXT("Continuation-Token"));
 			// this way no need to change ProcessJsonResponseFunc's code, but note that it is written in the
 			// cache with custom code, too: see FJsonQueriesCache::Write variant taking a FHttpResponsePtr
@@ -600,6 +605,16 @@ void FReusableJsonQueries::SwapQueues(ITwinHttp::FLock&, ReusableJsonQueries::FS
 		}
 		Impl->NextBatches.push_front(FNewBatch{ PriorityRequest, false });
 	}
+}
+
+size_t FReusableJsonQueries::FetchedFromRemote() const
+{
+	return Impl->SuccessfulRequestsFromRemote;
+}
+
+size_t FReusableJsonQueries::FetchedFromCache() const
+{
+	return Impl->CacheHits;
 }
 
 FString FReusableJsonQueries::Stats() const

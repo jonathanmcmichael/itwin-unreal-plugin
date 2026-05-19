@@ -13,6 +13,7 @@
 #include "TimelineFwd.h"
 #include <ITwinFwd.h>
 
+#include <Interfaces/IHttpResponse.h>
 #include <Templates/PimplPtr.h>
 #include <UObject/StrongObjectPtr.h>
 #include <UObject/Object.h>
@@ -48,12 +49,16 @@ public:
 	/// requests). This doesn't mean all replies were successful: @see HasFetchingErrors.
 	/// When NOT pre-fetching, always returns false because we cannot know if/when we have everything.
 	bool HasFinishedPrefetching() const;
+	bool HasSchedulesListingFailed() const;
 	/// When HasFinishedPrefetching() returns true, tells whether there has been an error to any request, ie.
 	/// a request that remained unsuccessful, even after the allocated amount of retries.
 	bool HasFetchingErrors() const;
 	/// When HasFetchingErrors() returns true, returns the description message for the first encountered
 	/// error.
 	FString FirstFetchingErrorString() const;
+	EHttpResponseCodes::Type FirstFetchingErrorCode() const;
+	size_t FetchedFromRemote() const;
+	size_t FetchedFromCache() const;
 	void UninitializeCache();
 	size_t NumTasks() const;
 	void ResetConnection(FString const& ITwinAkaProjectAkaContextId, FString const& IModelId,

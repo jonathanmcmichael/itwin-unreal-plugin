@@ -140,7 +140,8 @@ public:
 	FString GetClipName(int clipIdx) const;
 	void GetClipsNames(TArray<FString>& vClipNames) const;
 	void GetClipsStartTimes(TArray<float>& vTimes, bool bAppendLastDuration = false) const;
-	void GetEnabledClipIndices(TArray<int>& vIndices) const;
+	void GetEnabledClipIndices(TArray<int>& vIndices, bool bSkipEmpty = false) const;
+	bool HasClipsToExport() const; // returns true if timeline has at least one enabled clip with at least two key-frames
 	float GetClipStartTime(int clipIdx) const;
 	int GetCurrentClipIndex() const;
 	bool SetCurrentClip(FString clipName, bool updateSceneFromTimeline = true);

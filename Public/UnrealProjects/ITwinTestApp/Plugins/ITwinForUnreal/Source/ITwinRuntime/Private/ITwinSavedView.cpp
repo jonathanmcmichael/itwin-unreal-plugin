@@ -211,9 +211,14 @@ namespace
 	IModelInternals.ShowCategoriesPerModel(AlwaysDrawnCategoriesPerModel, true);
 	IModelInternals.HideElements(HiddenElements, false, true);
 	IModelInternals.ShowElements(AlwaysDrawnElements, true);
-	IModelInternals.HideElements(
-		iModel->bShowConstructionData ? std::unordered_set<ITwinElementID>()
-		: IModelInternals.SceneMapping.ConstructionDataElements(),
+	auto SceneMappingLocked = IModelInternals.SceneMapping->GetRAutoLock();
+	std::unordered_set<ITwinElementID> emptyElements;
+	const std::unordered_set<ITwinElementID>* hiddenElements = &emptyElements;
+	auto GeometryIDToElementIDsLock = SceneMappingLocked->GeometryIDToElementIDs->GetRAutoLock();
+	auto& GeometryIDToElementIDs = *GeometryIDToElementIDsLock;
+	if (!iModel->bShowConstructionData)
+		hiddenElements = &GeometryIDToElementIDs.at(1);
+	IModelInternals.HideElements(*hiddenElements,
 		true, true);
 }
 
@@ -428,7 +433,7 @@ void AITwinSavedView::RenameSavedView()
 		// Not GetActorTransform? To skip scaling?
 		FTransform(GetActorRotation(), GetActorLocation()));
 	UITwinSynchro4DSchedules* Synchro4DSchedules = OwnerIModel->Synchro4DSchedules;
-	if (ensure(Synchro4DSchedules != nullptr) && !(Synchro4DSchedules->ScheduleId.IsEmpty() || Synchro4DSchedules->ScheduleId.StartsWith(TEXT("Unknown"))))
+	if (ensure(IsValid(Synchro4DSchedules)) && Synchro4DSchedules->HasValidId())
 	{
 		//get current time of animation if any
 		const auto& currentTime = Synchro4DSchedules->GetScheduleTime();

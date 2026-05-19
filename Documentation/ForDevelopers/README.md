@@ -26,7 +26,8 @@ Before you install the plugin, you need to create and configure your iTwin Platf
    - Application type: Native
    - Redirect URIs: http://127.0.0.1:3000/signin-callback
       - Note: for more flexibility, you can now customize the value of the port used in that URI (3000 by default). If you do, ensure you call `AITwinServerConnection::SetAuthRedirectUriPort` (through a Blueprint or C++), or, in Editor, instantiate a `ITwinAppIdHelper` actor and modify its `AuthRedirectUriPort` property (you can then save the level for later use).
-
+      - If you get an `invalid redirect_uri` error despite using the above URI, check that no other software already uses port 3000: in an administrator _Windows Terminal_, run `netstat -aon` and use the PID to identify the app in the _Process Manager_.
+      - If you still have errors, try the tips given below in case of 401/403 errors.
 ### Configure your machine for development
 
 Developer Mode for Windows must be enabled, as explained [here](https://learn.microsoft.com/en-us/windows/apps/get-started/enable-your-device-for-development).

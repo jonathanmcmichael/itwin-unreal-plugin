@@ -56,8 +56,31 @@ public:
 	double Longitude = 0;
 	AITwinDecorationHelper* DecorationPersistenceMgr = nullptr;
 	uint32 TilesetLoadedCount = 0;
+	uint32 TilesetFailedCount = 0;
+	FDelegateHandle OnTilesetLoadFailureHandle;
 	TStrongObjectPtr<UITwinClipping3DTilesetHelper> ClippingHelper;
-	FString ITwinIdForGetDataInfo, RealityIdForGetDataInfo;
+
+	struct FIdentifiers
+	{
+		FString ITwinId;
+		FString RealityDataId;
+
+		bool Equals(FString const& OtherITwinId, FString const& OtherRealityDataId) const
+		{
+			return this->ITwinId == OtherITwinId
+				&& this->RealityDataId == OtherRealityDataId;
+		}
+		bool operator == (FIdentifiers const& Other) const
+		{
+			return Equals(Other.ITwinId, Other.RealityDataId);
+		}
+	};
+	FIdentifiers IdentifiersForGetDataInfo;
+	/// Reality data info used to spawn the tileset, if any. If the reality data actor is reloaded from disk,
+	/// this value will be left empty, so that we fetch the info at least once to make sure we have a non
+	/// expired URL for the tileset.
+	FIdentifiers IdentifierInSpawnedTileset;
+
 
 	FImpl(AITwinRealityData& InOwner)
 		: Owner(InOwner)
@@ -66,31 +89,41 @@ public:
 
 	void OnRealityData3DInfoRetrieved(FITwinRealityData3DInfo const& Info)
 	{
-		if (Owner.ITwinId != ITwinIdForGetDataInfo || Owner.RealityDataId != RealityIdForGetDataInfo)
+		if (!IdentifiersForGetDataInfo.Equals(Owner.ITwinId, Owner.RealityDataId))
 			return;
-		ITwinIdForGetDataInfo = {};
-		RealityIdForGetDataInfo = {};
-		// Protection added following https://github.com/iTwin/itwin-unreal-plugin/issues/93,
-		// but should now be handled by the test of ITwinIdForGetDataInfo and RealityIdForGetDataInfo
-		// added before WebServices->GetRealityData3DInfo in UpdateRealityData:
-		DestroyTileset();
+		IdentifiersForGetDataInfo = {};
+
+		BE_ASSERT(Info.Id == Owner.RealityDataId);
+		IdentifierInSpawnedTileset = { Owner.ITwinId, Owner.RealityDataId };
+
+		// Create the tileset if needed.
+		ACesium3DTileset* Tileset = Owner.GetMutableTileset();
+		bool const bSpawnNewTileset = (Tileset == nullptr);
+
 		// *before* SpawnActor otherwise Cesium will create its own default georef
 		auto&& Geoloc = FITwinGeolocation::Get(*Owner.GetWorld());
-		FActorSpawnParameters SpawnParams;
-		SpawnParams.Owner = &Owner;
-		const auto Tileset = Owner.GetWorld()->SpawnActor<ACesium3DTileset>(SpawnParams);
+		if (bSpawnNewTileset)
+		{
+			FActorSpawnParameters SpawnParams;
+			SpawnParams.Owner = &Owner;
+			Tileset = Owner.GetWorld()->SpawnActor<ACesium3DTileset>(SpawnParams);
+		}
 #if WITH_EDITOR
 		Tileset->SetActorLabel(Owner.GetActorLabel() + TEXT(" tileset"));
 #endif
-		Tileset->AttachToActor(&Owner, FAttachmentTransformRules::KeepRelativeTransform);
-		if (ClippingHelper)
+		if (bSpawnNewTileset)
 		{
-			Tileset->SetLifecycleEventReceiver(ClippingHelper.Get());
+			Tileset->AttachToActor(&Owner, FAttachmentTransformRules::KeepRelativeTransform);
 		}
+		Tileset->SetLifecycleEventReceiver(ClippingHelper ? ClippingHelper.Get() : nullptr);
 		Tileset->SetCreatePhysicsMeshes(true);// true since azdev#1737290
 		Tileset->SetTilesetSource(ETilesetSource::FromUrl);
 		Tileset->SetUrl(Info.MeshUrl);
 
+		// Remark for Reality Data reloaded from disk (ie. saved within a level, with the plugin).
+		// In such case, the geo-location will be reloaded as well, including any change made by the user
+		// before saving the level. In geo-located case, Geoloc->bCanBypassCurrentLocation will be false
+		// in such case, so we will not lose the user customizations.
 		if (Info.bGeolocated)
 		{
 			Owner.bGeolocated = true;
@@ -118,12 +151,17 @@ public:
 			Tileset->SetGeoreference(Geoloc->GeoReference.Get());
 		}
 		else
+		{
 			Tileset->SetGeoreference(Geoloc->LocalReference.Get());
+		}
 		// Make use of our own materials (important for packaged version!)
 		ITwin::SetupMaterials(FTilesetAccess(&Owner));
 
 		TilesetLoadedCount = 0;
-		Tileset->OnTilesetLoaded.AddDynamic(&Owner, &AITwinRealityData::OnTilesetLoaded);
+		TilesetFailedCount = 0;
+		Tileset->OnTilesetLoaded.AddUniqueDynamic(&Owner, &AITwinRealityData::OnTilesetLoaded);
+		OnTilesetLoadFailureHandle = OnCesium3DTilesetLoadFailure.AddUObject(
+			&Owner, &AITwinRealityData::OnTilesetLoadFailure);
 	}
 
 	void DestroyTileset();
@@ -148,6 +186,10 @@ AITwinRealityData::AITwinRealityData()
 	:Impl(MakePimpl<FImpl>(*this))
 {
 	SetRootComponent(CreateDefaultSubobject<USceneComponent>(TEXT("root")));
+
+	// In Editor, outside of PIE, delegates are not called, so we use Tick to check for load status updates
+	// instead.
+	PrimaryActorTick.bCanEverTick = true;
 }
 
 AITwinRealityData::~AITwinRealityData()
@@ -191,8 +233,7 @@ void AITwinRealityData::SetRealityData3DInfo(FITwinRealityData3DInfo const& Info
 {
 	if (!ensure(HasRealityDataIdentifiers()))
 		return;
-	Impl->ITwinIdForGetDataInfo = ITwinId;
-	Impl->RealityIdForGetDataInfo = RealityDataId;
+	Impl->IdentifiersForGetDataInfo = { ITwinId, RealityDataId };
 	OnRealityData3DInfoRetrieved(true, Info);
 }
 
@@ -208,7 +249,7 @@ void AITwinRealityData::OnSceneLoaded(bool success)
 
 void AITwinRealityData::UpdateRealityData()
 {
-	if (HasTileset())
+	if (HasTileset() && Impl->IdentifierInSpawnedTileset.Equals(ITwinId, RealityDataId))
 	{
 		if (ensure(!RealityDataId.IsEmpty()))
 		{
@@ -226,10 +267,9 @@ void AITwinRealityData::UpdateRealityData()
 		// Note that we may have several such calls emitted, and thus several replies received in succession,
 		// eg. when loading a project which default map includes this actor: this method is called both
 		// from the OnAuthorizationDone code path (first), but then also from PostLoad!
-		if (ITwinId != Impl->ITwinIdForGetDataInfo || RealityDataId != Impl->RealityIdForGetDataInfo)
+		if (!Impl->IdentifiersForGetDataInfo.Equals(ITwinId, RealityDataId))
 		{
-			Impl->ITwinIdForGetDataInfo = ITwinId;
-			Impl->RealityIdForGetDataInfo = RealityDataId;
+			Impl->IdentifiersForGetDataInfo = { ITwinId, RealityDataId };
 			WebServices->GetRealityData3DInfo(ITwinId, RealityDataId);
 		}
 	}
@@ -318,6 +358,40 @@ void AITwinRealityData::OnTilesetLoaded()
 	Impl->TilesetLoadedCount++;
 }
 
+bool AITwinRealityData::HasLoadedTileset() const
+{
+	return Impl->TilesetLoadedCount > 0;
+}
+
+void AITwinRealityData::OnTilesetLoadFailure(FCesium3DTilesetLoadFailureDetails const& Details)
+{
+	if (Details.Tileset.IsValid() && Details.Tileset->GetOwner() == this)
+	{
+		Impl->TilesetFailedCount++;
+		this->OnRealityDataLoaded.Broadcast(false, RealityDataId);
+	}
+}
+
+bool AITwinRealityData::HasTilesetLoadFailure() const
+{
+	return Impl->TilesetFailedCount > 0;
+}
+
+
+void AITwinRealityData::Tick(float Delta)
+{
+	Super::Tick(Delta);
+
+	// Same as for iModels: we use Tick to check for tileset load status, as in Editor, outside of PIE, the
+	// delegates are not called.
+	if (GetTileset() && Impl->TilesetLoadedCount == 0)
+	{
+		float NativeLoadProgress = GetTileset()->GetLoadProgress();
+		if (NativeLoadProgress > 50.f)
+			OnTilesetLoaded();
+	}
+}
+
 std::optional<FCartographicProps> AITwinRealityData::GetNativeGeoreference() const
 {
 	if (bGeolocated)
@@ -342,8 +416,6 @@ void AITwinRealityData::Reset()
 
 void AITwinRealityData::FImpl::OnLoadingUIEvent()
 {
-	DestroyTileset();
-
 	if (Owner.HasRealityDataIdentifiers())
 	{
 		Owner.UpdateRealityData();
@@ -388,6 +460,10 @@ void AITwinRealityData::UseAsGeolocation()
 
 void AITwinRealityData::Destroyed()
 {
+	if (Impl->OnTilesetLoadFailureHandle.IsValid())
+	{
+		OnCesium3DTilesetLoadFailure.Remove(Impl->OnTilesetLoadFailureHandle);
+	}
 	const auto ChildrenCopy = Children;
 	for (auto& Child: ChildrenCopy)
 		GetWorld()->DestroyActor(Child);

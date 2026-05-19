@@ -192,6 +192,16 @@ void AITwinInteractiveTool::SetUsedOnCutoutPrimitive(bool bForCutout)
 	SetUsedOnCutoutPrimitiveImpl(bForCutout);
 }
 
+void AITwinInteractiveTool::SetUsedForPathAnim(bool bForPathAnim)
+{
+	SetUsedForPathAnimImpl(bForPathAnim);
+}
+
+bool AITwinInteractiveTool::IsUsedForPathAnim() const
+{
+	return IsUsedForPathAnimImpl();
+}
+
 bool AITwinInteractiveTool::IsCompatibleWithGizmo() const
 {
 	return IsCompatibleWithGizmoImpl();

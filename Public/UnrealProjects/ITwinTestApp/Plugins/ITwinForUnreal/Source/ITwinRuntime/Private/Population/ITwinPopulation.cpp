@@ -47,6 +47,11 @@
 #include <array>
 
 
+namespace ITwin::Clipping
+{
+	void ConfigureNewInstanceAsDisabled(const AdvViz::SDK::IInstancePtr& AVizInstance);
+}
+
 //---------------------------------------------------------------------------------------
 // struct FITwinFoliageComponentHolder
 //---------------------------------------------------------------------------------------
@@ -485,20 +490,26 @@ FTransform AITwinPopulation::GetInstanceTransform(int32 instanceIndex) const
 	return instTM;
 }
 
+void AITwinPopulation::NotifyClippingToolOfTransform(int32 instanceIndex, bool bTriggeredFromITS /*= false*/)
+{
+	if (IsClippingPrimitive())
+	{
+		// Notify the Clipping Tool.
+		auto ClippingActor = TWorldSingleton<AITwinClippingTool>().Get(GetWorld());
+		if (ensure(ClippingActor))
+		{
+			ClippingActor->OnClippingInstanceModified(objectType, instanceIndex, bTriggeredFromITS);
+		}
+	}
+}
+
 void AITwinPopulation::SetInstanceTransform(int32 instanceIndex, const FTransform& tm,
 	bool bTriggeredFromITS /*= false*/)
 {
 	if (SetInstanceTransformUEOnly(instanceIndex, tm))
 	{
-		if (IsClippingPrimitive())
-		{
-			// Notify the Clipping Tool.
-			auto ClippingActor = TWorldSingleton<AITwinClippingTool>().Get(GetWorld());
-			if (ensure(ClippingActor))
-			{
-				ClippingActor->OnClippingInstanceModified(objectType, instanceIndex, bTriggeredFromITS);
-			}
-		}
+		NotifyClippingToolOfTransform(instanceIndex, bTriggeredFromITS);
+
 		const AdvViz::SDK::SharedInstVect& instances = Impl->instancesManager_->GetInstancesByObjectRef(objectRef, Impl->GetGpId());
 		if (instanceIndex < instances.size())
 		{
@@ -713,17 +724,17 @@ void AITwinPopulation::FinalizeAddedInstance(int32 instIndex, const FTransform* 
 }
 
 
-int32 AITwinPopulation::AddInstance(const FTransform& transform, bool bInteractivePlacement /*= false*/)
+int32 AITwinPopulation::AddInstance(const FTransform& Transform, EAddInstanceContext Context /*= Default*/)
 {
 	// This function is used for the manual addition of a single instance.
 	// The current position will be used later for the automatic filling of
 	// a square with instances if the user changes their number. This is 
 	// temporary for testing, before we have a better manner to do this...
-	SquareCenter = transform.GetLocation();
+	SquareCenter = Transform.GetLocation();
 
 	// Create a local UnrealInstanceInfo
 	UnrealInstanceInfo ueInstanceInfo;
-	ueInstanceInfo.transform = BaseTransform * transform;
+	ueInstanceInfo.transform = BaseTransform * Transform;
 	ueInstanceInfo.colorShift = GetRandomColorShift(objectType);
 	ueInstanceInfo.name = TEXT("inst");
 
@@ -749,7 +760,7 @@ int32 AITwinPopulation::AddInstance(const FTransform& transform, bool bInteracti
 		return INDEX_NONE;
 	}
 
-	if (IsClippingPrimitive() && !bInteractivePlacement)
+	if (IsClippingPrimitive() && Context == EAddInstanceContext::Default)
 	{
 		// Perform additional operations for the clipping tool.
 		FinalizeAddedInstance(instIndex);
@@ -762,11 +773,22 @@ int32 AITwinPopulation::AddInstance(const FTransform& transform, bool bInteracti
 	{
 		UpdateAVizInstance(AvizInstance, ueInstanceInfo, this);
 	}
-	if (!bInteractivePlacement)
+	if (Context == EAddInstanceContext::Default)
 	{
 		SignalInstanceCreation( UTF8_TO_TCHAR(GetObjectRef().c_str()));
 	}
 
+	// For cutout cube, we notify the clipping tool now, to add the splines used to visualize the edges
+	// - but we disable the effect to make it easier for the user to see where he is placing the cube.
+	if (Context == EAddInstanceContext::InteractivePlacement
+		&& objectType == EITwinInstantiatedObjectType::ClippingBox)
+	{
+		if (AvizInstance)
+		{
+			ITwin::Clipping::ConfigureNewInstanceAsDisabled(AvizInstance);
+		}
+		FinalizeAddedInstance(instIndex);
+	}
 	return instIndex;
 }
 

@@ -12,6 +12,7 @@
 #include <CesiumGlobeAnchorComponent.h>
 #include <CesiumPolygonRasterOverlay.h>
 #include <Clipping/ITwinBoxTileExcluder.h>
+#include <Clipping/ITwinClippingInfoBase.inl>
 #include <Clipping/ITwinClipping3DTilesetHelper.h>
 #include <Clipping/ITwinClippingMPCHolder.h>
 #include <Clipping/ITwinPlaneTileExcluder.h>
@@ -150,6 +151,20 @@ public:
 	std::optional<FCameraViewInfo> LastViewInfo;
 	std::optional<int32> LastSelectedPlaneIndex;
 
+	mutable std::optional<double> BoxMasterMeshScaleCache;
+
+
+	static inline EITwinClippingPrimitiveType ToClippingType(EITwinInstantiatedObjectType ObjectType)
+	{
+		switch (ObjectType)
+		{
+			case EITwinInstantiatedObjectType::ClippingBox: return EITwinClippingPrimitiveType::Box;
+			case EITwinInstantiatedObjectType::ClippingPlane: return EITwinClippingPrimitiveType::Plane;
+			default:
+				BE_ISSUE("not a clipping object type", static_cast<int>(ObjectType));
+				return EITwinClippingPrimitiveType::Count;
+		}
+	}
 
 	inline int32 NumEffects(EITwinClippingPrimitiveType Type) const;
 
@@ -198,6 +213,16 @@ public:
 
 	std::optional<FEffectIdentifier> GetSelectedEffect() const;
 	bool SelectEffect(EITwinClippingPrimitiveType Type, int32 PrimitiveIndex, bool bEnterIsolationMode = true);
+
+	struct [[nodiscard]] FSelectionChangeDetector
+	{
+		FImpl& Impl;
+		std::optional<AITwinClippingTool::FEffectIdentifier> const PreviousSelection;
+		bool const bManageIsolationMode = false;
+
+		FSelectionChangeDetector(FImpl& InImpl, bool bInManageIsolationMode = false);
+		~FSelectionChangeDetector();
+	};
 
 	/// Zoom in on the effect of given type and index.
 	void ZoomOnEffect(EITwinClippingPrimitiveType Type, int32 PrimitiveIndex);
@@ -299,6 +324,10 @@ public:
 	/// Retrieve the box 3D information from the given instance.
 	bool GetBoxTransformInfoFromUEInstance(glm::dmat3x3& OutMatrix, glm::dvec3& OutTranslation, int32 InInstanceIndex) const;
 
+	/// Retrieve the constant scale factor applied to the box master mesh, that we need to take into account
+	/// when computing the box effect parameters from the UE instance transform.
+	inline double GetBoxMasterMeshScale() const;
+
 	void UpdateAllClippingBoxes();
 
 
@@ -353,6 +382,10 @@ public:
 		FVector& OutPosition, bool& bOutIsCenter);
 	void ConfigurePlaneProxyForGizmo(int32 PlaneIndex);
 	void OnPlaneSelectionChanged(int32 PlaneIndex);
+
+	void OnBoxSelectionChanged(int32 BoxIndex);
+	void OnPrimitiveSelectionChanged(EITwinClippingPrimitiveType Type, int32 PrimitiveIndex);
+
 	void OnCutoutCreationCompleted(bool bTriggeredFromITS);
 
 	void InvalidateBoundingBoxOfClippingPlanes(ITwin::ModelLink const& ModelLink);
@@ -420,11 +453,7 @@ void AITwinClippingTool::FImpl::SelectPopulationInstance(AITwinPopulation* Popul
 	{
 		PopTool->SetSelectedPopulation(Population);
 		PopTool->SetSelectedInstanceIndex(InstanceIndex);
-
-		if (Type == EITwinClippingPrimitiveType::Plane)
-		{
-			OnPlaneSelectionChanged(InstanceIndex);
-		}
+		OnPrimitiveSelectionChanged(Type, InstanceIndex);
 
 		PopTool->SelectionChangedEvent.Broadcast();
 	}
@@ -479,6 +508,49 @@ void AITwinClippingTool::FImpl::SelectSpline(AITwinSplineHelper* SplineHelper, U
 	{
 		// Deselect
 		SplineTool->SetSelectedSpline(nullptr);
+	}
+}
+
+AITwinClippingTool::FImpl::FSelectionChangeDetector::FSelectionChangeDetector(FImpl& InImpl,
+	bool bInManageIsolationMode /*= false*/)
+	: Impl(InImpl)
+	, PreviousSelection(InImpl.GetSelectedEffect())
+	, bManageIsolationMode(bInManageIsolationMode)
+{
+}
+
+AITwinClippingTool::FImpl::FSelectionChangeDetector::~FSelectionChangeDetector()
+{
+	auto const NewSelection = Impl.GetSelectedEffect();
+	if (NewSelection)
+	{
+		if (bManageIsolationMode)
+		{
+			// Isolation of the selected item, if any.
+			if (!PreviousSelection || PreviousSelection->first != NewSelection->first)
+			{
+				Impl.ShowOnlyProxiesOfType(NewSelection->first, true);
+			}
+		}
+
+		if (NewSelection != PreviousSelection)
+		{
+			if (PreviousSelection && PreviousSelection->first != NewSelection->first)
+			{
+				Impl.OnPrimitiveSelectionChanged(PreviousSelection->first, INDEX_NONE);
+			}
+			Impl.OnPrimitiveSelectionChanged(NewSelection->first, NewSelection->second);
+		}
+	}
+	else if (PreviousSelection)
+	{
+		if (bManageIsolationMode)
+		{
+			// End of isolation mode.
+			Impl.SetAllEffectProxiesVisibility(true);
+		}
+
+		Impl.OnPrimitiveSelectionChanged(PreviousSelection->first, INDEX_NONE);
 	}
 }
 
@@ -1016,10 +1088,21 @@ bool AITwinClippingTool::FImpl::TAddClippingPrimitive(TArray<PrimitiveInfo>& Cli
 
 	if (InstanceIndex < PrimitiveTraits::MAX_PRIMITIVES)
 	{
-		ensure(InstanceIndex == ClippingInfos.Num());
-		if (InstanceIndex >= ClippingInfos.Num())
+		bool const bIsInteractiveCreation = PopulationTool.IsValid()
+			&& PopulationTool->IsInteractiveCreationMode();
+		// We may have already created the effect (as disabled) during interactive creation, for
+		// visualization purpose. In such case, do not create a new one but just update the existing one.
+		bool const bIsFinalizingInteractiveCreation = (InstanceIndex == ClippingInfos.Num() - 1)
+			&& bIsInteractiveCreation;
+
+		ensure(InstanceIndex == ClippingInfos.Num() || bIsFinalizingInteractiveCreation);
+		bool const bNeedAddNewPrimitive = (InstanceIndex >= ClippingInfos.Num());
+		if (bNeedAddNewPrimitive || bIsFinalizingInteractiveCreation)
 		{
-			ClippingInfos.SetNum(InstanceIndex + 1);
+			if (bNeedAddNewPrimitive)
+			{
+				ClippingInfos.SetNum(InstanceIndex + 1);
+			}
 			bool bIsClippingReady = UpdateClippingPrimitiveFromUEInstance(PrimitiveType, InstanceIndex);
 
 			UMaterialParameterCollectionInstance* MPCInstance = GetMPCClippingInstance();
@@ -1035,6 +1118,23 @@ bool AITwinClippingTool::FImpl::TAddClippingPrimitive(TArray<PrimitiveInfo>& Cli
 					<< ": " << ClippingInfos.Num()
 					<< " - set parameter result: " << (bFound ? 1 : 0));
 			}
+			// For interactive creation of a cutout cube, make sure the new cube proxy will be displayed as
+			// selected (ie. update splines used for edges).
+			if (bNeedAddNewPrimitive && bIsInteractiveCreation)
+			{
+				OnPrimitiveSelectionChanged(PrimitiveType, InstanceIndex);
+			}
+
+			// When undoing the deletion of a clipping primitive, we need to make sure the edges will be
+			// visible again.
+			auto const& PopulationPtr = GetClippingEffectPopulation(PrimitiveType);
+			if (!bIsInteractiveCreation
+				&& ensure(PopulationPtr.IsValid())
+				&& !PopulationPtr->IsHiddenInGame())
+			{
+				// Update the visibility of the edges at once (important for undo/redo).
+				ClippingInfos[InstanceIndex].SetEdgeVisibility(true);
+			}
 		}
 	}
 	return bHasAddedClippingPrimitive;
@@ -1043,22 +1143,20 @@ bool AITwinClippingTool::FImpl::TAddClippingPrimitive(TArray<PrimitiveInfo>& Cli
 void AITwinClippingTool::FImpl::OnClippingInstanceAdded(AITwinPopulation* Population, EITwinInstantiatedObjectType ObjectType, int32 InstanceIndex)
 {
 	bool bHasAddedClippingPrimitive = false;
-	std::optional<EITwinClippingPrimitiveType> PrimitiveToUpdate;
-	switch (ObjectType)
+	EITwinClippingPrimitiveType const PrimitiveToUpdate = ToClippingType(ObjectType);
+	switch (PrimitiveToUpdate)
 	{
-	case EITwinInstantiatedObjectType::ClippingPlane:
+	case EITwinClippingPrimitiveType::Plane:
 	{
 		Owner.ClippingPlanePopulation = Population;
 		bHasAddedClippingPrimitive = TAddClippingPrimitive<FITwinClippingPlaneInfo, EITwinClippingPrimitiveType::Plane>(ClippingPlaneInfos, InstanceIndex);
-		PrimitiveToUpdate = EITwinClippingPrimitiveType::Plane;
 		break;
 	}
 
-	case EITwinInstantiatedObjectType::ClippingBox:
+	case EITwinClippingPrimitiveType::Box:
 	{
 		Owner.ClippingBoxPopulation = Population;
 		bHasAddedClippingPrimitive = TAddClippingPrimitive<FITwinClippingBoxInfo, EITwinClippingPrimitiveType::Box>(ClippingBoxInfos, InstanceIndex);
-		PrimitiveToUpdate = EITwinClippingPrimitiveType::Box;
 		break;
 	}
 
@@ -1072,16 +1170,14 @@ void AITwinClippingTool::FImpl::OnClippingInstanceAdded(AITwinPopulation* Popula
 		// For a new clipping primitive, the invert effect option is false so we would not have to update the
 		// Flipping flags in the MPC. But in the context of undo/redo, this can perfectly be true, so we
 		// update those flags anyway in all cases.
-		EncodeFlippingInMPC(PrimitiveToUpdate.value_or(EITwinClippingPrimitiveType::Count));
+		EncodeFlippingInMPC(PrimitiveToUpdate);
 		// Create tile excluders in all registered tilesets.
 		UpdateAllTilesets(PrimitiveToUpdate);
 
 		Owner.EffectListModifiedEvent.Broadcast();
-		if (ensure(PrimitiveToUpdate))
-			Owner.EffectAddedEvent.Broadcast(*PrimitiveToUpdate, InstanceIndex);
+		Owner.EffectAddedEvent.Broadcast(PrimitiveToUpdate, InstanceIndex);
 
-		if (PrimitiveToUpdate
-			&& *PrimitiveToUpdate == EITwinClippingPrimitiveType::Plane
+		if (PrimitiveToUpdate == EITwinClippingPrimitiveType::Plane
 			&& ensure(InstanceIndex < NumEffects(EITwinClippingPrimitiveType::Plane)))
 		{
 			// Make sure the new plane proxy will not move until the user changes the point of view.
@@ -1208,7 +1304,7 @@ void AITwinClippingTool::FImpl::TUpdateAllClippingPrimitives(TArray<ClippingPrim
 	// Disable tile excluders which have become obsolete.
 	for (int32 i(NumPrims); i < ClippingInfos.Num(); ++i)
 	{
-		auto const& PrimInfo = ClippingInfos[i];
+		auto& PrimInfo = ClippingInfos[i];
 		for (auto const& TileExcluder : PrimInfo.TileExcluders)
 		{
 			if (TileExcluder.IsValid())
@@ -1216,6 +1312,7 @@ void AITwinClippingTool::FImpl::TUpdateAllClippingPrimitives(TArray<ClippingPrim
 				PrimInfo.DeactivatePrimitiveInExcluder(*TileExcluder);
 			}
 		}
+		PrimInfo.BeforeDestroy();
 	}
 	ClippingInfos.SetNum(NumPrims);
 
@@ -1247,6 +1344,24 @@ void AITwinClippingTool::FImpl::UpdateAllClippingBoxes()
 	TUpdateAllClippingPrimitives<FITwinClippingBoxInfo, EITwinClippingPrimitiveType::Box>(ClippingBoxInfos);
 }
 
+inline double AITwinClippingTool::FImpl::GetBoxMasterMeshScale() const
+{
+	if (BoxMasterMeshScaleCache.has_value())
+	{
+		return BoxMasterMeshScaleCache.value();
+	}
+	if (!ensure(Owner.ClippingBoxPopulation.IsValid()))
+		return 1.0;
+	double MasterMeshScale = 1.0;
+	const FBox MasterMeshBox = Owner.ClippingBoxPopulation->GetMasterMeshBoundingBox();
+	if (ensure(MasterMeshBox.IsValid))
+	{
+		MasterMeshScale = MasterMeshBox.GetSize().GetAbsMax();
+		BoxMasterMeshScaleCache = MasterMeshScale;
+	}
+	return MasterMeshScale;
+}
+
 bool AITwinClippingTool::FImpl::GetBoxTransformInfoFromUEInstance(glm::dmat3x3& OutMatrix, glm::dvec3& OutTranslation, int32 InInstanceIndex) const
 {
 	if (!ensure(Owner.ClippingBoxPopulation.IsValid()))
@@ -1257,15 +1372,10 @@ bool AITwinClippingTool::FImpl::GetBoxTransformInfoFromUEInstance(glm::dmat3x3& 
 
 	const FTransform InstanceTransform = Owner.ClippingBoxPopulation->GetInstanceTransform(InInstanceIndex);
 
-	double MasterMeshScale = 1.0;
+	FMatrix InstanceMat = InstanceTransform.ToMatrixWithScale();
 	// Take the master object's scale into account (depends on the way the box was imported
 	// in Unreal...)
-	const FBox MasterMeshBox = Owner.ClippingBoxPopulation->GetMasterMeshBoundingBox();
-	if (ensure(MasterMeshBox.IsValid))
-		MasterMeshScale = MasterMeshBox.GetSize().GetAbsMax();
-
-	FMatrix InstanceMat = InstanceTransform.ToMatrixWithScale();
-	InstanceMat *= MasterMeshScale;
+	InstanceMat *= GetBoxMasterMeshScale();
 	const FVector InstancePos = InstanceTransform.GetTranslation();
 
 	const FVector Col0 = InstanceMat.GetColumn(0);
@@ -1290,6 +1400,16 @@ bool AITwinClippingTool::FImpl::UpdateClippingBoxFromUEInstance(int32 InstanceIn
 	glm::dvec3 BoxTranslation;
 	if (!GetBoxTransformInfoFromUEInstance(BoxMatrix, BoxTranslation, InstanceIndex))
 		return false;
+
+	if (BoxInfo.BoxEdgeSplines.IsEmpty() && ensure(SplineTool.IsValid()))
+	{
+		// First time we create the box, we also create the edge splines.
+		BoxInfo.CreateEdgeSplines(SplineTool.Get());
+	}
+	FTransform InstanceTransform = Owner.ClippingBoxPopulation->GetInstanceTransform(InstanceIndex);
+	InstanceTransform.MultiplyScale3D(FVector(GetBoxMasterMeshScale()));
+	BoxInfo.UpdateEdgeSplinesTransform(InstanceTransform);
+
 
 	// Update the box information shared by all tile excluders activating this box.
 	BoxInfo.UpdateBoxProperties(BoxMatrix, BoxTranslation);
@@ -1353,26 +1473,14 @@ void AITwinClippingTool::BeforeRemoveClippingInstances(EITwinInstantiatedObjectT
 {
 	if (InstanceIndices.IsEmpty())
 		return;
-	std::optional<EITwinClippingPrimitiveType> RemovedPrimitiveType;
-	switch (ObjectType)
-	{
-	case EITwinInstantiatedObjectType::ClippingPlane:
-		RemovedPrimitiveType = EITwinClippingPrimitiveType::Plane;
-		break;
-	case EITwinInstantiatedObjectType::ClippingBox:
-		RemovedPrimitiveType = EITwinClippingPrimitiveType::Box;
-		break;
-	default:
-		// Nothing to do for other types.
-		return;
-	}
-	if (RemovedPrimitiveType)
+	EITwinClippingPrimitiveType RemovedPrimitiveType = FImpl::ToClippingType(ObjectType);
+	if (RemovedPrimitiveType != EITwinClippingPrimitiveType::Count)
 	{
 		const bool bTriggeredFromITS = Impl->RemovalInitiatorOpt
 			&& *Impl->RemovalInitiatorOpt == FImpl::ERemovalInitiator::ITS;
 		for (int32 EffectIndex : InstanceIndices)
 		{
-			EffectRemovedEvent.Broadcast(*RemovedPrimitiveType, EffectIndex, bTriggeredFromITS);
+			EffectRemovedEvent.Broadcast(RemovedPrimitiveType, EffectIndex, bTriggeredFromITS);
 		}
 	}
 }
@@ -1407,6 +1515,8 @@ void AITwinClippingTool::OnClippingInstancesRemoved(EITwinInstantiatedObjectType
 		// After removing a cutout, we should exit isolation mode.
 		// See AzDev#2015685 (it also fixes AzDev#2015686, ie. when a cutout creation is aborted).
 		Impl->SetAllEffectProxiesVisibility(true);
+		// Ensure nothing remains selected after deletion (important for cube edges).
+		Impl->OnPrimitiveSelectionChanged(FImpl::ToClippingType(ObjectType), INDEX_NONE);
 
 		EffectListModifiedEvent.Broadcast();
 	}
@@ -1448,13 +1558,51 @@ bool AITwinClippingTool::FImpl::RegisterCutoutSpline(AITwinSplineHelper* SplineH
 		PolygonInfo.SplineHelper = SplineHelper;
 		PolygonInfo.SetInvertEffect(SplineHelper->IsInvertedCutoutEffect());
 		// Simplified UX for linked models: handle influence per model type only.
-		// TODO_JDE modify this when/if we implement per model activation.
+		// Internally, we already support influence per model, but it will be finalized only when we switch
+		// to SceneAPI, so for now we do not save the "influence all" flag in the decoration service.
+		// That's why we just detect "partial" influence in development version, just to debug the feature.
+		// TODO_JDE modify this when we switch to SceneAPI
+		std::array<bool, static_cast<size_t>(EITwinModelType::Count)> PerModelTypePartialInfluence;
+		PerModelTypePartialInfluence.fill(false);
+
 		std::set<ITwin::ModelLink> const Links = SplineHelper->GetLinkedModels();
+
+#ifndef RELEASE_CONFIG
+		// Detect partial influence per model type for debugging purposes.
+		std::array<int32, static_cast<size_t>(EITwinModelType::Count)> PerModelTypeTilesetCount;
+		PerModelTypeTilesetCount.fill(-1);
+		std::array<int32, static_cast<size_t>(EITwinModelType::Count)> PerModelTypeLinkCount;
+		PerModelTypeLinkCount.fill(0);
+		for (ITwin::ModelLink const& Link : Links)
+		{
+			int32& NumTilesetsOfType = PerModelTypeTilesetCount[static_cast<size_t>(Link.first)];
+			if (NumTilesetsOfType == -1)
+			{
+				NumTilesetsOfType = ITwin::CountTilesetsOfModelType(Link.first, Owner.GetWorld());
+			}
+			PerModelTypeLinkCount[static_cast<size_t>(Link.first)]++;
+		}
+		for (size_t ModelTypeIndex = 0; ModelTypeIndex < PerModelTypeLinkCount.size(); ++ModelTypeIndex)
+		{
+			if (PerModelTypeLinkCount[ModelTypeIndex] > 0)
+			{
+				PerModelTypePartialInfluence[ModelTypeIndex] = PerModelTypeLinkCount[ModelTypeIndex] < PerModelTypeTilesetCount[ModelTypeIndex];
+			}
+		}
+#endif // !RELEASE_CONFIG
+
 		PolygonInfo.SetInfluenceNone();
 		for (ITwin::ModelLink const& Link : Links)
 		{
-			PolygonInfo.SetInfluenceFullModelType(Link.first, true);
-
+			bool const bPartialInfluence = PerModelTypePartialInfluence[static_cast<size_t>(Link.first)];
+			if (bPartialInfluence)
+			{
+				PolygonInfo.SetInfluenceSpecificModel(Link, true);
+			}
+			else
+			{
+				PolygonInfo.SetInfluenceFullModelType(Link.first, true);
+			}
 			auto TilesetAccessPtr = ITwin::GetTilesetAccessFromModelLink(Link, Owner.GetWorld());
 			if (TilesetAccessPtr)
 			{
@@ -2618,16 +2766,40 @@ void AITwinClippingTool::FImpl::OnPlaneSelectionChanged(int32 PlaneIndex)
 	}
 }
 
+void AITwinClippingTool::FImpl::OnBoxSelectionChanged(int32 SelectedBoxIndex)
+{
+	// Update selection flags in box edge helpers.
+	for (int32 BoxIndex = 0; BoxIndex < ClippingBoxInfos.Num(); BoxIndex++)
+	{
+		ClippingBoxInfos[BoxIndex].SetEdgeSplinesSelected(BoxIndex == SelectedBoxIndex);
+	}
+}
+
+void AITwinClippingTool::FImpl::OnPrimitiveSelectionChanged(EITwinClippingPrimitiveType Type, int32 PrimitiveIndex)
+{
+	switch (Type)
+	{
+	case EITwinClippingPrimitiveType::Box:
+		OnBoxSelectionChanged(PrimitiveIndex);
+		break;
+	case EITwinClippingPrimitiveType::Plane:
+		OnPlaneSelectionChanged(PrimitiveIndex);
+		break;
+	case EITwinClippingPrimitiveType::Polygon:
+		break;
+	BE_UNCOVERED_ENUM_ASSERT_AND_BREAK(case EITwinClippingPrimitiveType::Count:);
+	}
+}
 
 void AITwinClippingTool::FImpl::OnCutoutCreationCompleted(bool bTriggeredFromITS)
 {
 	if (ensure(PopulationTool.IsValid() && PopulationTool->HasSelection()))
 	{
-		if (PopulationTool->GetSelectedPopulation()->GetObjectType() == EITwinInstantiatedObjectType::ClippingPlane)
-		{
-			// Finalize the plane proxy and gizmo.
-			OnPlaneSelectionChanged(PopulationTool->GetSelectedInstanceIndex());
-		}
+		BE_ASSERT(PopulationTool->GetSelectedPopulation()->IsClippingPrimitive());
+		// Finalize the proxy and gizmo.
+		OnPrimitiveSelectionChanged(
+			ToClippingType(PopulationTool->GetSelectedPopulation()->GetObjectType()),
+			PopulationTool->GetSelectedInstanceIndex());
 	}
 }
 
@@ -3008,7 +3180,9 @@ void AITwinClippingTool::FImpl::SetEffectVisibility(EITwinClippingPrimitiveType 
 	{
 		auto const& Population = GetClippingEffectPopulation(EffectType);
 		if (Population.IsValid())
+		{
 			Population->SetHiddenInGame(!bVisibleInGame);
+		}
 		break;
 	}
 
@@ -3028,6 +3202,21 @@ void AITwinClippingTool::FImpl::SetEffectVisibility(EITwinClippingPrimitiveType 
 	}
 
 	BE_UNCOVERED_ENUM_ASSERT_AND_BREAK(case EITwinClippingPrimitiveType::Count: );
+	}
+
+	if (EffectType == EITwinClippingPrimitiveType::Box)
+	{
+		// Update the box edge visibility
+		auto const& Population = GetClippingEffectPopulation(EffectType);
+		int32 SelectedBoxIndex = Population.IsValid() ? Population->GetSelectedInstanceIndex()
+			: INDEX_NONE;
+		for (int32 BoxIndex = 0; BoxIndex < ClippingBoxInfos.Num(); BoxIndex++)
+		{
+			auto& BoxInfo = ClippingBoxInfos[BoxIndex];
+			const bool bShowEdges = bVisibleInGame
+				&& (!bIsolationMode || BoxIndex == SelectedBoxIndex);
+			BoxInfo.SetEdgeSplinesVisibility(bShowEdges);
+		}
 	}
 
 	if (EffectType == EITwinClippingPrimitiveType::Plane)
@@ -3118,7 +3307,10 @@ bool AITwinClippingTool::DoMouseClickPicking(bool& bOutSelectionGizmoNeeded)
 	if (!World)
 		return false;
 
-	auto const OldSelection = GetSelectedEffect();
+	std::optional<FImpl::FSelectionChangeDetector> SelectionChangeDetector;
+	SelectionChangeDetector.emplace(*Impl, true/*bManageIsolationMode*/);
+
+	auto const OldSelection = SelectionChangeDetector->PreviousSelection;
 
 	// Test population then cut-out splines.
 
@@ -3158,31 +3350,9 @@ bool AITwinClippingTool::DoMouseClickPicking(bool& bOutSelectionGizmoNeeded)
 		}
 	}
 
-	auto const NewSelection = GetSelectedEffect();
-	if (NewSelection)
-	{
-		// Isolation of the selected item, if any.
-		if (!OldSelection || OldSelection->first != NewSelection->first)
-		{
-			Impl->ShowOnlyProxiesOfType(NewSelection->first, true);
-		}
-		// Update the offset of the plane gizmo if applicable.
-		if (NewSelection != OldSelection
-			&& NewSelection->first == EITwinClippingPrimitiveType::Plane)
-		{
-			Impl->OnPlaneSelectionChanged(NewSelection->second);
-		}
-	}
-	else if (OldSelection)
-	{
-		// End of isolation mode.
-		Impl->SetAllEffectProxiesVisibility(true);
-
-		if (OldSelection->first == EITwinClippingPrimitiveType::Plane)
-		{
-			Impl->OnPlaneSelectionChanged(INDEX_NONE);
-		}
-	}
+	// At this point, the selection may have changed. Update the visibility of the proxies accordingly, and
+	// call OnPrimitiveSelectionChanged if needed. This is done in the destructor of SelectionChangeDetector.
+	SelectionChangeDetector.reset();
 
 	// Notify new selection. If nothing is selected, notify it as well (using -1 as index).
 	BroadcastSelection();
@@ -3514,24 +3684,41 @@ int32 AITwinClippingTool::GetEffectIndex(EITwinClippingPrimitiveType EffectType,
 
 namespace ITwin::Clipping
 {
+	static constexpr auto INFL_PREFIX = "infl";
+	static constexpr auto PER_LAYER_PREFIX = "perlayer";
+
+
 	// Encode cutout properties as a string (temporary solution for persistence, as long as we do not save
 	// clipping shapes in SceneAPI (nor population instances in another iTwin service...)
 	std::string EncodeProperties(const FITwinClippingInfoBase& Prop)
 	{
-		std::string EncodedInfo("clipping (");
+		std::stringstream EncodedInfo;
+		EncodedInfo << "clipping (";
 		if (!Prop.IsEnabled())
-			EncodedInfo += "OFF-";
+			EncodedInfo << "OFF-";
 		if (Prop.GetInvertEffect())
-			EncodedInfo += "inv-";
+			EncodedInfo << "inv-";
 		for (EITwinModelType ModelType : { EITwinModelType::IModel,
 			EITwinModelType::RealityData,
 			EITwinModelType::GlobalMapLayer })
 		{
-			if (Prop.ShouldInfluenceFullModelType(ModelType))
-				EncodedInfo += std::string("infl") + std::to_string(static_cast<uint8_t>(ModelType)) + "-";
+			FITwinClippingInfluenceInfo const& InfluenceInfo = Prop.GetInfluenceInfo(ModelType);
+			if (InfluenceInfo.bInfluenceAll)
+			{
+				EncodedInfo << INFL_PREFIX << static_cast<int>(ModelType) << "-";
+			}
+			else if (!InfluenceInfo.SpecificIDs.IsEmpty())
+			{
+				EncodedInfo << PER_LAYER_PREFIX << static_cast<int>(ModelType) << "[";
+				for (FString const& LayerID : InfluenceInfo.SpecificIDs)
+				{
+					EncodedInfo << TCHAR_TO_ANSI(*LayerID) << ",";
+				}
+				EncodedInfo << "]-";
+			}
 		}
-		EncodedInfo += ")";
-		return EncodedInfo;
+		EncodedInfo << ")";
+		return EncodedInfo.str();
 	}
 
 	bool DecodeProperties(const std::string& EncodedInfo, FITwinClippingInfoBase& Prop)
@@ -3542,14 +3729,47 @@ namespace ITwin::Clipping
 		}
 		Prop.SetEnabled(EncodedInfo.find("OFF-") == std::string::npos);
 		Prop.SetInvertEffect(EncodedInfo.find("inv-") != std::string::npos);
-		static const std::string StrInflPrefix("infl");
+
+		auto const ParseSpecificLayers = [&](EITwinModelType ModelType) -> int32
+		{
+			const std::string strModelTypeIndex = std::to_string(static_cast<int>(ModelType));
+			const std::string strPerLayerInfl = PER_LAYER_PREFIX + strModelTypeIndex + "[";
+			const size_t pos = EncodedInfo.find(strPerLayerInfl);
+			if (pos == std::string::npos)
+			{
+				return 0;
+			}
+			size_t startPos = pos + strPerLayerInfl.size();
+			size_t endPos = EncodedInfo.find("]", startPos);
+			if (endPos == std::string::npos)
+			{
+				BE_ISSUE("failed parsing specific layer list from", EncodedInfo);
+				return 0;
+			}
+			FString const LayerList = ANSI_TO_TCHAR(EncodedInfo.substr(startPos, endPos - startPos).c_str());
+			TArray<FString> LayerIDs;
+			LayerList.ParseIntoArray(LayerIDs, TEXT(","), true);
+			for (FString const& LayerID : LayerIDs)
+			{
+				Prop.SetInfluenceSpecificModel(std::make_pair(ModelType, LayerID), true);
+			}
+			return LayerIDs.Num();
+		};
+
 		for (EITwinModelType ModelType : { EITwinModelType::IModel,
 			EITwinModelType::RealityData,
 			EITwinModelType::GlobalMapLayer })
 		{
-			const std::string strInfl = StrInflPrefix + std::to_string(static_cast<uint8_t>(ModelType)) + "-";
-			Prop.SetInfluenceFullModelType(ModelType,
-				EncodedInfo.find(strInfl) != std::string::npos);
+			const std::string strModelTypeIndex = std::to_string(static_cast<uint8_t>(ModelType));
+			const std::string strInfl = INFL_PREFIX + strModelTypeIndex + "-";
+			const bool bInfluenceAll = EncodedInfo.find(strInfl) != std::string::npos;
+			Prop.SetInfluenceFullModelType(ModelType, bInfluenceAll);
+
+			if (!bInfluenceAll)
+			{
+				// Parse specific layers.
+				ParseSpecificLayers(ModelType);
+			}
 		}
 		return true;
 	}
@@ -3576,6 +3796,15 @@ namespace ITwin::Clipping
 			inst->SetName(EncodedCutoutInfo);
 			inst->SetShouldSave(true);
 		}
+	}
+
+	void ConfigureNewInstanceAsDisabled(const AdvViz::SDK::IInstancePtr& AVizInstance)
+	{
+		FITwinClippingInfoBase ClippingProps;
+		ClippingProps.SetEnabled(false);
+		const std::string EncodedCutoutInfo = EncodeProperties(ClippingProps);
+		auto inst = AVizInstance->GetAutoLock();
+		inst->SetName(EncodedCutoutInfo);
 	}
 }
 
@@ -3627,6 +3856,10 @@ void AITwinClippingTool::FImpl::UpdateClippingPropertiesFromAVizInstance(EITwinC
 
 void AITwinClippingTool::AbortInteractiveCreation(bool bTriggeredFromITS)
 {
+	// Disabling the active tool will trigger a selection change that will be handled by the selection
+	// change detector below.
+	FImpl::FSelectionChangeDetector SelectionSynchronizer(*Impl);
+
 	// Abort current effect creation, if any.
 	AITwinInteractiveTool* ActiveTool = AITwinInteractiveTool::GetActiveTool(GetWorld());
 	if (ActiveTool && ActiveTool->IsUsedOnCutoutPrimitive())
@@ -3812,7 +4045,7 @@ static FAutoConsoleCommandWithWorldAndArgs FCmd_ITwinActivatePerModelClippingEff
 {
 	if (Args.Num() < 3)
 	{
-		UE_LOG(LogITwin, Error, TEXT("Expects 3 to 5 args: <box|plane> <IModel|RealityData|GlobalMapLayer> <0|1> [<PrimitiveId> <SingleModelId>"));
+		UE_LOG(LogITwin, Error, TEXT("Expects 3 to 5 args: <box|plane|polygon> <IModel|RealityData|GlobalMapLayer> <0|1> [EffectIndex] [SingleModelId]"));
 		return;
 	}
 	auto EffectType = ITwin::GetEnumFromCmdArg<EITwinClippingPrimitiveType>(Args, 0);

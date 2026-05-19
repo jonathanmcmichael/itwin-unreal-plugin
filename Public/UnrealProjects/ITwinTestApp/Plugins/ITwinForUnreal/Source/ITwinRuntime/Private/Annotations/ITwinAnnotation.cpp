@@ -12,6 +12,7 @@
 #include "Blueprint/WidgetLayoutLibrary.h"
 #include "Kismet/KismetMathLibrary.h"
 #include "Materials/Material.h"
+#include "Components/WidgetComponent.h"
 
 #include <Compil/BeforeNonUnrealIncludes.h>
 #	include <BeHeaders/Util/CleanUpGuard.h>
@@ -39,6 +40,7 @@ static UMaterial* LoadMaterialFromPath(const FName& Path)
 }
 
 /*static*/ bool AITwinAnnotation::bVRMode = false;
+/*static*/ bool AITwinAnnotation::bUseWorldSpaceWidgets = true;
 
 /*static*/ void AITwinAnnotation::EnableVR()
 {
@@ -55,8 +57,15 @@ AITwinAnnotation::AITwinAnnotation()
 	PrimaryActorTick.bCanEverTick = true;
 
 	root = CreateDefaultSubobject<USceneComponent>(TEXT("Root Position"));
-
 	SetRootComponent(root);
+
+	// Create widget component for world-space rendering
+	widgetComponent = CreateDefaultSubobject<UWidgetComponent>(TEXT("AnnotationWidgetComponent"));
+	widgetComponent->SetupAttachment(root);
+	widgetComponent->SetWidgetSpace(EWidgetSpace::Screen);
+	widgetComponent->SetDrawSize(FVector2D(400.0f, 200.0f));
+	widgetComponent->SetPivot(FVector2D(0.0f, 0.0f)); // Pivot at bottom center (pin position)
+	widgetComponent->SetVisibility(false); // Hidden by default until BeginPlay
 
 	BuildWidget();
 }
@@ -65,23 +74,28 @@ void AITwinAnnotation::BeginPlay()
 {
 	Super::BeginPlay();
 	SetTickGroup(ETickingGroup::TG_PostUpdateWork);
+	
+	// Build the appropriate widget type based on settings
+	InitWorldSpaceWidget();
+	
 	SetColorTheme(colorTheme);
 	SetMode(mode);
 	SetFontSize(_fontSize);
 		
-	//hiding annotations if in VR mode
-	if (AITwinAnnotation::VRMode()) {
+	// Hiding annotations if in VR mode
+	if (AITwinAnnotation::VRMode())
+	{
 		SetVisibility(false);
 	}
 }
 
 void AITwinAnnotation::BuildWidget()
 {
+	// Build viewport-based widget (legacy approach)
 	onScreen = CreateWidget<UITwin2DAnnotationWidgetImpl>(GetWorld(), LoadClass <UITwin2DAnnotationWidgetImpl> (nullptr,
 		TEXT("/Script/UMGEditor.WidgetBlueprint'/ITwinForUnreal/ITwin/Annotations/ITwin2DAnnotationWidget.ITwin2DAnnotationWidget_C'")));
 	if (onScreen)
 	{
-		onScreen->AddToViewport();
 		if (CustomFontObject)
 		{
 			onScreen->SetFontObject(CustomFontObject);
@@ -90,14 +104,19 @@ void AITwinAnnotation::BuildWidget()
 	}
 }
 
-bool AITwinAnnotation::Destroy(bool bNetForce, bool bShouldModifyLevel)
+void AITwinAnnotation::InitWorldSpaceWidget()
 {
-	if (onScreen)
-	{
-		onScreen->RemoveFromParent();
-		onScreen = nullptr;
-	}
-	return Super::Destroy(bNetForce, bShouldModifyLevel);
+	if (!widgetComponent || !onScreen)
+		return;
+
+	// Configure widget component for world-space rendering
+	onScreen->SetPinPosition(FVector2D(0.0f, 0.0f));
+	widgetComponent->SetWidget(onScreen);
+	widgetComponent->SetVisibility(bVisible);
+	
+	// Set collision and rendering properties
+	widgetComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	widgetComponent->SetCastShadow(false);
 }
 
 AdvViz::SDK::AnnotationPtr AITwinAnnotation::GetAVizAnnotation() const
@@ -128,7 +147,7 @@ void AITwinAnnotation::LoadAVizAnnotation(const AdvViz::SDK::AnnotationPtr&annot
 	SetColorTheme(ColorThemeToEnum(annotation->colorTheme.value_or("Dark")));
 	SetMode(DisplayModeToEnum(annotation->displayMode.value_or("Marker and label")));
 	SetVisibility(!(annotation->displayMode.value_or("Marker and label").ends_with(";Hidden")));
-	SetAVizAnnotation(annotationPtr);// set annotation at the end to avoid Should save from changing
+	SetAVizAnnotation(annotationPtr); // Set annotation at the end to avoid should save from changing
 }
 
 void AITwinAnnotation::SetAVizAnnotation(const AdvViz::SDK::AnnotationPtr& annotation)
@@ -156,8 +175,9 @@ void AITwinAnnotation::SetText(const FText& text)
 
 void AITwinAnnotation::SetVisibility(bool InBVisible)
 {
-	if (AITwinAnnotation::VRMode() && InBVisible || !onScreen)
+	if (AITwinAnnotation::VRMode() && InBVisible)
 		return;
+		
 	if (aVizAnnotationPtr)
 	{
 		auto aVizAnnotation = aVizAnnotationPtr->GetAutoLock();
@@ -233,7 +253,7 @@ void AITwinAnnotation::SetColorTheme(EITwinAnnotationColor color)
 
 void AITwinAnnotation::SetColorThemeFromIndex(int color)
 {
-	color += 1; // to skip undefined
+	color += 1; // To skip undefined
 	if (color <= 0 || color >= static_cast<int>(EITwinAnnotationColor::Count))
 		return;
 	SetColorTheme(static_cast<EITwinAnnotationColor>(color));
@@ -265,7 +285,7 @@ void AITwinAnnotation::Relocate(FVector position, FRotator rotation)
 
 void AITwinAnnotation::SetBackgroundColor(const FLinearColor& color)
 {
-	if (Is2DMode())
+	if (Is2DMode() && onScreen)
 	{
 		onScreen->SetBackgroundColor(color);
 	}
@@ -278,7 +298,7 @@ FLinearColor AITwinAnnotation::GetBackgroundColor() const
 
 void AITwinAnnotation::SetTextColor(const FLinearColor& color)
 {
-	if (Is2DMode())
+	if (Is2DMode() && onScreen)
 	{
 		onScreen->SetTextColor(color);
 	}
@@ -354,27 +374,46 @@ void AITwinAnnotation::SetId(int inId)
 	id = inId;
 }
 
+void AITwinAnnotation::ConfigureWidget(UITwin2DAnnotationWidgetImpl* Widget) const
+{
+	if (!Widget)
+		return;
+
+	Widget->SetText(content);
+	Widget->SetLabelOnly(mode == EITwinAnnotationMode::LabelOnly);
+	Widget->SetBackgroundColor(ColorThemeToBackgroundColor(colorTheme));
+	Widget->SetTextColor(colorTheme == EITwinAnnotationColor::White
+		? FLinearColor(0.0f, 0.0f, 0.0f, 1.0f)
+		: FLinearColor(1.0f, 1.0f, 1.0f, 1.0f));
+	Widget->SetFontSize(_fontSize);
+
+	if (mode == EITwinAnnotationMode::LabelOnly)
+	{
+		Widget->SetPinPosition(FVector2D(0.0f, 0.0f));
+		Widget->SetLabelPosition(FVector2D(0.0f, 0.0f));
+	}
+	else
+	{
+		Widget->SetPinPosition(FVector2D(0.0f, 0.0f));
+		Widget->SetLabelPosition(FVector2D(0.0f, -100.0f));
+	}
+}
+
 void AITwinAnnotation::UpdateDisplay()
 {
 	if (!onScreen)
 		return;
-	
-	onScreen->SetText(content);
-	onScreen->SetLabelOnly(mode == EITwinAnnotationMode::LabelOnly);
-	onScreen->SetBackgroundColor(ColorThemeToBackgroundColor(colorTheme));
-	onScreen->SetTextColor(colorTheme == EITwinAnnotationColor::White ? FLinearColor(0.0f, 0.0f, 0.0f, 1.0f) : FLinearColor(1.0f, 1.0f, 1.0f, 1.0f));
-	onScreen->SetFontSize(_fontSize);
-	onScreen->SetVisibility(bVisible ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Hidden);
-}
 
-bool AITwinAnnotation::CalculatePinPosition(FVector2D& out)
-{
-	auto playerCtrl = GetWorld()->GetFirstPlayerController();
-	bool bresult = UWidgetLayoutLibrary::ProjectWorldLocationToWidgetPosition(playerCtrl, GetActorLocation(), out, false);
-	auto size = UWidgetLayoutLibrary::GetViewportSize(GetWorld());
-	if (out.X < 0 || out.Y < 0 || out.X > size.X || out.Y > size.Y)
-		return false;
-	return bresult;
+	ConfigureWidget(onScreen);
+
+	if (bUseWorldSpaceWidgets && widgetComponent)
+	{
+		widgetComponent->SetVisibility(bVisible);
+	}
+	else if (onScreen)
+	{
+		onScreen->SetVisibility(bVisible ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Hidden);
+	}
 }
 
 void AITwinAnnotation::Tick(float DeltaTime)
@@ -385,28 +424,19 @@ void AITwinAnnotation::Tick(float DeltaTime)
 
 	if (Is2DMode())
 	{
-		FVector2D scrPos;
-		if (CalculatePinPosition(scrPos))
+		if (bUseWorldSpaceWidgets && widgetComponent)
 		{
-			onScreen->SetVisibility(ESlateVisibility::HitTestInvisible);
-			if (mode == EITwinAnnotationMode::LabelOnly) {
-				onScreen->SetPinPosition(scrPos);
-				onScreen->SetLabelPosition(scrPos);
-			} else {
-				onScreen->SetPinPosition(scrPos);
-				onScreen->SetLabelPosition(FVector2D(scrPos.X, scrPos.Y - 100));
+			// Distance based label collapsing to reduce clutter.
+			APlayerController* PlayerController = GetWorld()->GetFirstPlayerController();
+			if (PlayerController && PlayerController->PlayerCameraManager)
+			{
+				FVector camLoc = PlayerController->PlayerCameraManager->GetCameraLocation();
+
+				auto dist = UKismetMathLibrary::Vector_Distance(GetActorLocation(), camLoc);
+				if ((dist >= labelCollapseDistance) == onScreen->IsLabelShown())
+					onScreen->ToggleShowLabel(!onScreen->IsLabelShown());
 			}
 		}
-		else
-			onScreen->SetVisibility(ESlateVisibility::Hidden);
-
-		APlayerController* PlayerController = GetWorld()->GetFirstPlayerController();
-		if (!PlayerController || !PlayerController->PlayerCameraManager)
-			return;
-		FVector camLoc = PlayerController->PlayerCameraManager.Get()->GetCameraLocation();
-		auto dist = UKismetMathLibrary::Vector_Distance(GetActorLocation(), camLoc);
-		if (Is2DMode() && (dist >= labelCollapseDistance) == onScreen->IsLabelShown())
-			onScreen->ToggleShowLabel(!onScreen->IsLabelShown());
 	}
 }
 

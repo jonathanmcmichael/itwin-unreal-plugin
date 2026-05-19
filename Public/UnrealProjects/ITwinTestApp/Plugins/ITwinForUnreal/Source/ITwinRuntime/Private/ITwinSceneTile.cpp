@@ -326,7 +326,7 @@ void FITwinSceneTile::ForEachElementFeatures(
 }
 
 FITwinMaterialFeaturesInTile const* FITwinSceneTile::FindMaterialFeaturesConstSLOW(
-	ITwinMaterialID const& MaterialID) const
+	ITwinRenderMaterialElementID const& MaterialID) const
 {
 	auto& ByID = MaterialsFeatures.get<IndexByMaterialID>();
 	auto const Found = ByID.find(MaterialID);
@@ -337,7 +337,7 @@ FITwinMaterialFeaturesInTile const* FITwinSceneTile::FindMaterialFeaturesConstSL
 	else return nullptr;
 }
 
-FITwinMaterialFeaturesInTile* FITwinSceneTile::FindMaterialFeaturesSLOW(ITwinMaterialID const& MatID)
+FITwinMaterialFeaturesInTile* FITwinSceneTile::FindMaterialFeaturesSLOW(ITwinRenderMaterialElementID const& MatID)
 {
 	auto const* Found = FindMaterialFeaturesConstSLOW(MatID);
 	if (Found)
@@ -350,7 +350,7 @@ FITwinMaterialFeaturesInTile* FITwinSceneTile::FindMaterialFeaturesSLOW(ITwinMat
 		return nullptr;
 }
 
-FITwinMaterialFeaturesInTile& FITwinSceneTile::MaterialFeaturesSLOW(ITwinMaterialID const& MatID)
+FITwinMaterialFeaturesInTile& FITwinSceneTile::MaterialFeaturesSLOW(ITwinRenderMaterialElementID const& MatID)
 {
 	// See comment about const_cast above
 	return const_cast<FITwinMaterialFeaturesInTile&>(
@@ -663,13 +663,33 @@ public:
 		return ITwin::COLOR_SELECTED_ELEMENT_BGRA;
 	}
 
-	inline ITwinElementID const& GetSelectedID() const
+	inline bool HasAnySelected() const
 	{
-		return SceneTile.SelectedElement;
+		return !SceneTile.SelectedElements.empty();
+	}
+	inline bool IsSelected(ITwinElementID const& ID) const
+	{
+		return SceneTile.SelectedElements.contains(ID);
+	}
+
+	inline ITwinElementID GetSelectedID() const
+	{
+		return SceneTile.SelectedElements.empty() ? ITwin::NOT_ELEMENT : *SceneTile.SelectedElements.begin();
 	}
 	void SetSelectedID(ITwinElementID const& NewID) const
 	{
-		SceneTile.SelectedElement = NewID;
+		SceneTile.SelectedElements.clear();
+		if (NewID != ITwin::NOT_ELEMENT)
+			SceneTile.SelectedElements.insert(NewID);
+	}
+	void AddSelectedID(ITwinElementID const& NewID) const
+	{
+		if (NewID != ITwin::NOT_ELEMENT)
+			SceneTile.SelectedElements.insert(NewID);
+	}
+	void ClearSelection() const
+	{
+		SceneTile.SelectedElements.clear();
 	}
 
 	inline FITwinElementFeaturesInTile* FindSelectableFeaturesSLOW(ITwinElementID const& EltID) const
@@ -696,30 +716,30 @@ private:
 class FITwinSceneTile::MaterialSelectionHelper
 {
 public:
-	using SelectableID = ITwinMaterialID;
+	using SelectableID = ITwinRenderMaterialElementID;
 	using SelectableFeaturesInTile = FITwinMaterialFeaturesInTile;
 
 	MaterialSelectionHelper(FITwinSceneTile& InSceneTile)
 		: SceneTile(InSceneTile)
 	{}
 
-	inline static constexpr ITwinMaterialID NoneSelected() { return ITwin::NOT_MATERIAL; }
+	inline static constexpr ITwinRenderMaterialElementID NoneSelected() { return ITwin::NOT_IMODEL_MATERIAL; }
 
 	inline static const std::array<uint8, 4>& GetSelectedItemColor()
 	{
 		return ITwin::COLOR_SELECTED_MATERIAL_BGRA;
 	}
 
-	inline ITwinMaterialID const& GetSelectedID() const
+	inline ITwinRenderMaterialElementID GetSelectedID() const
 	{
-		return SceneTile.SelectedMaterial;
+		return ITwinRenderMaterialElementID{ SceneTile.SelectedMaterial.getValue() };
 	}
-	void SetSelectedID(ITwinMaterialID const& NewID) const
+	void SetSelectedID(ITwinRenderMaterialElementID const& NewID) const
 	{
-		SceneTile.SelectedMaterial = NewID;
+		SceneTile.SelectedMaterial = ITwinMaterialID{ NewID.getValue() };
 	}
 
-	inline FITwinMaterialFeaturesInTile* FindSelectableFeaturesSLOW(ITwinMaterialID const& MatID) const
+	inline FITwinMaterialFeaturesInTile* FindSelectableFeaturesSLOW(ITwinRenderMaterialElementID const& MatID) const
 	{
 		return SceneTile.FindMaterialFeaturesSLOW(MatID);
 	}
@@ -750,19 +770,34 @@ void FITwinSceneTile::TResetSelection(SelectableHelper const& Helper, FTextureNe
 	if (Helper.GetSelectedID() == SelectableHelper::NoneSelected())
 		return;
 	check(SelectingAndHiding);
-	auto* FeaturesToDeSelect = Helper.FindSelectableFeaturesSLOW(Helper.GetSelectedID());
-	if (ensure(FeaturesToDeSelect != nullptr))
+	auto const DeselectOne = [this, &TextureNeeds](auto const& ID, auto const& InHelper)
 	{
-		SelectingAndHiding->SetPixelsExceptAlpha(FeaturesToDeSelect->Features,
-			ITwin::COLOR_UNSELECT_ELEMENT_BGRA);
-		TextureNeeds.bWasChanged = true;
+		auto* Features = InHelper.FindSelectableFeaturesSLOW(ID);
+		if (Features != nullptr)
+		{
+			SelectingAndHiding->SetPixelsExceptAlpha(Features->Features,
+				ITwin::COLOR_UNSELECT_ELEMENT_BGRA);
+			TextureNeeds.bWasChanged = true;
+		}
+	};
+	if constexpr (std::is_same_v<SelectableHelper, ElementSelectionHelper>)
+	{
+		// Multi-selection: deselect all selected elements
+		for (auto const& SelID : SelectedElements)
+			DeselectOne(SelID, Helper);
+		Helper.ClearSelection();
 	}
-	Helper.SetSelectedID(SelectableHelper::NoneSelected());
+	else
+	{
+		// Single-selection (e.g. material)
+		DeselectOne(Helper.GetSelectedID(), Helper);
+		Helper.SetSelectedID(SelectableHelper::NoneSelected());
+	}
 }
 
 void FITwinSceneTile::ResetSelection(FTextureNeeds& TextureNeeds)
 {
-	if (SelectedElement != ITwin::NOT_ELEMENT)
+	if (!SelectedElements.empty())
 	{
 		ElementSelectionHelper EltSelectionHelper(*this);
 		TResetSelection(EltSelectionHelper, TextureNeeds);
@@ -816,7 +851,10 @@ bool FITwinSceneTile::TPickSelectable(SelectableHelper const& PickHelper, Select
 	{
 		ensure(false); // should not happen
 		SelectingAndHiding.reset(); // let's hope it doesn't crash everything...
-		PickHelper.SetSelectedID(SelectableHelper::NoneSelected());
+		if constexpr (std::is_same_v<SelectableHelper, ElementSelectionHelper>)
+			PickHelper.ClearSelection();
+		else
+			PickHelper.SetSelectedID(SelectableHelper::NoneSelected());
 		PickHelper.ForEachFeaturesSelectionTexFlag([](FITwinPropertyTextureFlag& SelectingAndHidingTexFlag)
 			{ SelectingAndHidingTexFlag.Invalidate(); });
 	}
@@ -876,7 +914,10 @@ bool FITwinSceneTile::TPickSelectable(SelectableHelper const& PickHelper, Select
 		{
 			CreateAndSetSelectingAndHiding(*FeaturesToSelect, TextureNeeds,
 				SelectableHelper::GetSelectedItemColor(), /*bColorOrAlpha: color only*/true);
-			PickHelper.SetSelectedID(InElemID);
+			if constexpr (std::is_same_v<SelectableHelper, ElementSelectionHelper>)
+				PickHelper.AddSelectedID(InElemID);
+			else
+				PickHelper.SetSelectedID(InElemID);
 		}
 		return true;
 	}
@@ -893,7 +934,27 @@ bool FITwinSceneTile::PickElement(ITwinElementID const& InElemID, FTextureNeeds&
 	return TPickSelectable(EltSelectionHelper, InElemID, TextureNeeds, Opts);
 }
 
-bool FITwinSceneTile::PickMaterial(ITwinMaterialID const& InMaterialID, FTextureNeeds& TextureNeeds,
+void FITwinSceneTile::DeselectElements(std::unordered_set<ITwinElementID> const& InElemIDs,
+									   FTextureNeeds& TextureNeeds)
+{
+	if (SelectedElements.empty() || !SelectingAndHiding)
+		return;
+	for (auto const& ElemID : InElemIDs)
+	{
+		if (!SelectedElements.contains(ElemID))
+			continue;
+		auto* Features = FindElementFeaturesSLOW(ElemID);
+		if (Features != nullptr && !Features->Features.empty())
+		{
+			SelectingAndHiding->SetPixelsExceptAlpha(Features->Features,
+				ITwin::COLOR_UNSELECT_ELEMENT_BGRA);
+			TextureNeeds.bWasChanged = true;
+		}
+		SelectedElements.erase(ElemID);
+	}
+}
+
+bool FITwinSceneTile::PickMaterial(ITwinRenderMaterialElementID const& InMaterialID, FTextureNeeds& TextureNeeds,
 								   FPickingOptions const Opts)
 {
 	MaterialSelectionHelper MatSelectionHelper(*this);
@@ -908,7 +969,7 @@ void FITwinSceneTile::THideIDs(std::unordered_set<IDType>& CurrentHiddenItems,
 		std::function<void(FeatureType*)> HideFeatures,
 		FITwinSceneTile::FTextureNeeds& TextureNeeds,
 		FShowHideOptions Opts,
-		std::optional<IDType> SelectedID /*= std::nullopt*/)
+		std::unordered_set<IDType> const* SelectedIDs /*= nullptr*/)
 {
 	// Update hidden elements in current saved view
 	for (auto it = CurrentHiddenItems.begin(); it != CurrentHiddenItems.end();)
@@ -937,7 +998,7 @@ void FITwinSceneTile::THideIDs(std::unordered_set<IDType>& CurrentHiddenItems,
 		CurrentHiddenItems.insert(InID);
 
 		// 1. Deselect element to be hidden if any.
-		if (SelectedID && *SelectedID == InID && !Opts.SkipResetSelection())
+		if (SelectedIDs && SelectedIDs->contains(InID) && !Opts.SkipResetSelection())
 		{
 			ResetSelection(TextureNeeds);
 		}
@@ -974,7 +1035,7 @@ void FITwinSceneTile::HideElements(std::unordered_set<ITwinElementID> const& InE
 		[this, &TextureNeeds](FITwinElementFeaturesInTile* f) {
 			CreateAndSetSelectingAndHiding(*f, TextureNeeds, ITwin::COLOR_HIDDEN_ELEMENT_BGRA, false);
 		},
-		TextureNeeds, Opts, SelectedElement);
+		TextureNeeds, Opts, &SelectedElements);
 }
 
 void FITwinSceneTile::ShowElements(std::unordered_set<ITwinElementID> const& InElemIDs,
@@ -1199,7 +1260,7 @@ FString FITwinSceneTile::ToString() const
 		(HighlightsAndOpacities && bNeed4DHighlightsOpaTextureSetupInMaterials) ? 1 : 0,
 		(CuttingPlanes && bNeed4DCuttingPlanesTextureSetupInMaterials) ? 1 : 0,
 		(SelectingAndHiding && bNeedSelectingAndHidingTextureSetupInMaterials) ? 1 : 0,
-		(ITwin::NOT_ELEMENT == SelectedElement) ? TEXT("no") : (*ITwin::ToString(ITwin::NOT_ELEMENT)),
+		(SelectedElements.empty()) ? TEXT("no") : (*FString::Printf(TEXT("%llu"), SelectedElements.size())),
 		CurrentSavedViewHiddenElements.size(), CurrentConstructionHiddenElements.size()
 	);
 }

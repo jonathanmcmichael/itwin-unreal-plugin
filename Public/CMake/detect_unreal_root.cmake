@@ -54,7 +54,7 @@ set(BE_TINYXML2_VERSION_STRING_OFFICIAL_BASED_ON "9.0.0")
 # Note: if the folder has already been registered, the build hash it is associated with is NOT updated
 # when calling UnrealVersionSelector.exe in rsync_be_unreal again when 'incrementing' the build hash...
 set(BE_CURRENT_BE_UE_VERSION "A5DAEB5B-4462-EC2C-0618-E5A4B687C453")
-set(BE_OPENSSL_VERSION_STRING_BEUE "1.1.1zd")
+set(BE_OPENSSL_VERSION_STRING_BEUE "1.1.1zg")
 set(BE_TINYXML2_VERSION_STRING_BEUE "9.0.0")
 # List all previous versions here separated by semi-colons, in reverse chronological order... :-o
 # Was used for when we just switched version (for a source build), so it is not yet registered...

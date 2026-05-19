@@ -87,6 +87,8 @@ namespace Be
 			return localF();
 		}
 
+		[[nodiscard]] bool isClean() const { return !(bool)x; }
+
 	private:
 		void AutoCleanup()
 		{

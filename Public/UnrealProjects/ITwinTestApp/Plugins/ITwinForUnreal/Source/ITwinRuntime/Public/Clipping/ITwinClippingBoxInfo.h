@@ -19,6 +19,8 @@
 
 #include <ITwinClippingBoxInfo.generated.h>
 
+class AITwinSplineHelper;
+class AITwinSplineTool;
 
 USTRUCT()
 struct FITwinClippingBoxInfo : public FITwinClippingInfoBase
@@ -27,6 +29,7 @@ struct FITwinClippingBoxInfo : public FITwinClippingInfoBase
 
 	virtual bool GetInvertEffect() const override;
 	virtual void DeactivatePrimitiveInExcluder(UITwinTileExcluderBase& Excluder) const override;
+	virtual void SetEdgeVisibility(bool bVisible) override;
 
 	void UpdateBoxProperties(glm::dmat3x3 const& BoxMatrix, glm::dvec3 const& BoxTranslation);
 
@@ -39,12 +42,22 @@ struct FITwinClippingBoxInfo : public FITwinClippingInfoBase
 		bool bInvertEffect = false;
 	};
 
+	void CreateEdgeSplines(AITwinSplineTool* SplineTool);
+	void UpdateEdgeSplinesTransform(FTransform const& InstanceTransform);
+	void SetEdgeSplinesSelected(bool bSelected);
+	void SetEdgeSplinesVisibility(bool bVisible);
+
+	void BeforeDestroy();
+
 protected:
 	virtual void DoSetInvertEffect(bool bInvert);
 
 
 	// Will be shared by all tile excluders including this box.
 	std::shared_ptr<FBoxProperties> BoxProperties = std::make_shared<FBoxProperties>();
+
+	// Helper splines to visualize edges behind other objects.
+	TArray<TObjectPtr<AITwinSplineHelper>> BoxEdgeSplines;
 
 	friend class AITwinClippingTool;
 };

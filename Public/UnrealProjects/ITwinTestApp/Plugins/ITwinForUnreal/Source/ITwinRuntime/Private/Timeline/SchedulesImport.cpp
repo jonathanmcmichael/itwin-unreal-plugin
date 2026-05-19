@@ -87,7 +87,9 @@ private:
 	const size_t MaxElementIDsFilterSize;
 	bool bHasFinishedPrefetching = false;
 	bool bHasFetchingErrors = false;
+	bool bHasFailedListingSchedules = false;
 	FString FirstFetchingError;
+	EHttpResponseCodes::Type FirstFetchingErrorCode = EHttpResponseCodes::Ok;
 	std::pair<int, int> LastDisplayedQueueSizeIncrements = { -1, -1 };
 	std::pair<int, int> LastRoundedQueueSize = { -1, -1 };
 	double LastCheckTotalBindings = 0.;
@@ -538,10 +540,6 @@ void FITwinSchedulesImport::FImpl::RequestSchedules(ReusableJsonQueries::FStacki
 			S4D_LOG(TEXT("Received %d schedules for iTwin %s"), (int)NewScheds.Num(), *ITwinId);
 			if (0 == NewScheds.Num())
 			{
-				if (bUseAPIM || EITwinSchedulesGeneration::Unknown != SchedulesGeneration)
-				{
-					SetScheduleTimeRangeIsKnown();
-				}
 				return;
 			}
 			FLock Lock(Mutex);
@@ -606,10 +604,6 @@ void FITwinSchedulesImport::FImpl::RequestSchedules(ReusableJsonQueries::FStacki
 					OnFoundScheduleForTargetedIModel(Found->Id, Found->Name, {}, Found->Generation);
 				}
 				Queries->StatsResetActiveTime();
-				if (!Schedule && (bUseAPIM || EITwinSchedulesGeneration::Unknown != SchedulesGeneration))
-				{
-					SetScheduleTimeRangeIsKnown(); // time range is "known": it is empty
-				}
 				if (Schedule)
 				{
 					AutoRequestScheduleItems(Token, &Lock);
@@ -2082,8 +2076,15 @@ void FITwinSchedulesImport::FImpl::ResetConnection(FString const& ITwinAkaProjec
 					&StrError, bWillRetry))
 				{
 					if (!bHasFetchingErrors)
+					{
+						FirstFetchingErrorCode = Response ? EHttpResponseCodes::Type(Response->GetResponseCode())
+							: EHttpResponseCodes::Unknown;
 						FirstFetchingError = StrError;
-					bHasFetchingErrors = true;
+						bHasFetchingErrors = true;
+						if (!Schedule)
+							bHasFailedListingSchedules = true;
+					}
+					return false;
 				}
 				return true;
 			},
@@ -2121,6 +2122,8 @@ void FITwinSchedulesImport::FImpl::ResetConnection(FString const& ITwinAkaProjec
 			if (!Schedule)
 			{
 				SetScheduleTimeRangeIsKnown();
+				if (Owner->Owner)
+					Owner->Owner->OnScheduleQueryingStatusChanged.Broadcast(false);
 			}
 			else
 			{
@@ -2339,6 +2342,26 @@ FString FITwinSchedulesImport::FirstFetchingErrorString() const
 	return Impl->FirstFetchingError;
 }
 
+EHttpResponseCodes::Type FITwinSchedulesImport::FirstFetchingErrorCode() const
+{
+	return Impl->FirstFetchingErrorCode;
+}
+
+size_t FITwinSchedulesImport::FetchedFromRemote() const
+{
+	return Impl->Queries ? Impl->Queries->FetchedFromRemote() : 0;
+}
+
+size_t FITwinSchedulesImport::FetchedFromCache() const
+{
+	return Impl->Queries ? Impl->Queries->FetchedFromCache() : 0;
+}
+
+bool FITwinSchedulesImport::HasSchedulesListingFailed() const
+{
+	return Impl->bHasFailedListingSchedules;
+}
+
 void FITwinSchedulesImport::ResetConnection(FString const& ITwinAkaProjectAkaCtextId, FString const& IModelId,
 											FString const& InChangesetId)
 {
@@ -2487,8 +2510,9 @@ FString FITwinSchedule::ToString() const
 {
 	return FString::Printf(TEXT("%s Schedule %s (\"%s\"), with:\n" \
 		"\t%llu bindings, %llu tasks, %llu groups, %llu appearance profiles,\n" \
-		"\t%llu transfo. assignments (%llu static, %llu along %llu 3D paths).\n" \
-		"\t%llu unique Elements or Groups are bound to a task."),
+		"\t%llu transfo. assignments (%llu static, %llu along %llu 3D paths),\n" \
+		"\t%llu unique resources (single Elements or groups of them) are bound to a task,\n" \
+		"\t%llu unique Elements are bound to a task."),
 		(EITwinSchedulesGeneration::Unknown == Generation) ? TEXT("<Gen?>")
 			: ((EITwinSchedulesGeneration::Legacy == Generation) ? TEXT("Legacy") : TEXT("NextGen")),
 		*Id, *Name, AnimationBindings.size(), Tasks.size(), NumGroups(), AppearanceProfiles.size(),
@@ -2505,6 +2529,43 @@ FString FITwinSchedule::ToString() const
 			for (auto&& Binding : AnimationBindings)
 				Bound.insert(Binding.AnimatedEntities);//could explore the variant and recurse into groups...
 			return Bound.size();
+		}()
+		, [this]()
+		{
+			// Only one sort will be actually used, ElemIDs or FedGUIDs
+			std::unordered_set<ITwinElementID> BoundIDs;
+			std::unordered_set<FGuid> BoundGUIDs;
+			for (auto&& Binding : AnimationBindings)
+			{
+				std::visit([&](auto&& Ident)
+					{
+						using T = std::decay_t<decltype(Ident)>;
+						if constexpr (std::is_same_v<T, ITwinElementID>)
+						{
+							BoundIDs.insert(Ident);
+						}
+						else if constexpr (std::is_same_v<T, FGuid>)
+						{
+							BoundGUIDs.insert(Ident);
+						}
+						else if constexpr (std::is_same_v<T, FString>)
+						{
+							if (EITwinSchedulesGeneration::Legacy == Generation)
+							{
+								for (auto&& GroupElem : ElemIDGroups[Binding.GroupInVec])
+									BoundIDs.insert(GroupElem);
+							}
+							else
+							{
+								for (auto&& GroupElem : FedGUIDGroups[Binding.GroupInVec])
+									BoundGUIDs.insert(GroupElem);
+							}
+						}
+						else static_assert(always_false_v<T>, "non-exhaustive visitor!");
+					},
+					Binding.AnimatedEntities);
+			}
+			return BoundIDs.size() + BoundGUIDs.size();
 		}()
 		// Map value no longer set to InitialVersion, see comments about AnimBindingsFullyKnownForElem
 		//std::count_if(AnimBindingsFullyKnownForElem.begin(), AnimBindingsFullyKnownForElem.end(),

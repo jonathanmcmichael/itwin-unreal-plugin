@@ -85,6 +85,8 @@ struct AITwinSplineHelper::FImpl
 	EITwinSplineUsage Usage = EITwinSplineUsage::Undefined;
 	AdvViz::SDK::ISplinePtr Spline;
 	double ScaleFactor = 2.0;
+	std::optional<double> FixedSplineScale;
+	bool bHasComputedScale = false;
 
 	struct FTracingData
 	{
@@ -132,7 +134,24 @@ struct AITwinSplineHelper::FImpl
 	void DuplicatePoint(int32 pointIndex);
 	void DuplicatePoint(int32& pointIndex, FVector& newWorldPosition);
 	int32 InsertPointAt(const int32 PointIndex, FVector const& NewWorldPosition);
+
 	void ScaleMeshComponentsForCurrentPOV();
+	void ComputeSplineScaleFromWidth(float Width);
+	inline bool AutoScalePoints() const
+	{
+		return true;
+	}
+	inline bool AutoScaleSplineRibbon() const
+	{
+		return Owner.GetUsage() != EITwinSplineUsage::AnimPathTraffic
+			&& Owner.GetUsage() != EITwinSplineUsage::AnimPathCrowd;
+	}
+
+	//! Returns true if the spline is used as an helper for edge display (introduced for cutout cubes).
+	inline bool IsEdgeDisplayHelper() const { return (Owner.GetUsage() == EITwinSplineUsage::EdgeDisplayHelper); }
+	inline double GetRibbonScale() const;
+	FVector2D GetRibbonScale2D() const;
+
 	void SetClosedLoop(bool bInClosedLoop, bool bUpdateSpline);
 	bool LoopIndices() const;
 
@@ -442,8 +461,15 @@ void AITwinSplineHelper::FImpl::AddAllMeshComponents()
 {
 	if (!Owner.SplineMesh)
 	{
+		// For edge display mode, use a cylinder with rounded caps ("EdgeMesh") instead of a ribbon
+		// ("SplineMesh") to make edges independent from the view point.
+		FString const SplineMeshAssetName = IsEdgeDisplayHelper() ? TEXT("EdgeMesh") : TEXT("SplineMesh");
 		Owner.SplineMesh = LoadObject<UStaticMesh>(
-			nullptr, TEXT("/ITwinForUnreal/ITwin/Meshes/SplineMesh.SplineMesh"), nullptr, LOAD_None, nullptr);
+			nullptr,
+			*FString::Printf(TEXT("/ITwinForUnreal/ITwin/Meshes/%s.%s"), *SplineMeshAssetName, *SplineMeshAssetName),
+			nullptr,
+			LOAD_None,
+			nullptr);
 	}
 
 	if (!Owner.PointMesh)
@@ -458,6 +484,12 @@ void AITwinSplineHelper::FImpl::AddAllMeshComponents()
 		AddMeshComponentsForPoint(i);
 	}
 	CHECK_NUMBER_OF_SPLINE_MESH_COMPONENTS();
+
+	if (IsEdgeDisplayHelper())
+	{
+		// Edge only mode.
+		Owner.SetPointsHiddenInGame(true);
+	}
 }
 
 void AITwinSplineHelper::FImpl::RecreateAllMeshComponents()
@@ -493,6 +525,30 @@ bool AITwinSplineHelper::FImpl::CheckSplineMeshComponents() const
 	}
 }
 
+inline double AITwinSplineHelper::FImpl::GetRibbonScale() const
+{
+	if (FixedSplineScale.has_value())
+	{
+		return *FixedSplineScale;
+	}
+	else
+	{
+		return this->ScaleFactor * RIBBON_SCALE;
+	}
+}
+
+FVector2D AITwinSplineHelper::FImpl::GetRibbonScale2D() const
+{
+	const double RibbonScale = GetRibbonScale();
+	// For edge display mode, the geometry is a cylinder (with rounded caps), so the scale should be applied
+	// on both axis. For other modes, the geometry is a ribbon, so the scale should only be applied on the
+	// width axis.
+	return FVector2D(
+		RibbonScale,
+		IsEdgeDisplayHelper() ? RibbonScale : 1.0
+	);
+}
+
 void AITwinSplineHelper::FImpl::AddSplineMeshComponentsForPoint(int32 pointIndex)
 {
 	if (!ensure(pointIndex >= 0 && pointIndex <= Owner.SplineMeshComponents.Num()))
@@ -506,7 +562,7 @@ void AITwinSplineHelper::FImpl::AddSplineMeshComponentsForPoint(int32 pointIndex
 	InitMeshComponent(splineMeshComp, Owner.SplineMesh.Get());
 
 	splineMeshComp->SetForwardAxis(ESplineMeshAxis::X, false);
-	const FVector2D SplineScale(ScaleFactor * FImpl::RIBBON_SCALE, 1.0);
+	const FVector2D SplineScale(GetRibbonScale2D());
 	splineMeshComp->SetStartScale(SplineScale, false);
 	splineMeshComp->SetEndScale(SplineScale, false);
 
@@ -992,7 +1048,7 @@ void AITwinSplineHelper::FImpl::ScaleMeshComponentsForCurrentPOV()
 			MinScreenPercentage = std::min(MinScreenPercentage, EvalScreenPercentage);
 		}
 	}
-	double const DesiredPercentage = 0.01;
+	double const DesiredPercentage = (IsEdgeDisplayHelper() ? 0.25 : 1.0) * 0.01;
 	double const dMult = DesiredPercentage / MinScreenPercentage;
 	if (std::fabs(1.0 - dMult) < 0.05)
 		return;
@@ -1000,16 +1056,44 @@ void AITwinSplineHelper::FImpl::ScaleMeshComponentsForCurrentPOV()
 	ScaleFactor *= dMult;
 
 	const FVector NewScale3D = FVector(ScaleFactor);
-	const FVector2D NewSplineScale = FVector2D(ScaleFactor * FImpl::RIBBON_SCALE, 1.);
+	const FVector2D NewSplineScale = GetRibbonScale2D();
 
 	// Scale all components to reach the desired size (approximatively).
-	for (auto const& PointMeshComp : Owner.PointMeshComponents)
+	if (AutoScalePoints())
 	{
-		if (PointMeshComp)
+		for (auto const& PointMeshComp : Owner.PointMeshComponents)
 		{
-			PointMeshComp->SetRelativeScale3D(NewScale3D);
+			if (PointMeshComp)
+			{
+				PointMeshComp->SetRelativeScale3D(NewScale3D);
+			}
 		}
 	}
+	if (AutoScaleSplineRibbon())
+	{
+		for (auto const& SplineMeshComp : Owner.SplineMeshComponents)
+		{
+			if (SplineMeshComp)
+			{
+				SplineMeshComp->SetStartScale(NewSplineScale, true);
+				SplineMeshComp->SetEndScale(NewSplineScale, true);
+			}
+		}
+	}
+}
+
+void AITwinSplineHelper::FImpl::ComputeSplineScaleFromWidth(float Width)
+{
+	if (Owner.SplineMeshComponents.Num() == 0)
+		return;
+
+	FVector Origin;
+	FVector BoxExtent;
+	Owner.SplineMeshComponents[0]->GetLocalBounds(Origin, BoxExtent);
+	auto MeshWidth = BoxExtent.Y * 2.0f; // Get the width of the mesh in Unreal units
+	FixedSplineScale = Width / MeshWidth;
+
+	const FVector2D NewSplineScale = FVector2D(GetRibbonScale(), 1.);
 	for (auto const& SplineMeshComp : Owner.SplineMeshComponents)
 	{
 		if (SplineMeshComp)
@@ -1018,6 +1102,7 @@ void AITwinSplineHelper::FImpl::ScaleMeshComponentsForCurrentPOV()
 			SplineMeshComp->SetEndScale(NewSplineScale, true);
 		}
 	}
+	bHasComputedScale = true;
 }
 
 void AITwinSplineHelper::FImpl::SetClosedLoop(bool bInClosedLoop, bool bUpdateSpline)
@@ -1054,7 +1139,7 @@ void AITwinSplineHelper::FImpl::SetClosedLoop(bool bInClosedLoop, bool bUpdateSp
 
 bool AITwinSplineHelper::FImpl::LoopIndices() const
 {
-	return Owner.SplineComponent->IsClosedLoop(); // Usage == EITwinSplineUsage::AnimPath
+	return Owner.SplineComponent->IsClosedLoop();
 }
 
 
@@ -1280,7 +1365,8 @@ AITwinSplineHelper::AITwinSplineHelper()
 	{
 		this->SplineComponent = CreateDefaultSubobject<USplineComponent>(
 			FName(*UEnum::GetDisplayValueAsText(SplineUsage).ToString()));
-		this->SplineComponent->SetClosedLoop(SplineUsage == EITwinSplineUsage::PopulationZone);
+		this->SplineComponent->SetClosedLoop(SplineUsage == EITwinSplineUsage::PopulationZone
+			|| SplineUsage == EITwinSplineUsage::EdgeDisplayHelper);
 		this->SplineComponent->SetMobility(EComponentMobility::Movable);
 		// Create just one point located at reference position
 		this->SplineComponent->SetSplinePoints(
@@ -1620,19 +1706,40 @@ int32 AITwinSplineHelper::InsertPointAt(const int32 PointIndex, FVector const& N
 	return Impl->InsertPointAt(PointIndex, NewWorldPosition);
 }
 
+void AITwinSplineHelper::SetPointsHiddenInGame(bool bNewHidden) const
+{
+	for (auto const& PointMeshComp : PointMeshComponents)
+	{
+		if (PointMeshComp)
+		{
+			PointMeshComp->SetHiddenInGame(bNewHidden);
+		}
+	}
+}
+
 void AITwinSplineHelper::SetActorHiddenInGame(bool bNewHidden)
 {
+	if (!bNewHidden && !Impl->bHasComputedScale)
+	{
+		// Avoid abruptly rescaling the spline meshes on next tick when the spline becomes visible, by
+		// computing the appropriate scale now.
+		Impl->ScaleMeshComponentsForCurrentPOV();
+	}
 	Super::SetActorHiddenInGame(bNewHidden);
 }
 
 void AITwinSplineHelper::Tick(float /*DeltaTime*/)
 {
-	if (IsHidden())
+	if (IsHidden() && Impl->bHasComputedScale)
 	{
 		return;
 	}
-
 	Impl->ScaleMeshComponentsForCurrentPOV();
+}
+
+void AITwinSplineHelper::SetFixedSplineWidth(float Width)
+{
+	Impl->ComputeSplineScaleFromWidth(Width);
 }
 
 namespace ITwin

@@ -111,7 +111,7 @@ public:
 	inline FHitResult DoPickingAtMousePosition(const TArray<TWeakObjectPtr<const AActor>>& ExcludedActors) const;
 	bool ActionOnTick(float DeltaTime);
 
-	AITwinSplineHelper* AddSpline(FVector const& Position);
+	AITwinSplineHelper* AddSpline(FVector const& Position, TArray<FVector> const& CustomSplinePoints = {});
 
 	bool LoadSpline(AdvViz::SDK::ISplinePtr const& Spline);
 
@@ -156,7 +156,9 @@ private:
 	void ForEachTargetTileset(TFunc const& Func) const;
 
 	AITwinSplineHelper* CreateSpline(EITwinSplineUsage SplineUsage,
-		std::optional<FVector> const& PositionOpt, AdvViz::SDK::ISplinePtr const& LoadedSpline);
+		std::optional<FVector> const& PositionOpt,
+		AdvViz::SDK::ISplinePtr const& LoadedSpline,
+		TArray<FVector> const& CustomSplinePoints = {});
 
 	void RemoveCartographicPolygon(ACesiumCartographicPolygon* Polygon);
 };
@@ -587,6 +589,12 @@ bool AITwinSplineTool::FImpl::DoMouseClickAction()
 				AITwinSplineHelper* NewSplineHelper = CreateSpline(ToolUsage, hitResult.ImpactPoint, {});
 				SetSelectedSpline(NewSplineHelper);
 
+				if (owner.IsUsedForPathAnim())
+				{
+					NewSplineHelper->SetTangentMode(EITwinTangentMode::Smooth);
+					NewSplineHelper->SetClosedLoop(false);
+				}
+
 				// Select the last point of the created spline
 				if (NewSplineHelper)
 				{
@@ -624,9 +632,19 @@ bool AITwinSplineTool::FImpl::DoMouseClickAction()
 	}
 	else
 	{
+		AITwinSplineHelper* NewlySelectedSpline = nullptr;
 		if (hitActor && hitActor->IsA(AITwinSplineHelper::StaticClass()))
 		{
-			AITwinSplineHelper* splineHelper = Cast<AITwinSplineHelper>(hitActor);
+			NewlySelectedSpline = Cast<AITwinSplineHelper>(hitActor);
+			if (NewlySelectedSpline && NewlySelectedSpline->GetUsage() != this->GetUsage())
+			{
+				NewlySelectedSpline = nullptr;
+			}
+		}
+
+		if (NewlySelectedSpline)
+		{
+			AITwinSplineHelper* const splineHelper = NewlySelectedSpline;
 
 			// AzDev#1967146: point selection/insertion is now only possible for the selected polygon.
 			const bool bAllowPointSelectionOrInsertion = (splineHelper == GetSelectedSpline());
@@ -939,7 +957,8 @@ namespace
 			EITwinSplineToolMode InToolMode,
 			std::optional<FVector> const& InPositionOpt,
 			AdvViz::SDK::ISplinePtr const& InLoadedSpline,
-			EITwinSplineUsage const InUsage);
+			EITwinSplineUsage const InUsage,
+			TArray<FVector> const& InSplinePoints = {});
 
 		virtual USplineComponent* GetSplineComponent(UWorld& World,
 			ACesiumCartographicPolygon*& OutCartographicPolygon) = 0;
@@ -952,6 +971,7 @@ namespace
 		std::optional<FVector> const PositionOpt;
 		AdvViz::SDK::ISplinePtr const LoadedSpline;
 		EITwinSplineUsage const SplineUsage;
+		TArray<FVector> const CustomSplinePoints;
 
 		EITwinTangentMode TangentMode = EITwinTangentMode::Custom;
 	};
@@ -961,12 +981,14 @@ namespace
 		EITwinSplineToolMode InToolMode,
 		std::optional<FVector> const& InPositionOpt,
 		AdvViz::SDK::ISplinePtr const& InLoadedSpline,
-		EITwinSplineUsage const InUsage)
+		EITwinSplineUsage const InUsage,
+		TArray<FVector> const& InSplinePoints /*= {}*/)
 		: Georeference(InGeoreference)
 		, ToolMode(InToolMode)
 		, PositionOpt(InPositionOpt)
 		, LoadedSpline(InLoadedSpline)
 		, SplineUsage(InUsage)
+		, CustomSplinePoints(InSplinePoints)
 	{}
 
 	ISplineHelperMaker::~ISplineHelperMaker()
@@ -1019,6 +1041,10 @@ namespace
 			// Set number of points to 0, it will be synced with the loaded spline later
 			// (The default 1 point "breaks" the sync - see AITwinSplineHelper::Initialize())
 			SplineComp->SetSplinePoints(TArray<FVector>{}, ESplineCoordinateSpace::Local);
+		}
+		if (CustomSplinePoints.Num() > 0)
+		{
+			SplineComp->SetSplinePoints(CustomSplinePoints, ESplineCoordinateSpace::Local);
 		}
 
 		SplineHelper->GlobeAnchor->SetGeoreference(Georeference);
@@ -1238,7 +1264,8 @@ namespace
 			EITwinSplineToolMode InToolMode,
 			std::optional<FVector> const& InPositionOpt,
 			AdvViz::SDK::ISplinePtr const& InLoadedSpline,
-			EITwinSplineUsage const InUsage);
+			EITwinSplineUsage const InUsage,
+			TArray<FVector> const& InSplinePoints = {});
 
 	protected:
 		virtual USplineComponent* GetSplineComponent(UWorld& World,
@@ -1253,11 +1280,17 @@ namespace
 		EITwinSplineToolMode InToolMode,
 		std::optional<FVector> const& InPositionOpt,
 		AdvViz::SDK::ISplinePtr const& InLoadedSpline,
-		EITwinSplineUsage const InUsage)
-		: ISplineHelperMaker(InGeoreference, InToolMode, InPositionOpt, InLoadedSpline, InUsage)
+		EITwinSplineUsage const InUsage,
+		TArray<FVector> const& InSplinePoints /*= {}*/)
+		: ISplineHelperMaker(InGeoreference, InToolMode, InPositionOpt, InLoadedSpline, InUsage, InSplinePoints)
 	{
 		ensureMsgf(SplineUsage != EITwinSplineUsage::MapCutout,
 			TEXT("use FCutoutPolygonMaker for cutout polygon"));
+		if (InUsage == EITwinSplineUsage::EdgeDisplayHelper)
+		{
+			// Edge display mode should of course activate linear tangent mode.
+			this->TangentMode = EITwinTangentMode::Linear;
+		}
 	}
 }
 
@@ -1274,7 +1307,9 @@ void AITwinSplineTool::FImpl::ForEachTargetTileset(TFunc const& Func) const
 }
 
 AITwinSplineHelper* AITwinSplineTool::FImpl::CreateSpline(EITwinSplineUsage SplineUsage,
-	std::optional<FVector> const& PositionOpt, AdvViz::SDK::ISplinePtr const& LoadedSpline)
+	std::optional<FVector> const& PositionOpt,
+	AdvViz::SDK::ISplinePtr const& LoadedSpline,
+	TArray<FVector> const& CustomSplinePoints /*= {}*/)
 {
 	if ((!PositionOpt) == (!LoadedSpline))
 	{
@@ -1324,7 +1359,12 @@ AITwinSplineHelper* AITwinSplineTool::FImpl::CreateSpline(EITwinSplineUsage Spli
 		// Generic spline creation.
 		auto&& Geoloc = FITwinGeolocation::Get(*World);
 		SplineMaker = std::make_unique<FGenericSplineHelperMaker>(
-			Geoloc->GeoReference.Get(), owner.GetMode(), PositionOpt, LoadedSpline, SplineUsage);
+			Geoloc->GeoReference.Get(),
+			owner.GetMode(),
+			PositionOpt,
+			LoadedSpline,
+			SplineUsage,
+			CustomSplinePoints);
 	}
 
 	AITwinSplineHelper* const CreatedSpline = SplineMaker
@@ -1348,9 +1388,10 @@ AITwinSplineHelper* AITwinSplineTool::FImpl::CreateSpline(EITwinSplineUsage Spli
 	return CreatedSpline;
 }
 
-AITwinSplineHelper* AITwinSplineTool::FImpl::AddSpline(FVector const& Position)
+AITwinSplineHelper* AITwinSplineTool::FImpl::AddSpline(FVector const& Position,
+	TArray<FVector> const& CustomSplinePoints /*= {}*/)
 {
-	return CreateSpline(ToolUsage, Position, {});
+	return CreateSpline(ToolUsage, Position, {}, CustomSplinePoints);
 }
 
 bool AITwinSplineTool::FImpl::LoadSpline(const AdvViz::SDK::ISplinePtr& Spline)
@@ -1845,9 +1886,27 @@ bool AITwinSplineTool::IsUsedOnCutoutPrimitiveImpl() const
 	return GetUsage() == EITwinSplineUsage::MapCutout;
 }
 
-AITwinSplineHelper* AITwinSplineTool::AddSpline(FVector const& Position)
+void AITwinSplineTool::SetUsedForPathAnimImpl(bool bForPathAnim)
 {
-	return Impl->AddSpline(Position);
+	if (bForPathAnim)
+	{
+		SetUsage(EITwinSplineUsage::AnimPath);
+	}
+	else if (IsUsedForPathAnim())
+	{
+		SetUsage(EITwinSplineUsage::Undefined);
+	}
+}
+
+bool AITwinSplineTool::IsUsedForPathAnimImpl() const
+{
+	return GetUsage() == EITwinSplineUsage::AnimPath || GetUsage() == EITwinSplineUsage::AnimPathTraffic || GetUsage() == EITwinSplineUsage::AnimPathCrowd;
+}
+
+AITwinSplineHelper* AITwinSplineTool::AddSpline(FVector const& Position,
+	TArray<FVector> const& CustomSplinePoints /*= {}*/)
+{
+	return Impl->AddSpline(Position, CustomSplinePoints);
 }
 
 bool AITwinSplineTool::LoadSpline(const AdvViz::SDK::ISplinePtr& spline,
@@ -2325,6 +2384,66 @@ bool AITwinSplineTool::RestoreItem(IItemBackup const& ItemBackup)
 	}
 	return false;
 }
+
+
+namespace
+{
+	static std::optional<AITwinSplineTool::FAutomaticVisibilityDisabler> AutoVizDisabler;
+
+	class [[nodiscard]] FSplineToolDisabler : public AITwinInteractiveTool::FToolDisabler
+	{
+		using Super = AITwinInteractiveTool::FToolDisabler;
+	public:
+		FSplineToolDisabler(AITwinInteractiveTool* InTool);
+		virtual ~FSplineToolDisabler();
+	private:
+		TArray<TWeakObjectPtr<AITwinSplineHelper>> HiddenSplines;
+	};
+
+	FSplineToolDisabler::FSplineToolDisabler(AITwinInteractiveTool* InTool)
+		: Super(InTool)
+	{
+		if (InTool && InTool->GetWorld())
+		{
+			// Hide all splines.
+			for (TActorIterator<AITwinSplineHelper> SplineIter(InTool->GetWorld()); SplineIter; ++SplineIter)
+			{
+				AITwinSplineHelper* Spline = *SplineIter;
+				if (!Spline->IsHidden())
+				{
+					Spline->SetActorHiddenInGame(true);
+					HiddenSplines.Add(Spline);
+				}
+			}
+		}
+	}
+
+	FSplineToolDisabler::~FSplineToolDisabler()
+	{
+		// Restore hidden splines visibility.
+		for (auto const& SplinePtr : HiddenSplines)
+		{
+			if (SplinePtr.IsValid())
+			{
+				SplinePtr->SetActorHiddenInGame(false);
+			}
+		}
+		if (ensure(AutoVizDisabler.has_value()))
+		{
+			AutoVizDisabler.reset();
+		}
+	}
+}
+
+TSharedPtr<AITwinInteractiveTool::FToolDisabler> AITwinSplineTool::MakeToolDisabler()
+{
+	// Disable automatic visibility toggle: FSplineToolDisabler will hide and restore all splines,
+	// independently of their usage.
+	ensure(!AutoVizDisabler.has_value());
+	AutoVizDisabler.emplace();
+	return MakeShared<FSplineToolDisabler>(this);
+}
+
 
 namespace ITwin
 {

@@ -1,5 +1,5 @@
 {
-	"version": 2,
+	"version": 10,
 
 	"configurePresets": [
 	{
@@ -34,24 +34,32 @@
 		,"generator": "Visual Studio 17 2022"
 		,"binaryDir": "${sourceDir}/../build/${presetName}"
 		,"architecture": "x64"
-		// TODO_GCO: revert the commit containing this: the Debug configuration (for UE from source) was made to use release vcpkg builds because of MFC libraries conflicts
-		// to be investigated better in order to reallow setting CESIUM_VCPKG_RELEASE_ONLY to OFF(?)
-		// Does not work as expected (see Public/Extern/cesium-unreal/extern/vcpkg-overlays/triplets/shared/common.cmake)
-		//,"environment": {
-		//	"CESIUM_VCPKG_RELEASE_ONLY": "ON"
-		//}
+		,"$comment": [
+			" TODO_GCO: ",
+			"   revert the commit containing this: the Debug configuration (for UE from source) was made to use release",
+			"   vcpkg builds because of MFC libraries conflicts - to be investigated better in order to reallow setting",
+			"   CESIUM_VCPKG_RELEASE_ONLY to OFF(?)",
+			" Does not work as expected (see Public/Extern/cesium-unreal/extern/vcpkg-overlays/triplets/shared/common.cmake)",
+			",\"environment\": {",
+			"    \"CESIUM_VCPKG_RELEASE_ONLY\": \"ON\"",
+			"}",
+			"----------------------------------------------------------------------------------------------",
+			" NOTE ON VCPKG_TARGET_TRIPLET below:",
+			"    Should be simply x64-windows (or left unset), but this leads to building gRPC twice",
+			"    (see its portfile, gRPC build needs itself to be built for the host too), which is LONG!",
+			"    Since we never cross-compile, we don't care to have a different value here as in TARGET:",
+			"----------------------------------------------------------------------------------------------",
+			" NOTE ON VCPKG_BUILD_TYPE below:",
+			"    Not preventing vcpkg from building -dbg variants either... :/ ",
+			"    ,\"VCPKG_BUILD_TYPE\": \"Release\""
+		]
 		,"cacheVariables": {
 			"CMAKE_TOOLCHAIN_FILE": "${dollar}<VCPKG_ROOT>/scripts/buildsystems/vcpkg.cmake"
 			,"VCPKG_TARGET_TRIPLET": "x64-windows-unreal-release"
-			// Should be simply x64-windows (or left unset), but this leads to building gRPC twice
-			// (see its portfile, gRPC build needs itself to be built for the host too), which is LONG!
-			// Since we never cross-compile, we don't care to have a different value here as in TARGET:
 			,"VCPKG_HOST_TRIPLET": "x64-windows-unreal-release"
 			,"CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreadedDLL"
 			,"VIZSDK_BUILD_CONTEXT":"Unreal"
 			,"SELECTED_PRESET": "${presetName}"
-			// Not preventing vcpkg from building -dbg variants either... :/
-			//,"VCPKG_BUILD_TYPE": "Release"
 		}
 		,"toolset": { "value": "host=x64,version=14.44.35207" }
 	}

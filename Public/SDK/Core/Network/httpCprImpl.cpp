@@ -143,13 +143,13 @@ namespace AdvViz::SDK::Impl
 		return Response(r.status_code, std::move(r.text));
 	}
 
-	void HttpCpr::DoAsyncPatch(std::function<void(const Response&)> callback, const std::string& url,
+	void HttpCpr::DoAsyncPatch(const std::function<void(Response&)>& callback, const std::string& url,
 		const BodyParams& body, const Headers& headers, EAsyncCallbackExecutionMode /*asyncCBExecMode*/)
 	{
 		cpr::Header h;
 		for (auto& i : headers)
 			h[i.first] = i.second;
-		cpr::PatchCallback([callback](cpr::Response r) {
+		cpr::PatchCallback([callback=std::move(callback)](cpr::Response r) {
 			Response resp(r.status_code, std::move(r.text));
 			callback(resp);
 		}
@@ -180,13 +180,13 @@ namespace AdvViz::SDK::Impl
 		return Response(r.status_code, std::move(r.text));
 	}
 
-	void HttpCpr::DoAsyncPost(std::function<void(const Response&)> callback, const std::string& url,
+	void HttpCpr::DoAsyncPost(const std::function<void(Response&)>& callback, const std::string& url,
 		const BodyParams& body, const Headers& headers, EAsyncCallbackExecutionMode /*asyncCBExecMode*/)
 	{
 		cpr::Header h;
 		for (auto& i : headers)
 			h[i.first] = i.second;
-		cpr::PostCallback([callback](cpr::Response r) {
+		cpr::PostCallback([callback=std::move(callback)](cpr::Response r) {
 			Response resp(r.status_code, std::move(r.text));
 			callback(resp);
 			}
@@ -195,13 +195,13 @@ namespace AdvViz::SDK::Impl
 		, h);
 	}
 
-	void HttpCpr::DoAsyncPut(std::function<void(const Response&)> callback, const std::string& url,
+	void HttpCpr::DoAsyncPut(const std::function<void(Response&)>& callback, const std::string& url,
 		const BodyParams& body, const Headers& headers, EAsyncCallbackExecutionMode /*asyncCBExecMode*/)
 	{
 		cpr::Header h;
 		for (auto& i : headers)
 			h[i.first] = i.second;
-		cpr::PutCallback([callback](cpr::Response r) {
+		cpr::PutCallback([callback=std::move(callback)](cpr::Response r) {
 			Response resp(r.status_code, std::move(r.text));
 			callback(resp);
 			}
@@ -237,7 +237,7 @@ namespace AdvViz::SDK::Impl
 		return Response(r.status_code, std::move(r.text));
 	}
 
-	void HttpCpr::DoAsyncPostFile(std::function<void(const Response&)> callback, const std::string& url,
+	void HttpCpr::DoAsyncPostFile(const std::function<void(Response&)>& callback, const std::string& url,
 		const std::string& fileParamName, const std::string& filePath,
 		const KeyValueVector& extraParams /*= {}*/, const Headers& headers /*= {}*/,
 		EAsyncCallbackExecutionMode /*asyncCBExecMode*/ /*= Default */)
@@ -252,7 +252,7 @@ namespace AdvViz::SDK::Impl
 		multipart.parts.emplace_back(fileParamName, cpr::File{ filePath });
 
 		cpr::PostCallback(
-			[callback](cpr::Response r) {
+			[callback=std::move(callback)](cpr::Response r) {
 			Response resp(r.status_code, std::move(r.text));
 			callback(resp);
 		}
@@ -286,7 +286,7 @@ namespace AdvViz::SDK::Impl
 	}
 
 
-	void HttpCpr::DoAsyncGet(std::function<void(const Response&)> callback, const std::string& url,
+	void HttpCpr::DoAsyncGet(const std::function<void(Response&)>& callback, const std::string& url,
 		const Headers& headers /*= {}*/,
 		bool isFullUrl /*= false*/,
 		EAsyncCallbackExecutionMode asyncCBExecMode /*= Default */)
@@ -296,7 +296,7 @@ namespace AdvViz::SDK::Impl
 		cpr::Header h;
 		for (auto& i : headers)
 			h[i.first] = i.second;
-		cpr::GetCallback([callback](cpr::Response r) {
+		cpr::GetCallback([callback=std::move(callback)](cpr::Response r) {
 				Response resp(r.status_code, std::move(r.text));
 				callback(resp);
 			}, 
@@ -327,7 +327,7 @@ namespace AdvViz::SDK::Impl
 		return Response(r.status_code, std::move(r.text));
 	}
 
-	void HttpCpr::DoAsyncDelete(std::function<void(const Response&)> callback,
+	void HttpCpr::DoAsyncDelete(const std::function<void(Response&)>& callback,
 								const std::string& url,
 								const BodyParams& body /*= {}*/,
 								const Headers& headers /*= {}*/,

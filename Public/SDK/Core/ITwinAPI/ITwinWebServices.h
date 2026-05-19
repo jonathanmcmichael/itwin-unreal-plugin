@@ -26,6 +26,9 @@
 #include <functional>
 #include <optional>
 
+#include <Core/Network/Network.h>
+
+
 MODULE_EXPORT namespace AdvViz::SDK
 {
 	class IITwinWebServicesObserver;
@@ -70,7 +73,7 @@ MODULE_EXPORT namespace AdvViz::SDK
 
 		void GetExports(std::string const& iModelId, std::string const& changesetId);
 		void GetExportInfo(std::string const& exportId);
-		void StartExport(std::string const& iModelId, std::string const& changesetId);
+		void StartExport(std::string const& iModelId, std::string const& changesetId, Http::EAsyncCallbackExecutionMode asyncCBExecMode = Http::EAsyncCallbackExecutionMode::MainThread);
 
 		void GetRealityData(std::string const& iTwinId);
 		void GetRealityData3DInfo(std::string const& iTwinId, std::string const& realityDataId);
@@ -127,8 +130,10 @@ MODULE_EXPORT namespace AdvViz::SDK
 			std::string const& iTwinId, std::string const& iModelId, std::string const& changesetId,
 			std::string const& ECSQLQuery, int offset, int count,
 			std::function<void(RequestID const&)>&& notifRequestID,
+			std::function<void(const AdvViz::expected<AdvViz::SDK::Http::Response, std::string>&)>&& onFinished,
 			ITwinAPIRequestInfo const* requestInfo,
-			FilterErrorFunc&& filterError = {});
+			FilterErrorFunc&& filterError = {},
+			Http::EAsyncCallbackExecutionMode asyncCBExecMode = Http::EAsyncCallbackExecutionMode::MainThread);
 
 		void GetMaterialListProperties(
 			std::string const& iTwinId, std::string const& iModelId, std::string const& changesetId,

@@ -32,12 +32,6 @@ namespace BeUtils
 //	GltfMaterialHelper::TextureData
 //=======================================================================================
 
-GltfMaterialHelper::PerMaterialData::PerMaterialData(AdvViz::SDK::ITwinMaterialProperties const& props)
-	: iTwinProps_(props)
-{
-
-}
-
 inline std::optional<AdvViz::SDK::ImageSourceFormat> GuessImageSourceFormat(std::string const& texture)
 {
 	if (boost::iends_with(texture, ".png"))
@@ -85,6 +79,84 @@ bool GltfMaterialHelper::TextureAccess::HasValidCesiumImage(bool bRequirePixelDa
 		&& (!bRequirePixelData || !cesiumImage->pAsset->pixelData.empty());
 }
 
+//=======================================================================================
+//	MaterialDefinitionAccess
+//=======================================================================================
+
+template <typename T, typename Func>
+std::optional<T> MaterialDefinitionAccess::TGetValue(AdvViz::SDK::EChannelType channel, Func const& accessFunc) const
+{
+	std::optional<T> valueOpt;
+	if (customMaterial)
+	{
+		valueOpt = accessFunc(*customMaterial, channel);
+		if (valueOpt)
+			return valueOpt;
+	}
+
+	// If the material has a reference iModel RenderMaterial, and if the channel value of the
+	// latter is known, use it.
+	if (iTwinRenderMaterial)
+	{
+		valueOpt = accessFunc(*iTwinRenderMaterial, channel);
+		if (valueOpt)
+			return valueOpt;
+	}
+
+	return std::nullopt;
+}
+
+double MaterialDefinitionAccess::GetIntensity(AdvViz::SDK::EChannelType channel) const
+{
+	auto const intensityOpt = TGetValue<double>(channel,
+		[](AdvViz::SDK::ITwinMaterial const& matDef, AdvViz::SDK::EChannelType chan)
+	{
+		return matDef.GetChannelIntensityOpt(chan);
+	});
+	if (intensityOpt)
+		return *intensityOpt;
+	else
+		return GltfMaterialHelper::GetChannelDefaultIntensity(channel, {});
+}
+
+AdvViz::SDK::ITwinColor MaterialDefinitionAccess::GetColor(AdvViz::SDK::EChannelType channel) const
+{
+	auto const colorOpt = TGetValue<AdvViz::SDK::ITwinColor>(channel,
+		[](AdvViz::SDK::ITwinMaterial const& matDef, AdvViz::SDK::EChannelType chan)
+	{
+		return matDef.GetChannelColorOpt(chan);
+	});
+	if (colorOpt)
+		return *colorOpt;
+	else
+		return GltfMaterialHelper::GetChannelDefaultColor(channel, {});
+}
+
+AdvViz::SDK::ITwinChannelMap MaterialDefinitionAccess::GetIntensityMap(AdvViz::SDK::EChannelType channel) const
+{
+	auto const intensityMapOpt = TGetValue<AdvViz::SDK::ITwinChannelMap>(channel,
+		[](AdvViz::SDK::ITwinMaterial const& matDef, AdvViz::SDK::EChannelType chan)
+	{
+		return matDef.GetChannelIntensityMapOpt(chan);
+	});
+	if (intensityMapOpt)
+		return *intensityMapOpt;
+	else
+		return GltfMaterialHelper::GetChannelDefaultIntensityMap(channel, {});
+}
+
+AdvViz::SDK::ITwinChannelMap MaterialDefinitionAccess::GetColorMap(AdvViz::SDK::EChannelType channel) const
+{
+	auto const colorMapOpt = TGetValue<AdvViz::SDK::ITwinChannelMap>(channel,
+		[](AdvViz::SDK::ITwinMaterial const& matDef, AdvViz::SDK::EChannelType chan)
+	{
+		return matDef.GetChannelColorMapOpt(chan);
+	});
+	if (colorMapOpt)
+		return *colorMapOpt;
+	else
+		return GltfMaterialHelper::GetChannelDefaultColorMap(channel, {});
+}
 
 
 //=======================================================================================
@@ -95,34 +167,45 @@ GltfMaterialHelper::GltfMaterialHelper()
 {
 }
 
-void GltfMaterialHelper::SetITwinMaterialProperties(uint64_t matID, AdvViz::SDK::ITwinMaterialProperties const& props,
-	std::string const& nameInIModel, WLock const& lock)
+void GltfMaterialHelper::SetIModelRenderMaterialProperties(uint64_t renderMaterialID,
+	AdvViz::SDK::ITwinRenderMaterialProperties const& renderMaterialProps,
+	std::string const& nameInIModel,
+	WLock const& lock)
 {
-	auto ret = materialMap_.try_emplace(matID, props);
-
-	if (ret.second)
 	{
-		// A new entry was just created => See if this material contains a customization in current
-		// decoration, if any.
-		if (persistenceMngr_)
+		auto ret = iTwinRenderMaterialMap_.try_emplace(renderMaterialID, AdvViz::SDK::ITwinMaterial{});
+		// Bake the iModel RenderMaterial properties in the ITwinRenderMaterialData, so that they can be used as
+		// default values without having to recompute them each time during the tuning.
+		AdvViz::SDK::ITwinMaterial& bakedDefinition(ret.first->second);
+		bakedDefinition.displayName = nameInIModel;
+		CompleteDefinitionWithDefaultValues(bakedDefinition, std::nullopt, &renderMaterialProps, lock);
+	}
+
+	// In case of 'Identity' mapping, we also create a slot in the materialMap_ for this material, so that it
+	// can be customized if needed.
+	if constexpr (useIdentityMapping)
+	{
+		uint64_t const matID = renderMaterialID;
+		auto ret = materialMap_.try_emplace(matID, PerMaterialData{});
+		ret.first->second.iTwinRenderMaterialID_ = renderMaterialID;
+		if (ret.second)
 		{
-			persistenceMngr_->GetMaterialSettings(iModelID_, matID, ret.first->second.iTwinMaterialDefinition_);
+			// A new entry was just created => See if this material contains a customization in current
+			// decoration, if any.
+			if (persistenceMngr_)
+			{
+				persistenceMngr_->GetMaterialSettings(iModelID_, matID, ret.first->second.customMaterialDefinition_);
+			}
 		}
 	}
-	else
-	{
-		// The slot already existed => just edit its iTwin properties.
-		ret.first->second.iTwinProps_ = props;
-	}
-	ret.first->second.nameInIModel_ = nameInIModel;
 
 	static const std::unordered_map<std::string, AdvViz::SDK::EChannelType> supportedTypes =
 	{
 		{ "Pattern", AdvViz::SDK::EChannelType::Color },
 	};
 
-	// Gather the different texture IDs referenced by this material
-	for (auto const& [strMapType, mapData] : props.maps)
+	// Gather the different texture IDs referenced by this material.
+	for (auto const& [strMapType, mapData] : renderMaterialProps.maps)
 	{
 		// Filter supported map types
 		auto supportedTypeIt = supportedTypes.find(strMapType);
@@ -143,7 +226,7 @@ void GltfMaterialHelper::SetITwinMaterialProperties(uint64_t matID, AdvViz::SDK:
 	}
 }
 
-GltfMaterialHelper::MaterialInfo GltfMaterialHelper::CreateITwinMaterialSlot(uint64_t matID,
+AdvViz::SDK::ITwinMaterial const* GltfMaterialHelper::CreateITwinMaterialSlot(uint64_t matID,
 	std::string const& nameInIModel,
 	WLock const&,
 	bool bOnlyIfCustomDefinitionExists /*= false*/)
@@ -151,41 +234,83 @@ GltfMaterialHelper::MaterialInfo GltfMaterialHelper::CreateITwinMaterialSlot(uin
 	if (bOnlyIfCustomDefinitionExists
 		&& !(persistenceMngr_ && persistenceMngr_->HasMaterialDefinition(iModelID_, matID)))
 	{
-		return { nullptr, nullptr };
+		return nullptr;
 	}
 
-	auto ret = materialMap_.try_emplace(matID, AdvViz::SDK::ITwinMaterialProperties{});
+	auto ret = materialMap_.try_emplace(matID, PerMaterialData{});
 
 	// See if this material contains a customization in current decoration, if any.
 	if (persistenceMngr_)
 	{
-		persistenceMngr_->GetMaterialSettings(iModelID_, matID, ret.first->second.iTwinMaterialDefinition_);
+		persistenceMngr_->GetMaterialSettings(iModelID_, matID, ret.first->second.customMaterialDefinition_);
 	}
-	if (!nameInIModel.empty())
+
+	if constexpr (useIdentityMapping)
 	{
-		ret.first->second.nameInIModel_ = nameInIModel;
+		ret.first->second.iTwinRenderMaterialID_ = matID;
+
+		auto retRenderMat = iTwinRenderMaterialMap_.try_emplace(matID, AdvViz::SDK::ITwinMaterial{});
+		if (!nameInIModel.empty())
+		{
+			retRenderMat.first->second.displayName = nameInIModel;
+		}
 	}
-	return std::make_pair(&ret.first->second.iTwinProps_, &ret.first->second.iTwinMaterialDefinition_);;
+
+	return &ret.first->second.customMaterialDefinition_;
 }
 
-GltfMaterialHelper::MaterialInfo GltfMaterialHelper::GetITwinMaterialInfo(uint64_t matID, RWLockBase const&) const
+AdvViz::SDK::ITwinMaterial const* GltfMaterialHelper::GetCustomMaterialDefinition(uint64_t matID, RWLockBase const&) const
 {
 	auto itMat = materialMap_.find(matID);
 	if (itMat != materialMap_.end())
 	{
-		return std::make_pair(&itMat->second.iTwinProps_, &itMat->second.iTwinMaterialDefinition_);
+		return &itMat->second.customMaterialDefinition_;
 	}
-	return { nullptr, nullptr };
+	return nullptr;
 }
 
 bool GltfMaterialHelper::HasCustomDefinition(uint64_t matID, RWLockBase const& lock) const
 {
-	auto const materialInfo = GetITwinMaterialInfo(matID, lock);
+	auto const* itwinMat = GetCustomMaterialDefinition(matID, lock);
 
 	// If the material uses custom settings, activate advanced conversion so that the tuning
 	// can handle it.
-	auto const* itwinMat = materialInfo.second;
 	return itwinMat && AdvViz::SDK::HasCustomSettings(*itwinMat);
+}
+
+
+inline AdvViz::SDK::ITwinMaterial const* GltfMaterialHelper::GetITwinRenderMaterialDefinition(
+	PerMaterialData const& matData,
+	RWLockBase const& /*lock*/) const
+{
+	if (matData.iTwinRenderMaterialID_)
+	{
+		// If the material has a reference iModel RenderMaterial, and if the channel intensity of the
+		// latter is known, use it.
+		auto itRenderMat = iTwinRenderMaterialMap_.find(*matData.iTwinRenderMaterialID_);
+		if (itRenderMat != iTwinRenderMaterialMap_.end())
+		{
+			return &itRenderMat->second;
+		}
+		else
+		{
+			BE_ISSUE("unknown iModel RenderMaterial ID", *matData.iTwinRenderMaterialID_);
+		}
+	}
+	return nullptr;
+}
+
+MaterialDefinitionAccess GltfMaterialHelper::GetMaterialDefinitionAccess(uint64_t matID, RWLockBase const& lock) const
+{
+	auto itMat = materialMap_.find(matID);
+	if (itMat != materialMap_.end())
+	{
+		return MaterialDefinitionAccess(
+			&itMat->second.customMaterialDefinition_,
+			GetITwinRenderMaterialDefinition(itMat->second, lock)
+		);
+	}
+	return {};
 }
 
 bool GltfMaterialHelper::SetCurrentAlphaMode(uint64_t matID, std::string const& alphaMode, WLock const&)
@@ -228,7 +353,7 @@ void GltfMaterialHelper::StoreInitialAlphaModeIfNeeded(uint64_t matID, std::stri
 
 /*static*/
 double GltfMaterialHelper::GetChannelDefaultIntensity(AdvViz::SDK::EChannelType channel,
-	AdvViz::SDK::ITwinMaterialProperties const& itwinProps)
+	AdvViz::SDK::ITwinRenderMaterialProperties const& renderMaterialProps)
 {
 	// Currently, the materials exported by the Mesh Export Service are not really PBR, but do initialize
 	// some of the glTF (PBR) material properties with non-zero constants.
@@ -247,10 +372,10 @@ double GltfMaterialHelper::GetChannelDefaultIntensity(AdvViz::SDK::EChannelType 
 		// Use same formula as in Mesh Export Service
 		// Since https://github.com/iTwin/imodel-native-internal/pull/698
 		// (see ConvertMaterialToMetallicRoughness in <imodel-native-internal>/iModelCore/Visualization/TilesetPublisher/tiler/CesiumTileWriter.cpp)
-		double const* pSpecularValue = TryGetMaterialProperty<double>(itwinProps, "specular");
+		double const* pSpecularValue = TryGetMaterialProperty<double>(renderMaterialProps, "specular");
 		if (pSpecularValue
 			&& *pSpecularValue > 0.25
-			&& GetChannelDefaultColorMap(AdvViz::SDK::EChannelType::Color, itwinProps).IsEmpty())
+			&& GetChannelDefaultColorMap(AdvViz::SDK::EChannelType::Color, renderMaterialProps).IsEmpty())
 		{
 			return 1.;
 		}
@@ -264,9 +389,9 @@ double GltfMaterialHelper::GetChannelDefaultIntensity(AdvViz::SDK::EChannelType 
 		// Idem: see ConvertMaterialToMetallicRoughness
 		// Specular exponent is named "finish" in IModelReadRpcInterface.
 		double specularExponent = 0.;
-		if (GetMaterialBoolProperty(itwinProps, "HasFinish"))
+		if (GetMaterialBoolProperty(renderMaterialProps, "HasFinish"))
 		{
-			double const* pFinishValue = TryGetMaterialProperty<double>(itwinProps, "finish");
+			double const* pFinishValue = TryGetMaterialProperty<double>(renderMaterialProps, "finish");
 			if (pFinishValue)
 			{
 				specularExponent = fabs(*pFinishValue);
@@ -293,7 +418,7 @@ double GltfMaterialHelper::GetChannelDefaultIntensity(AdvViz::SDK::EChannelType 
 		double itwinTransparency = 0.;
 		// for opacity/alpha, test the 'transmit' setting of the original material
 		// see https://www.itwinjs.org/reference/core-backend/elements/rendermaterialelement/rendermaterialelement.params/transmit/
-		double const* pTransmitValue = TryGetMaterialProperty<double>(itwinProps, "transmit");
+		double const* pTransmitValue = TryGetMaterialProperty<double>(renderMaterialProps, "transmit");
 		if (pTransmitValue)
 		{
 			BE_ASSERT(*pTransmitValue >= 0. && *pTransmitValue <= 1.);
@@ -527,12 +652,12 @@ namespace
 		}
 	};
 
-	bool FindColorMapTexture(AdvViz::SDK::ITwinMaterialProperties const& itwinProps,
+	bool FindColorMapTexture(AdvViz::SDK::ITwinRenderMaterialProperties const& renderMaterialProps,
 		std::string& outColorTexId)
 	{
 		// See if the Dgn material has a color texture.
-		auto itColorMap = itwinProps.maps.find("Pattern");
-		if (itColorMap != itwinProps.maps.end())
+		auto itColorMap = renderMaterialProps.maps.find("Pattern");
+		if (itColorMap != renderMaterialProps.maps.end())
 		{
 			std::string const* itwinColorTexId = TryGetMaterialAttribute<std::string>(itColorMap->second, "TextureId");
 			if (itwinColorTexId != nullptr)
@@ -554,7 +679,8 @@ namespace
 		UVTransformHelper(GltfMaterialHelper& GltfHelper,
 			AdvViz::SDK::ITwinUVTransform const& newUVTransform)
 			: Super(GltfHelper, AdvViz::SDK::EChannelType::ENUM_END, newUVTransform)
-		{}
+		{
+		}
 
 		ParamType GetCurrentValue(uint64_t matID, WLock const& lock) const
 		{
@@ -630,21 +756,9 @@ namespace
 
 }
 
-double GltfMaterialHelper::GetChannelIntensity(uint64_t matID, AdvViz::SDK::EChannelType channel, RWLockBase const&) const
+double GltfMaterialHelper::GetChannelIntensity(uint64_t matID, AdvViz::SDK::EChannelType channel, RWLockBase const& lock) const
 {
-	auto itMat = materialMap_.find(matID);
-	if (itMat != materialMap_.end())
-	{
-		auto const& matDefinition = itMat->second.iTwinMaterialDefinition_;
-		std::optional<double> intensityOpt = matDefinition.GetChannelIntensityOpt(channel);
-		if (intensityOpt)
-			return *intensityOpt;
-		return GetChannelDefaultIntensity(channel, itMat->second.iTwinProps_);
-	}
-	else
-	{
-		return GetChannelDefaultIntensity(channel, {});
-	}
+	return GetMaterialDefinitionAccess(matID, lock).GetIntensity(channel);
 }
 
 double GltfMaterialHelper::GetChannelIntensity(uint64_t matID, AdvViz::SDK::EChannelType channel) const
@@ -654,20 +768,51 @@ double GltfMaterialHelper::GetChannelIntensity(uint64_t matID, AdvViz::SDK::ECha
 }
 
 void GltfMaterialHelper::CompleteDefinitionWithDefaultValues(AdvViz::SDK::ITwinMaterial& matDefinition,
-	uint64_t matID, RWLockBase const& lock) const
+	std::optional<uint64_t> const& matIDOpt,
+	AdvViz::SDK::ITwinRenderMaterialProperties const* renderMaterialProps,
+	RWLockBase const& lock) const
 {
+	// This function can be used to convert the RenderMaterial properties to ITwinMaterial format.
+	// In this case, the ID does not matter, but RenderMaterial properties should be provided.
+	bool const bHasMatID = matIDOpt.has_value();
+	BE_ASSERT((bHasMatID && !renderMaterialProps) || (!bHasMatID && renderMaterialProps));
+	if (!bHasMatID && !renderMaterialProps)
+	{
+		return;
+	}
+	uint64_t const matID = matIDOpt.value_or(0);
+
+	// Small optimization: use the MaterialDefinitionAccess helper to retrieve the values of the channels
+	// without having to lookup the map each time.
+	std::optional<MaterialDefinitionAccess> accessOpt;
+	if (bHasMatID)
+	{
+		accessOpt.emplace(GetMaterialDefinitionAccess(matID, lock));
+	}
+
 	for (auto eChan : {
 		AdvViz::SDK::EChannelType::Color,
 		AdvViz::SDK::EChannelType::Metallic,
 		AdvViz::SDK::EChannelType::Roughness,
 		AdvViz::SDK::EChannelType::Opacity })
 	{
-		matDefinition.SetChannelIntensity(eChan, GetChannelIntensity(matID, eChan, lock));
+		if (bHasMatID)
+			matDefinition.SetChannelIntensity(eChan, accessOpt->GetIntensity(eChan));
+		else
+			matDefinition.SetChannelIntensity(eChan, GetChannelDefaultIntensity(eChan, *renderMaterialProps));
 	}
 	for (auto eChan : { AdvViz::SDK::EChannelType::Color })
 	{
-		matDefinition.SetChannelColor(eChan, GetChannelColor(matID, eChan, lock));
-		matDefinition.SetChannelColorMap(eChan, GetChannelColorMap(matID, eChan, lock));
+		if (bHasMatID)
+		{
+			matDefinition.SetChannelColor(eChan, accessOpt->GetColor(eChan));
+			matDefinition.SetChannelColorMap(eChan, accessOpt->GetColorMap(eChan));
+		}
+		else
+		{
+			matDefinition.SetChannelColor(eChan, GetChannelDefaultColor(eChan, *renderMaterialProps));
+			matDefinition.SetChannelColorMap(eChan, GetChannelDefaultColorMap(eChan, *renderMaterialProps));
+		}
 	}
 }
 
@@ -682,7 +827,7 @@ void GltfMaterialHelper::TSetChannelParam(ParamHelper const& helper, uint64_t ma
 	auto itMat = materialMap_.find(matID);
 	if (itMat != materialMap_.end())
 	{
-		AdvViz::SDK::ITwinMaterial& matDefinition = itMat->second.iTwinMaterialDefinition_;
+		AdvViz::SDK::ITwinMaterial& matDefinition = itMat->second.customMaterialDefinition_;
 
 		ParameterType const oldValue = helper.GetCurrentValue(matID, lock);
 		bValueModified = helper.DoesNewValueDifferFrom(oldValue);
@@ -694,7 +839,7 @@ void GltfMaterialHelper::TSetChannelParam(ParamHelper const& helper, uint64_t ma
 			// Note that we now pass the *full* definition of the material, because there is no guarantee
 			// that default values are the same in our plugin and in the decoration service.
 			AdvViz::SDK::ITwinMaterial matDefToStore(matDefinition);
-			CompleteDefinitionWithDefaultValues(matDefToStore, matID, lock);
+			CompleteDefinitionWithDefaultValues(matDefToStore, matID, nullptr, lock);
 			persistenceMngr_->SetMaterialSettings(iModelID_, matID, matDefToStore);
 
 			helper.OnModificationApplied(lock);
@@ -713,7 +858,7 @@ void GltfMaterialHelper::SetChannelIntensity(uint64_t matID, AdvViz::SDK::EChann
 
 /*static*/
 GltfMaterialHelper::ITwinColor GltfMaterialHelper::GetChannelDefaultColor(AdvViz::SDK::EChannelType channel,
-	AdvViz::SDK::ITwinMaterialProperties const& itwinProps)
+	AdvViz::SDK::ITwinRenderMaterialProperties const& renderMaterialProps)
 {
 	// If you add the handling of another channel here, please update #CompleteDefinitionWithDefaultValues to
 	// retrieve the correct color when saving to DB.
@@ -727,11 +872,11 @@ GltfMaterialHelper::ITwinColor GltfMaterialHelper::GetChannelDefaultColor(AdvViz
 		// Note that if the material also has a color texture, we ignore the base color, as done in the
 		// Mesh Export Service (see boolean textureShouldOverrideColor in ConvertMaterialsToCesium).
 		std::string itwinColorTexId;
-		bool const hasColorTexture = FindColorMapTexture(itwinProps, itwinColorTexId);
+		bool const hasColorTexture = FindColorMapTexture(renderMaterialProps, itwinColorTexId);
 		if (!hasColorTexture
-			&& GetMaterialBoolProperty(itwinProps, "HasBaseColor"))
+			&& GetMaterialBoolProperty(renderMaterialProps, "HasBaseColor"))
 		{
-			pBaseColor = TryGetMaterialProperty<RgbColor>(itwinProps, "color");
+			pBaseColor = TryGetMaterialProperty<RgbColor>(renderMaterialProps, "color");
 		}
 		if (pBaseColor)
 		{
@@ -753,21 +898,11 @@ GltfMaterialHelper::ITwinColor GltfMaterialHelper::GetChannelDefaultColor(AdvViz
 	return { 0., 0., 0., 1. };
 }
 
-GltfMaterialHelper::ITwinColor GltfMaterialHelper::GetChannelColor(uint64_t matID, AdvViz::SDK::EChannelType channel, RWLockBase const&) const
+GltfMaterialHelper::ITwinColor GltfMaterialHelper::GetChannelColor(uint64_t matID,
+	AdvViz::SDK::EChannelType channel,
+	RWLockBase const& lock) const
 {
-	auto itMat = materialMap_.find(matID);
-	if (itMat != materialMap_.end())
-	{
-		auto const& matDefinition = itMat->second.iTwinMaterialDefinition_;
-		std::optional<ITwinColor> colorOpt = matDefinition.GetChannelColorOpt(channel);
-		if (colorOpt)
-			return *colorOpt;
-		return GetChannelDefaultColor(channel, itMat->second.iTwinProps_);
-	}
-	else
-	{
-		return GetChannelDefaultColor(channel, {});
-	}
+	return GetMaterialDefinitionAccess(matID, lock).GetColor(channel);
 }
 
 GltfMaterialHelper::ITwinColor GltfMaterialHelper::GetChannelColor(uint64_t matID, AdvViz::SDK::EChannelType channel) const
@@ -785,7 +920,7 @@ void GltfMaterialHelper::SetChannelColor(uint64_t matID, AdvViz::SDK::EChannelTy
 
 /*static*/
 AdvViz::SDK::ITwinChannelMap GltfMaterialHelper::GetChannelDefaultIntensityMap(AdvViz::SDK::EChannelType /*channel*/,
-	AdvViz::SDK::ITwinMaterialProperties const& /*itwinProps*/)
+	AdvViz::SDK::ITwinRenderMaterialProperties const& /*renderMaterialProps*/)
 {
 	// If you add the handling of another channel here, please update #CompleteDefinitionWithDefaultValues to
 	// retrieve the correct intensity map when saving to DB.
@@ -796,21 +931,11 @@ AdvViz::SDK::ITwinChannelMap GltfMaterialHelper::GetChannelDefaultIntensityMap(A
 	return {};
 }
 
-AdvViz::SDK::ITwinChannelMap GltfMaterialHelper::GetChannelIntensityMap(uint64_t matID, AdvViz::SDK::EChannelType channel, RWLockBase const&) const
+AdvViz::SDK::ITwinChannelMap GltfMaterialHelper::GetChannelIntensityMap(uint64_t matID,
+	AdvViz::SDK::EChannelType channel,
+	RWLockBase const& lock) const
 {
-	auto itMat = materialMap_.find(matID);
-	if (itMat != materialMap_.end())
-	{
-		auto const& matDefinition = itMat->second.iTwinMaterialDefinition_;
-		auto intensityMapOpt = matDefinition.GetChannelIntensityMapOpt(channel);
-		if (intensityMapOpt)
-			return *intensityMapOpt;
-		return GetChannelDefaultIntensityMap(channel, itMat->second.iTwinProps_);
-	}
-	else
-	{
-		return GetChannelDefaultIntensityMap(channel, {});
-	}
+	return GetMaterialDefinitionAccess(matID, lock).GetIntensityMap(channel);
 }
 
 AdvViz::SDK::ITwinChannelMap GltfMaterialHelper::GetChannelIntensityMap(uint64_t matID, AdvViz::SDK::EChannelType channel) const
@@ -939,7 +1064,10 @@ void GltfMaterialHelper::UpdateCurrentAlphaMode(uint64_t matID,
 {
 	std::string alphaMode = CesiumGltf::Material::AlphaMode::MASK;
 
-	double const alphaIntens = GetChannelIntensity(matID, AdvViz::SDK::EChannelType::Alpha, lock);
+	// Use the MaterialDefinitionAccess helper to reduce the number of lookups in the map.
+	MaterialDefinitionAccess const matDefinition = GetMaterialDefinitionAccess(matID, lock);
+
+	double const alphaIntens = matDefinition.GetIntensity(AdvViz::SDK::EChannelType::Alpha);
 	if (alphaIntens > 1e-5 && (alphaIntens < (1 - 1e-5)))
 	{
 		alphaMode = CesiumGltf::Material::AlphaMode::BLEND;
@@ -956,7 +1084,7 @@ void GltfMaterialHelper::UpdateCurrentAlphaMode(uint64_t matID,
 		// Look in alpha map and then color map
 		for (AdvViz::SDK::EChannelType chan : { AdvViz::SDK::EChannelType::Alpha, AdvViz::SDK::EChannelType::Color })
 		{
-			auto const texMap = GetChannelMap(matID, chan, lock);
+			auto const texMap = matDefinition.GetChannelMap(chan);
 			if (texMap.HasTexture()
 				&& TextureRequiringTranslucency(texMap, chan, matID, lock))
 			{
@@ -984,7 +1112,7 @@ void GltfMaterialHelper::SetChannelIntensityMap(uint64_t matID, AdvViz::SDK::ECh
 
 /*static*/
 AdvViz::SDK::ITwinChannelMap GltfMaterialHelper::GetChannelDefaultColorMap(AdvViz::SDK::EChannelType channel,
-	AdvViz::SDK::ITwinMaterialProperties const& itwinProps)
+	AdvViz::SDK::ITwinRenderMaterialProperties const& renderMaterialProps)
 {
 	// If you add the handling of another channel here, please update #CompleteDefinitionWithDefaultValues to
 	// retrieve the correct color map when saving to DB.
@@ -994,7 +1122,7 @@ AdvViz::SDK::ITwinChannelMap GltfMaterialHelper::GetChannelDefaultColorMap(AdvVi
 	if (channel == AdvViz::SDK::EChannelType::Color)
 	{
 		std::string itwinColorTexId;
-		if (FindColorMapTexture(itwinProps, itwinColorTexId))
+		if (FindColorMapTexture(renderMaterialProps, itwinColorTexId))
 		{
 			return ITwinChannelMap{
 				.texture = itwinColorTexId,
@@ -1005,21 +1133,11 @@ AdvViz::SDK::ITwinChannelMap GltfMaterialHelper::GetChannelDefaultColorMap(AdvVi
 	return {};
 }
 
-AdvViz::SDK::ITwinChannelMap GltfMaterialHelper::GetChannelColorMap(uint64_t matID, AdvViz::SDK::EChannelType channel, RWLockBase const&) const
+AdvViz::SDK::ITwinChannelMap GltfMaterialHelper::GetChannelColorMap(uint64_t matID,
+	AdvViz::SDK::EChannelType channel,
+	RWLockBase const& lock) const
 {
-	auto itMat = materialMap_.find(matID);
-	if (itMat != materialMap_.end())
-	{
-		auto const& matDefinition = itMat->second.iTwinMaterialDefinition_;
-		auto colorMapOpt = matDefinition.GetChannelColorMapOpt(channel);
-		if (colorMapOpt)
-			return *colorMapOpt;
-		return GetChannelDefaultColorMap(channel, itMat->second.iTwinProps_);
-	}
-	else
-	{
-		return GetChannelDefaultColorMap(channel, {});
-	}
+	return GetMaterialDefinitionAccess(matID, lock).GetColorMap(channel);
 }
 
 AdvViz::SDK::ITwinChannelMap GltfMaterialHelper::GetChannelColorMap(uint64_t matID, AdvViz::SDK::EChannelType channel) const
@@ -1066,19 +1184,20 @@ bool GltfMaterialHelper::HasChannelMap(uint64_t matID, AdvViz::SDK::EChannelType
 	return HasChannelMap(matID, channel, lock);
 }
 
-bool GltfMaterialHelper::MaterialUsingTextures(uint64_t matID, RLock const&) const
+bool GltfMaterialHelper::MaterialUsingTextures(uint64_t matID, RLock const& lock) const
 {
 	auto itMat = materialMap_.find(matID);
 	if (itMat != materialMap_.end())
 	{
-		auto const& matDefinition = itMat->second.iTwinMaterialDefinition_;
+		auto const& matDefinition = itMat->second.customMaterialDefinition_;
 		if (matDefinition.HasTextureMap())
 			return true;
-		// Test default settings (those exported by the MES)
-		// For now, only Color is available, but this code should be synchronized with
-		// #GetChannelDefaultColorMap and #GetChannelDefaultIntensityMap...
-		if (!GetChannelDefaultColorMap(AdvViz::SDK::EChannelType::Color, itMat->second.iTwinProps_).IsEmpty())
+		// Test iModel settings if any (those exported by the MES)
+		auto const* itwinRenderMatDefinition = GetITwinRenderMaterialDefinition(itMat->second, lock);
+		if (itwinRenderMatDefinition && itwinRenderMatDefinition->HasTextureMap())
+		{
 			return true;
+		}
 	}
 	return false;
 }
@@ -1090,10 +1209,10 @@ bool GltfMaterialHelper::GetMaterialFullDefinition(uint64_t matID, AdvViz::SDK::
 	{
 		return false;
 	}
-	matDefinition = itMat->second.iTwinMaterialDefinition_;
+	matDefinition = itMat->second.customMaterialDefinition_;
 
 	// Use default values for all properties which were not customized:
-	CompleteDefinitionWithDefaultValues(matDefinition, matID, lock);
+	CompleteDefinitionWithDefaultValues(matDefinition, matID, nullptr, lock);
 
 	return true;
 }
@@ -1111,7 +1230,7 @@ void GltfMaterialHelper::SetMaterialFullDefinition(uint64_t matID,
 	auto itMat = materialMap_.find(matID);
 	if (itMat != materialMap_.end())
 	{
-		itMat->second.iTwinMaterialDefinition_ = matDefinition;
+		itMat->second.customMaterialDefinition_ = matDefinition;
 	}
 	if (persistenceMngr_)
 	{
@@ -1372,7 +1491,7 @@ void GltfMaterialHelper::ListITwinTexturesToDownload(std::vector<std::string>& m
 	}
 }
 
-void GltfMaterialHelper::AppendITwinTexturesToResolveFromMaterial(
+bool GltfMaterialHelper::AppendITwinTexturesToResolveFromMaterial(
 	std::unordered_map<AdvViz::SDK::TextureKey, std::string>& itwinTextures,
 	uint64_t matID,
 	RWLockBase const& lock) const
@@ -1380,6 +1499,7 @@ void GltfMaterialHelper::AppendITwinTexturesToResolveFromMaterial(
 	using EITwinChannelType = AdvViz::SDK::EChannelType;
 	using ETextureSource = AdvViz::SDK::ETextureSource;
 
+	bool bHasTexturesToResolve = false;
 	// For now, only color textures are retrieved from the Mesh Export Service
 	for (auto eChan : { AdvViz::SDK::EChannelType::Color })
 	{
@@ -1394,22 +1514,27 @@ void GltfMaterialHelper::AppendITwinTexturesToResolveFromMaterial(
 				&& !itTex->second.HasCesiumImage())
 			{
 				itwinTextures.emplace(key, itTex->second.path_.filename().generic_string());
+
+				bHasTexturesToResolve = true;
 			}
 		}
 	}
+	return bHasTexturesToResolve;
 }
 
 void GltfMaterialHelper::ListITwinTexturesToResolve(std::unordered_map<AdvViz::SDK::TextureKey, std::string>& itwinTextures,
+													std::vector<uint64_t>& ownerMaterialIds,
 													RWLockBase const& lock) const
 {
 	// iTwin textures already present in cache should be resolved before any tuning can occur.
 	// We only need to resolve those belonging to materials which have been customized by the user.
 	for (auto const& [matID, data] : materialMap_)
 	{
-		auto const& itwinMat(data.iTwinMaterialDefinition_);
-		if (AdvViz::SDK::HasCustomSettings(itwinMat))
+		auto const& itwinMat(data.customMaterialDefinition_);
+		if (AdvViz::SDK::HasCustomSettings(itwinMat)
+			&& AppendITwinTexturesToResolveFromMaterial(itwinTextures, matID, lock))
 		{
-			AppendITwinTexturesToResolveFromMaterial(itwinTextures, matID, lock);
+			ownerMaterialIds.push_back(matID);
 		}
 	}
 }
@@ -1421,7 +1546,7 @@ AdvViz::SDK::ITwinUVTransform GltfMaterialHelper::GetUVTransform(uint64_t matID,
 	auto itMat = materialMap_.find(matID);
 	if (itMat != materialMap_.end())
 	{
-		auto const& matDefinition = itMat->second.iTwinMaterialDefinition_;
+		auto const& matDefinition = itMat->second.customMaterialDefinition_;
 		return matDefinition.uvTransform;
 	}
 	else
@@ -1447,7 +1572,7 @@ AdvViz::SDK::EMaterialKind GltfMaterialHelper::GetMaterialKind(uint64_t matID, R
 	auto itMat = materialMap_.find(matID);
 	if (itMat != materialMap_.end())
 	{
-		auto const& matDefinition = itMat->second.iTwinMaterialDefinition_;
+		auto const& matDefinition = itMat->second.customMaterialDefinition_;
 		return matDefinition.kind;
 	}
 	return AdvViz::SDK::EMaterialKind::PBR;
@@ -1471,7 +1596,7 @@ bool GltfMaterialHelper::GetCustomRequirements(uint64_t matID, AdvViz::SDK::EMat
 	auto itMat = materialMap_.find(matID);
 	if (itMat != materialMap_.end())
 	{
-		auto const& matDefinition = itMat->second.iTwinMaterialDefinition_;
+		auto const& matDefinition = itMat->second.customMaterialDefinition_;
 		outKind = matDefinition.kind;
 
 		std::string alphaMode;
@@ -1484,17 +1609,21 @@ bool GltfMaterialHelper::GetCustomRequirements(uint64_t matID, AdvViz::SDK::EMat
 	return false;
 }
 
-std::string GltfMaterialHelper::GetMaterialName(uint64_t matID, RWLockBase const&,
+std::string GltfMaterialHelper::GetMaterialName(uint64_t matID, RWLockBase const& lock,
 	bool bAppendLogInfo /*= false*/) const
 {
 	auto itMat = materialMap_.find(matID);
 	if (itMat != materialMap_.end())
 	{
-		auto const& matDefinition = itMat->second.iTwinMaterialDefinition_;
+		auto const& matDefinition = itMat->second.customMaterialDefinition_;
 		std::string matName = matDefinition.displayName;
 		if (bAppendLogInfo)
 		{
-			matName += fmt::format(" (#{} | {})", matID, itMat->second.nameInIModel_);
+			auto const* itwinRenderMatDefinition = GetITwinRenderMaterialDefinition(itMat->second, lock);
+			if (itwinRenderMatDefinition)
+			{
+				matName += fmt::format(" (#{} | {})", matID, itwinRenderMatDefinition->displayName);
+			}
 		}
 		return matName;
 	}
@@ -1552,7 +1681,7 @@ size_t GltfMaterialHelper::LoadMaterialCustomizations(WLock const& lock, bool re
 	size_t nbLoadedMatDefinitions = 0;
 	for (auto& [matID, data] : materialMap_)
 	{
-		if (persistenceMngr_->GetMaterialSettings(iModelID_, matID, data.iTwinMaterialDefinition_))
+		if (persistenceMngr_->GetMaterialSettings(iModelID_, matID, data.customMaterialDefinition_))
 		{
 			nbLoadedMatDefinitions++;
 		}
@@ -1560,7 +1689,7 @@ size_t GltfMaterialHelper::LoadMaterialCustomizations(WLock const& lock, bool re
 		{
 			// Called when enforcing the deletion of all material custom definitions, which is more a dev
 			// tool for now...
-			data.iTwinMaterialDefinition_ = AdvViz::SDK::ITwinMaterial();
+			data.customMaterialDefinition_ = AdvViz::SDK::ITwinMaterial();
 		}
 	}
 

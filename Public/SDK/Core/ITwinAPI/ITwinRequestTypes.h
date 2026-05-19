@@ -18,7 +18,7 @@
 #	endif // !MODULE_EXPORT
 #endif
 
-#include <SDK/Core/Tools/StringWithEncoding.h>
+#include <Core/Tools/StringWithEncoding.h>
 
 MODULE_EXPORT namespace AdvViz::SDK
 {

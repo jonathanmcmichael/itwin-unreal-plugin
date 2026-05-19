@@ -80,7 +80,7 @@ public:
 	/// Checks whether the impact corresponds to an Element which can be picked, ie which is currently
 	/// visible.
 	bool PickVisibleElement(FHitResult const& HitResult, AITwinIModel& IModel, ITwinElementID& OutEltID,
-		bool bSelectElement);
+		bool bSelectElement, bool bAdditive = false);
 
 private:
 	struct FImpl;

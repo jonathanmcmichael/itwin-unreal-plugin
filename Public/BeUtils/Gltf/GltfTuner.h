@@ -22,8 +22,11 @@ namespace BeUtils {
 
 struct ITwinMaterialInfo
 {
+	//! Material ID - ie ID of the original iModel RenderMaterial element, filled by the Mesh Export Service in
+	//! the glTF's extras, and used as reference for material customizations.
 	uint64_t id = 0;
-	std::string name; // UTF-8 encoding
+	//! Human-readable name of the source material, encoded in UTF-8.
+	std::string name;
 };
 
 class GltfMaterialHelper;
@@ -36,6 +39,23 @@ using Anim4DId = std::variant<uint64_t/*ITwinElementID*/, SmallVec<int32_t, 2>/*
 class GltfTuner : public Cesium3DTilesSelection::GltfModifier
 {
 public:
+	//! Callback type for primitive-level pre-fetching in worker thread
+	//! Called during glTF model processing for each primitive before clustering/tuning.
+	//! This allows Unreal-specific metadata extraction to occur in the same worker thread
+	//! as the GltfTuner processing.
+	//! 
+	//! @param model The glTF model being processed
+	//! @param primitive The specific primitive being processed
+	//! @param meshIndex Index of the mesh containing this primitive
+	//! @param primitiveIndex Index of the primitive within its mesh
+	//! @param userData User-provided context data (set via SetPrimitivePreFetchCallback)
+	using PrimitivePreFetchCallback = std::function<void(
+		const CesiumGltf::Model& model,
+		const CesiumGltf::MeshPrimitive& primitive,
+		int32_t meshIndex,
+		int32_t primitiveIndex,
+		void* userData)>;
+
 	//! Specifies how primitives should be merged or split.
 	struct Rules
 	{
@@ -51,8 +71,10 @@ public:
 		struct MaterialGroup
 		{
 			std::vector<uint64_t> elements_; ///< IDs of Elements in this group
-			int32_t material_ = -1; ///< gltf material index
-			std::optional<uint64_t> itwinMaterialID_; ///< identifier in the original iModel
+			int32_t material_ = -1; ///< glTF material index
+			//! iTwin Material ID: provided if the material has to be customized (generally different from
+			//! the iModel RenderMaterial ID found in the original iModel's meta-data).
+			std::optional<uint64_t> itwinMaterialID_;
 		};
 		//! The list of element groups.
 		//! Elements belonging to different groups (material or anim4D groups) cannot be merged together.
@@ -94,7 +116,12 @@ public:
 		//! Note that anim4DGroups_ will never change (at least with Legacy schedules), hence the separate
 		//! SetAnim4DRules method to avoid rebuilding the multimap everytime a material is edited :/
 		std::vector<Anim4DGroup> anim4DGroups_;
+
+		//! Callback for primitive-level pre-fetching (optional, for Unreal integration)
+		PrimitivePreFetchCallback primitivePreFetchCallback_;
+		void* primitivePreFetchUserData_ = nullptr;
 	};
+	
 	/// \param bTuneWithoutRules Tells whether tuning should occur even with empty rules, eg. with a default
 	///		constructed tuner. Useful for unit tests.
 	GltfTuner(bool const bTuneWithoutRules = false);
@@ -103,6 +130,14 @@ public:
 		Cesium3DTilesSelection::GltfModifierInput&& input) override;
 	int64_t SetMaterialRules(Rules&& rules);
 	int64_t SetAnim4DRules(Rules&& rules);
+
+	//! Set a callback to be invoked for each primitive during glTF processing in the worker thread.
+	//! This allows Unreal-specific code to pre-fetch metadata alongside GltfTuner's processing.
+	//! 
+	//! @param callback The callback function to invoke (can be nullptr to disable)
+	//! @param userData User-provided context pointer passed to callback (not owned by GltfTuner)
+	//! @note Thread-safety: This should be called before tiles are loaded, typically during initialization
+	void SetPrimitivePreFetchCallback(PrimitivePreFetchCallback const& callback, void* userData = nullptr);
 
 	bool HasITwinMaterialInfo() const;
 	std::vector<ITwinMaterialInfo> GetITwinMaterialInfo() const;

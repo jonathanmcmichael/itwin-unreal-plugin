@@ -65,6 +65,7 @@ target_link_libraries(Visualization PRIVATE
 if (MSVC)
 	target_compile_options(Visualization PRIVATE /utf-8) # Needed for "fmt" lib when ADVVIZ_FMT_DEP is empty.
 endif ()
+configure_advviz_library(Visualization)
 set_target_properties(Visualization PROPERTIES FOLDER "SDK/Core") 
 
 if(SDK_ADDUNITTEST)
@@ -111,5 +112,7 @@ if(SDK_ADDUNITTEST)
 	if (MSVC)
 		target_compile_options(VisualizationTest PRIVATE "/Zc:preprocessor")
 	endif()
+	configure_advviz_library(VisualizationTest)
+
 	be_add_test (VisualizationTest)
 endif()

@@ -129,7 +129,7 @@ namespace AdvViz::SDK
 	{
 		ITWIN_SDK_WARN(GetObserverName() + " does not handle querying IModel");
 	}
-	void ITwinDefaultWebServicesObserver::OnMaterialPropertiesRetrieved(bool /*bSuccess*/, ITwinMaterialPropertiesMap const&)
+	void ITwinDefaultWebServicesObserver::OnMaterialPropertiesRetrieved(bool /*bSuccess*/, ITwinRenderMaterialPropertiesMap const&)
 	{
 		ITWIN_SDK_WARN(GetObserverName() + " does not handle material properties");
 	}

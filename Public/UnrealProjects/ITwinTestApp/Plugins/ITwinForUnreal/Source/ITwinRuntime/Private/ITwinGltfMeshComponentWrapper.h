@@ -85,7 +85,7 @@ private:
 	/// corresponding UV index.
 	std::optional<uint32> uvIndexForFeatures_ = std::nullopt;
 	/// Contains the iTwin material ID corresponding to the primitive, if any (ie. when some material tuning
-	/// was requested, and thus the gltf tuner split the result agains this material ID).
+	/// was requested, and thus the glTF tuner split the result against this material ID).
 	std::optional<uint64_t> iTwinMaterialID_ = std::nullopt;
 };
 

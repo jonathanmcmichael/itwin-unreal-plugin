@@ -61,6 +61,11 @@ namespace AdvViz::SDK
 	{
 		using JsonVec = SJsonAnnotationVect;
 
+		inline bool ShouldSkip(Annotation const& /*annot*/) const
+		{
+			return false;
+		}
+
 		void AppendItem(JsonVec& jsonVec, Annotation const& annot)
 		{
 			jsonVec.annotations.emplace_back(ToJsonAnnotation(annot));

@@ -37,7 +37,14 @@ namespace AdvViz::SDK
 			}
 		}
 
+		inline virtual void AsyncProcess(const std::function<void(Http::Response&)>& callback, Http& http, std::string const& url, BodyParams const& body, Http::Headers const& headers, bool isFullUrl = false)
+		{
+			DoAsyncProcess(callback, http, url, body, headers, isFullUrl);
+		}
+
 		Http::Response DoProcess(Http& http, std::string const& url, BodyParams const& body, Http::Headers const& headers, bool isFullUrl = false);
+
+		void DoAsyncProcess(const std::function<void(Http::Response&)>& callback, Http& http, std::string const& url, BodyParams const& body, Http::Headers const& headers, bool isFullUrl);
 
 		EVerb GetVerb() const { return verb_; }
 		const char* GetRequestID() const;
@@ -45,9 +52,9 @@ namespace AdvViz::SDK
 		using Response = Http::Response;
 		using ResponseRaw = Http::Response;
 		using RequestPtr = std::shared_ptr<HttpRequest>;
-		using ResponseCallback = std::function<void(RequestPtr const& request, Response const& response)>;
+		using ResponseCallback = std::function<void(RequestPtr const& request, Response& response)>;
 
-		void SetResponseCallback(ResponseCallback const& callback);
+		void SetResponseCallback(ResponseCallback const& callback, AdvViz::SDK::Http::EAsyncCallbackExecutionMode asyncCBExecMode = Http::EAsyncCallbackExecutionMode::MainThread);
 
 		virtual bool CheckResponse(Response const& response, std::string& requestError) const;
 
@@ -56,7 +63,7 @@ namespace AdvViz::SDK
 
 	protected:
 		virtual void DoSetVerb(EVerb verb);
-		virtual void DoSetResponseCallback(ResponseCallback const& callback);
+		virtual void DoSetResponseCallback(ResponseCallback const& callback, AdvViz::SDK::Http::EAsyncCallbackExecutionMode asyncCBExecMode);
 
 	private:
 		EVerb verb_ = EVerb::Get;

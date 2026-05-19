@@ -44,11 +44,11 @@
 		}
 		,{
 			"name": "cpp-httplib",
-			"version": "0.37.1"
+			"version": "0.41.0"
 		}
 		,{
 			"name": "ffmpeg",
-			"version": "8.0.1"
+			"version": "8.1"
 		}
 	]
 }

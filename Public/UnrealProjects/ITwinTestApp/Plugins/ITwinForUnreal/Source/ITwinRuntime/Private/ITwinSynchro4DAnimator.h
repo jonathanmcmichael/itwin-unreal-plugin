@@ -12,6 +12,7 @@
 
 class UITwinSynchro4DSchedules;
 class FITwinSceneTile;
+class TITwinSceneTilePtr;
 class FITwinSynchro4DSchedulesInternals;
 
 /// Class owned by an UITwinSynchro4DSchedules component which role is to enact the construction
@@ -28,8 +29,8 @@ public:
 	void OnChangedScheduleRenderSetting();
 	void OnMaskOutNonAnimatedElements();
 	void OnFadeOutNonAnimatedElements();
-	void ApplyAnimationOnTile(FITwinSceneTile& SceneTile);
-	void DisableAnimationInTile(FITwinSceneTile& SceneTile);
+	void ApplyAnimationOnTile(const TITwinSceneTilePtr& SceneTile);
+	void DisableAnimationInTile(const TITwinSceneTilePtr& SceneTile);
 
 	void Play();
 	bool IsPlaying() const;

@@ -71,10 +71,10 @@ namespace AdvViz::SDK
 
 	}
 
-	void HttpRequest::SetResponseCallback(ResponseCallback const& callback)
+	void HttpRequest::SetResponseCallback(ResponseCallback const& callback, AdvViz::SDK::Http::EAsyncCallbackExecutionMode asyncCBExecMode)
 	{
 		responseCallback_ = callback;
-		DoSetResponseCallback(callback);
+		DoSetResponseCallback(callback, asyncCBExecMode);
 	}
 
 	void HttpRequest::SetNeedRawData(bool b)
@@ -82,7 +82,7 @@ namespace AdvViz::SDK
 		needRawData_ = b;
 	}
 
-	void HttpRequest::DoSetResponseCallback(ResponseCallback const& /*callback*/)
+	void HttpRequest::DoSetResponseCallback(ResponseCallback const& /*callback*/, AdvViz::SDK::Http::EAsyncCallbackExecutionMode /*asyncCBExecMode*/)
 	{
 
 	}
@@ -104,6 +104,20 @@ namespace AdvViz::SDK
 		case EVerb::Post:	return http.Post(url, body, headers); break;
 		default:
 		case EVerb::Put:	return http.Put(url, body, headers); break;
+		}
+	}
+
+	 void HttpRequest::DoAsyncProcess(const std::function<void(Http::Response&)>& callback, Http& http, std::string const& url, BodyParams const& body,
+		Http::Headers const& headers, bool isFullUrl /*= false*/)
+	{
+		switch (verb_)
+		{
+		case EVerb::Delete: return http.AsyncDelete(callback, url, body, headers); break;
+		case EVerb::Get:	return http.AsyncGet(callback, url, headers, isFullUrl); break;
+		case EVerb::Patch:	return http.AsyncPatch(callback, url, body, headers); break;
+		case EVerb::Post:	return http.AsyncPost(callback, url, body, headers); break;
+		default:
+		case EVerb::Put:	return http.AsyncPut(callback, url, body, headers); break;
 		}
 	}
 

@@ -65,6 +65,18 @@ namespace ITwin
 		}
 	}
 
+	void AppendSplineHelpers(TArray<const AActor*>& OutActors, const UWorld* World,
+		std::optional<EITwinSplineUsage> const& RestrictToUsage = std::nullopt)
+	{
+		for (TActorIterator<AITwinSplineHelper> SplineIter(World); SplineIter; ++SplineIter)
+		{
+			if (!RestrictToUsage.has_value() || RestrictToUsage.value() == (*SplineIter)->GetUsage())
+			{
+				OutActors.Push(*SplineIter);
+			}
+		}
+	}
+
 	ITWINRUNTIME_API TOptional<FVector> GetNewObjectDefaultPosition(const UObject* WorldContextObject,
 																	EITwinSplineUsage SplineUsage,
 																	FHitResult& OutHitResult)
@@ -403,6 +415,7 @@ public:
 		bNeedsUpdateEditedPopulations = !EditedPopulations.empty();
 	}
 	inline TArray<AActor*> const& GetAllPopulations() const;
+	void AppendAllPopulationConstActors(TArray<AActor const*>& ActorsToIgnore) const;
 	inline std::vector<AITwinPopulation*> const& GetEditedPopulations(bool bForceUpdateArray = false);
 
 	size_t CollectEditedPopulations();
@@ -437,6 +450,15 @@ inline TArray<AActor*> const& AITwinPopulationTool::FImpl::GetAllPopulations() c
 		const_cast<FImpl*>(this)->UpdatePopulationsArray();
 	}
 	return AllPopulations;
+}
+
+void AITwinPopulationTool::FImpl::AppendAllPopulationConstActors(TArray<AActor const*>& ActorsToIgnore) const
+{
+	TArray<AActor*> const& AllPopulationActors = GetAllPopulations();
+	// Due to constness considerations we cannot just write ActorsToIgnore.Append(AllPopulationActors)...
+	ActorsToIgnore.Reserve(ActorsToIgnore.Num() + AllPopulationActors.Num());
+	for (auto PopulationActor : AllPopulationActors)
+		ActorsToIgnore.Push(PopulationActor);
 }
 
 inline std::vector<AITwinPopulation*> const& AITwinPopulationTool::FImpl::GetEditedPopulations(bool bForceUpdateArray /*= false*/)
@@ -985,19 +1007,15 @@ bool AITwinPopulationTool::FImpl::DoMouseClickAction()
 	bool bRelevantAction = false;
 	TArray<const AActor*> ActorsToIgnore;
 
-	TArray<AActor*> const& AllPopulationActors = GetAllPopulations();
-
 	const bool bFinalizingInteractivePlacement = bInteractivePlacement && HasSelectedInstance();
 	if (bFinalizingInteractivePlacement)
 	{
 		// When clicking to validate the final position of the created instance, we should ignore all
 		// populations (including the one being selected, which would much probably be hit as the selected
 		// instance is following the mouse...), as done in FImpl::Tick (see #LineTraceFromMousePos).
-		//
-		// Due to constness considerations we cannot just write ActorsToIgnore = AllPopulationActors...
-		ActorsToIgnore.Reserve(AllPopulationActors.Num());
-		for (auto PopulationActor : AllPopulationActors)
-			ActorsToIgnore.Push(PopulationActor);
+		AppendAllPopulationConstActors(ActorsToIgnore);
+		// Ignore all splines.
+		ITwin::AppendSplineHelpers(ActorsToIgnore, owner.GetWorld());
 	}
 	else if (bRestrictPickingOnClipping)
 	{
@@ -1011,6 +1029,8 @@ bool AITwinPopulationTool::FImpl::DoMouseClickAction()
 				ActorsToIgnore.Push(TilesetActor);
 			}
 		}, owner.GetWorld());
+		// Also ignore splines added for the display of box edges.
+		ITwin::AppendSplineHelpers(ActorsToIgnore, owner.GetWorld(), EITwinSplineUsage::EdgeDisplayHelper);
 	}
 	else
 	{
@@ -1020,6 +1040,7 @@ bool AITwinPopulationTool::FImpl::DoMouseClickAction()
 		//
 		// Note that this fix is generic: if we allow the user to hide populations by hand in the future, it
 		// will be useful as well.
+		TArray<AActor*> const& AllPopulationActors = GetAllPopulations();
 		for (auto PopulationActor : AllPopulationActors)
 		{
 			if (Cast<AITwinPopulation const>(PopulationActor)->IsHiddenInGame())
@@ -1185,6 +1206,10 @@ void AITwinPopulationTool::FImpl::Tick(float DeltaTime)
 			// Do not forget to multiply by BaseTransform, as done in AITwinPopulation::AddInstance
 			selectedPopulation->SetInstanceTransformUEOnly(selectedInstanceIndex,
 				selectedPopulation->GetBaseTransform() * transform);
+			if (selectedPopulation->GetObjectType() == EITwinInstantiatedObjectType::ClippingBox)
+			{
+				selectedPopulation->NotifyClippingToolOfTransform(selectedInstanceIndex);
+			}
 			// Store the last hit actor, in case the user validates the instance through the 'Enter' key (see
 			// #ValidateInteractiveCreationImpl and #FinalizeInteractiveCreation)
 			LastHitActor_InteractivePlacement = hitResult.GetActor();
@@ -1303,18 +1328,24 @@ FHitResult AITwinPopulationTool::FImpl::LineTraceFromMousePos()
 
 	traceEnd = traceStart + traceDir * 1e8f;
 
-	TArray<AActor*> actorsToIgnore;
+	TArray<AActor const*> ActorsToIgnore;
 	if (toolMode == EPopulationToolMode::RemoveInstances ||	draggedAssetPopulation || bInteractivePlacement)
 	{
 		// When erasing instances, collisions are enabled. When dragging an instance from the
 		// browser, collisions may be enabled depending on the current mode. Existing populations
 		// must be explicitly ignored here so that the brush sphere is placed like when painting
 		// instances (it avoids rapid jumps).
-		actorsToIgnore = GetAllPopulations();
+		AppendAllPopulationConstActors(ActorsToIgnore);
+	}
+	if (bInteractivePlacement)
+	{
+		// Splines added for the display of box edges should also be ignored during interactive placement.
+		// (In fact all splines, as they are not real physical objects...)
+		ITwin::AppendSplineHelpers(ActorsToIgnore, owner.GetWorld());
 	}
 
 	FITwinTracingHelper TracingHelper;
-	TracingHelper.AddIgnoredActors(actorsToIgnore);
+	TracingHelper.AddIgnoredActors(ActorsToIgnore);
 	TracingHelper.FindNearestImpact(HitResult, owner.GetWorld(), traceStart, traceEnd);
 
 	return HitResult;
@@ -1494,6 +1525,8 @@ bool AITwinPopulationTool::FImpl::AddSingleInstanceFromHitResult(const FHitResul
 	FCreatedInstance* OutCreatedInstance /*= nullptr*/,
 	bool bStartingInteractiveCreation /*= false*/)
 {
+	using EAddInstanceContext = AITwinPopulation::EAddInstanceContext;
+
 	const bool bForceUpdateEditedPopulations = EditedPopulations.empty();
 	auto const& EditedPopulationsActors = GetEditedPopulations(bForceUpdateEditedPopulations);
 
@@ -1507,7 +1540,8 @@ bool AITwinPopulationTool::FImpl::AddSingleInstanceFromHitResult(const FHitResul
 										  false/*bIsDraggingInstance*/,
 										  bRequiresValidHit))
 		{
-			const int32 InstIndex = EditedPopulationsActors[popIndex]->AddInstance(tm, bInteractivePlacement);
+			const int32 InstIndex = EditedPopulationsActors[popIndex]->AddInstance(tm,
+				bInteractivePlacement ? EAddInstanceContext::InteractivePlacement : EAddInstanceContext::Default);
 
 			if (bInteractivePlacement)
 			{
@@ -2242,10 +2276,11 @@ bool AITwinPopulationTool::RestoreItem(IItemBackup const& ItemBackup)
 	AITwinPopulation* Population = PopBackup->GetPopulation();
 	if (ensureMsgf(Population != nullptr, TEXT("Unable to recover population")))
 	{
-		// Use interactive placement flag to make sure the RefID is restored before notifying the Clipping
+		// Use context 'UndoRedo' to make sure the RefID is restored before notifying the Clipping
 		// Tool manager.
 		// It also avoid troubles with BaseTransform being applied twice...
-		const int32 Index = Population->AddInstance(PopBackup->InstanceTransform, true);
+		const int32 Index = Population->AddInstance(PopBackup->InstanceTransform,
+			AITwinPopulation::EAddInstanceContext::UndoRedo);
 		if (ensure(Index >= 0))
 		{
 			if (!PopBackup->AvizInstanceName.empty())

@@ -53,6 +53,8 @@ struct FITwinClippingInfoBase
 
 	virtual void DeactivatePrimitiveInExcluder(UITwinTileExcluderBase& Excluder) const;
 
+	virtual void SetEdgeVisibility(bool bVisible);
+
 	/// Returns whether the given model should be influenced by this clipping effect.
 	/// Note that if the effect is disabled, this will always return false.
 	/// (Google 3D tilesets use EITwinModelType::GlobalMapLayer as model type).
@@ -63,12 +65,15 @@ struct FITwinClippingInfoBase
 
 	void SetInfluenceSpecificModel(const ITwin::ModelLink& ModelIdentifier, bool bInfluence);
 
-	//! Make the effect apply to none.
+	/// Make the effect apply to none.
 	void SetInfluenceNone();
 
-	//! Get the bounds of the area influenced by this clipping primitive, in world coordinates.
-	//! An invalid box will be returned if the cutout influences the Google tileset (which is infinite), or
-	//! if it influences nothing.
+	/// Get the influence info for the given model type.
+	inline FITwinClippingInfluenceInfo const& GetInfluenceInfo(EITwinModelType ModelType) const;
+
+	/// Get the bounds of the area influenced by this clipping primitive, in world coordinates.
+	/// An invalid box will be returned if the cutout influences the Google tileset (which is infinite), or
+	/// if it influences nothing.
 	FBox const& GetInfluenceBoundingBox() const;
 
 	void InvalidateInfluenceBoundingBox();
@@ -83,7 +88,6 @@ protected:
 
 private:
 	inline FITwinClippingInfluenceInfo& MutableInfluenceInfo(EITwinModelType ModelType);
-	inline FITwinClippingInfluenceInfo const& GetInfluenceInfo(EITwinModelType ModelType) const;
 
 	/// Returns whether the given model should be influenced by this clipping effect, independently of the
 	/// enabled state of the effect.

@@ -136,6 +136,8 @@ public:
 	/// called on a batch of instances with bMarkRenderStateDirty as false, to invalidate the render state
 	/// only once for the ISM.
 	void MarkFoliageRenderStateDirty();
+	/// Notifies the clipping tool in case the transformation of a clipping primitive has changed.
+	void NotifyClippingToolOfTransform(int32 instanceIndex, bool bTriggeredFromITS = false);
 
 	void SetInstanceTransform(int32 instanceIndex, const FTransform& tm, bool bTriggeredFromITS = false);
 
@@ -182,8 +184,15 @@ public:
 
 	void SetInstancesZCoordinate(const float& maxDistToSquareCenter, const float& z);
 
+	enum class EAddInstanceContext : uint8
+	{
+		Default = 0,
+		InteractivePlacement,
+		UndoRedo
+	};
+
 	//! Add a new instance with given transformation, and return its index.
-	int32 AddInstance(const FTransform& transform, bool bInteractivePlacement = false);
+	int32 AddInstance(const FTransform& Transform, EAddInstanceContext Context = EAddInstanceContext::Default);
 	//! Called when the instance is added (in case of non interactive placement) or once its position is
 	//! validated (in case of interactive placement mode).
 	void FinalizeAddedInstance(int32 instIndex, const FTransform* FinalTransform = nullptr,

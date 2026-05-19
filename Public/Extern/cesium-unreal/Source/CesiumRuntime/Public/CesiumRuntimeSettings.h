@@ -67,6 +67,12 @@ public:
       meta = (ConfigRestartRequired = true))
   int MaxCacheItems = 4096;
 
+  /**
+   * Clears all entries from the request cache database.
+   */
+  UFUNCTION(BlueprintCallable, Category = "Cesium")
+  static void ClearRequestCache();
+
   /** Whether to display the point geometries (aka. point clouds) found in the 3D tiles. */
   UPROPERTY(Config, EditAnywhere, Category = "Rendering")
   bool bShowPointGeometries = true;

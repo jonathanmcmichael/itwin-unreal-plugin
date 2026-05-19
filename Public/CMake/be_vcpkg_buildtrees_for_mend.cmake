@@ -25,7 +25,11 @@ if (BE_REBUILD_ALL_VCPKG_FOR_MEND)
 	# them on the ADO agents when they are upgraded...
 	# Note: I should modify the above rsync command but the whole include/exclude listing and ordering is already acrobatic so maybe later...
 	# (this is rarely used anyway)
-	set(headerOnlyLibs ctre cpp-httplib earcut-hpp expected-lite libmorton magic-enum node-addon-api node-api-headers picosha2 stb stduuid)
+	set(headerOnlyLibs ctre cpp-httplib earcut-hpp expected-lite libmorton magic-enum node-addon-api node-api-headers picosha2 stb stduuid
+		# duplicate of ffmpeg! Could check that all the same patches are applied, but it's a whole 70MB of sources which slows down the pipeline.
+		# This port only needs ffbuild anyway!
+		ffmpeg-bin2c
+	)
 	foreach(_lib ${headerOnlyLibs})
 		file(REMOVE_RECURSE "${VCPKG_ROOT}/buildtrees/${_relPath}/${headerOnlyLibs}")
 	endforeach()

@@ -55,10 +55,70 @@ namespace std
 namespace BeUtils
 {
 
+//! Helper to access the final iTwin material properties to use at render time, taking both customizations
+//! and original iModel properties into account.
+struct MaterialDefinitionAccess
+{
+	AdvViz::SDK::ITwinMaterial const* customMaterial = nullptr;
+	AdvViz::SDK::ITwinMaterial const* iTwinRenderMaterial = nullptr;
+
+	MaterialDefinitionAccess() = default;
+	MaterialDefinitionAccess(MaterialDefinitionAccess&& other) noexcept
+		: customMaterial(other.customMaterial)
+		, iTwinRenderMaterial(other.iTwinRenderMaterial)
+	{
+		other.customMaterial = nullptr;
+		other.iTwinRenderMaterial = nullptr;
+	}
+	MaterialDefinitionAccess(AdvViz::SDK::ITwinMaterial const* customMat, AdvViz::SDK::ITwinMaterial const* iTwinRenderMat)
+		: customMaterial(customMat)
+		, iTwinRenderMaterial(iTwinRenderMat)
+	{}
+
+	/// Forbid copy and assignment, to minimize the risk of wrong usage (the helper must be used in the scope
+	/// of a same lock to ensure thread safety).
+	MaterialDefinitionAccess(MaterialDefinitionAccess const&) = delete;
+	MaterialDefinitionAccess& operator = (MaterialDefinitionAccess const&) = delete;
+
+	double GetIntensity(AdvViz::SDK::EChannelType channel) const;
+	AdvViz::SDK::ITwinColor GetColor(AdvViz::SDK::EChannelType channel) const;
+	AdvViz::SDK::ITwinChannelMap GetIntensityMap(AdvViz::SDK::EChannelType channel) const;
+	AdvViz::SDK::ITwinChannelMap GetColorMap(AdvViz::SDK::EChannelType channel) const;
+
+
+	inline AdvViz::SDK::ITwinChannelMap GetChannelMap(AdvViz::SDK::EChannelType channel) const
+	{
+		// Distinguish color from intensity textures.
+		if (channel == AdvViz::SDK::EChannelType::Color
+			|| channel == AdvViz::SDK::EChannelType::Normal)
+		{
+			return GetColorMap(channel);
+		}
+		else
+		{
+			// For other channels, the map defines an intensity
+			return GetIntensityMap(channel);
+		}
+	}
+
+	inline bool HasChannelMap(AdvViz::SDK::EChannelType channel) const
+	{
+		return GetChannelMap(channel).HasTexture();
+	}
+
+	template <typename T, typename Func>
+	std::optional<T> TGetValue(AdvViz::SDK::EChannelType channel, Func const& accessFunc) const;
+};
+
+
 //! Helper to manage the customization of GLTF materials based on the original iTwin materials.
 class GltfMaterialHelper
 {
 public:
+	//! For now, we map the original iModel materials (RenderMaterial) to the iTwin materials, with no
+	//! possibility to create new slots and assign them to different geometric elements.
+	static constexpr bool useIdentityMapping = true;
+
 	GltfMaterialHelper();
 
 	std::shared_mutex& GetMutex() { return mutex_; }
@@ -68,16 +128,23 @@ public:
 	// Materials
 	//===================================================================================
 
-	using MaterialInfo = std::pair<AdvViz::SDK::ITwinMaterialProperties const*, AdvViz::SDK::ITwinMaterial const*>;
+	AdvViz::SDK::ITwinMaterial const* CreateITwinMaterialSlot(uint64_t matID,
+		std::string const& nameInIModel,
+		WLock const&,
+		bool bOnlyIfCustomDefinitionExists = false);
 
-	GltfMaterialHelper::MaterialInfo CreateITwinMaterialSlot(uint64_t matID, std::string const& nameInIModel,
-		WLock const&, bool bOnlyIfCustomDefinitionExists = false);
+	//! Store the iModel material properties for the given ID.
+	void SetIModelRenderMaterialProperties(uint64_t renderMaterialID,
+		AdvViz::SDK::ITwinRenderMaterialProperties const& props,
+		std::string const& nameInIModel,
+		WLock const&);
 
-	//! Store the iTwin material properties for the given ID.
-	void SetITwinMaterialProperties(uint64_t matID, AdvViz::SDK::ITwinMaterialProperties const& props,
-		std::string const& nameInIModel, WLock const&);
+	AdvViz::SDK::ITwinMaterial const* GetCustomMaterialDefinition(uint64_t matID, RWLockBase const&) const;
 
-	MaterialInfo GetITwinMaterialInfo(uint64_t matID, RWLockBase const&) const;
+	//! Get a helper allowing to retrieve the material definition for the passed material ID.
+	//! The lock must be held by the caller, and should not be released while using the returned helper.
+	//! \return A short-lived MaterialDefinitionAccess for accessing the material definition.
+	MaterialDefinitionAccess GetMaterialDefinitionAccess(uint64_t matID, RWLockBase const&) const;
 
 	//! Returns whether the given material should use a custom definition.
 	bool HasCustomDefinition(uint64_t matID, RWLockBase const&) const;
@@ -87,7 +154,7 @@ public:
 	bool GetCurrentAlphaMode(uint64_t matID, std::string& alphaMode, RLock const&) const;
 
 	static double GetChannelDefaultIntensity(AdvViz::SDK::EChannelType channel,
-		AdvViz::SDK::ITwinMaterialProperties const& itwinProps);
+		AdvViz::SDK::ITwinRenderMaterialProperties const& imodelProps);
 	double GetChannelIntensity(uint64_t matID, AdvViz::SDK::EChannelType channel, RWLockBase const&) const;
 	double GetChannelIntensity(uint64_t matID, AdvViz::SDK::EChannelType channel) const;
 	void SetChannelIntensity(uint64_t matID, AdvViz::SDK::EChannelType channel, double intensity, bool& bValueModified);
@@ -95,7 +162,7 @@ public:
 
 	using ITwinColor = AdvViz::SDK::ITwinColor;
 	static ITwinColor GetChannelDefaultColor(AdvViz::SDK::EChannelType channel,
-		AdvViz::SDK::ITwinMaterialProperties const& itwinProps);
+		AdvViz::SDK::ITwinRenderMaterialProperties const& imodelProps);
 	ITwinColor GetChannelColor(uint64_t matID, AdvViz::SDK::EChannelType channel, RWLockBase const&) const;
 	ITwinColor GetChannelColor(uint64_t matID, AdvViz::SDK::EChannelType channel) const;
 	void SetChannelColor(uint64_t matID, AdvViz::SDK::EChannelType channel, ITwinColor const& color, bool& bValueModified);
@@ -103,13 +170,13 @@ public:
 
 	using ITwinChannelMap = AdvViz::SDK::ITwinChannelMap;
 	static ITwinChannelMap GetChannelDefaultIntensityMap(AdvViz::SDK::EChannelType channel,
-		AdvViz::SDK::ITwinMaterialProperties const& itwinProps);
+		AdvViz::SDK::ITwinRenderMaterialProperties const& imodelProps);
 	ITwinChannelMap GetChannelIntensityMap(uint64_t matID, AdvViz::SDK::EChannelType channel, RWLockBase const&) const;
 	ITwinChannelMap GetChannelIntensityMap(uint64_t matID, AdvViz::SDK::EChannelType channel) const;
 	void SetChannelIntensityMap(uint64_t matID, AdvViz::SDK::EChannelType channel, ITwinChannelMap const& intensityMap, bool& bValueModified);
 
 	static ITwinChannelMap GetChannelDefaultColorMap(AdvViz::SDK::EChannelType channel,
-		AdvViz::SDK::ITwinMaterialProperties const& itwinProps);
+		AdvViz::SDK::ITwinRenderMaterialProperties const& imodelProps);
 	ITwinChannelMap GetChannelColorMap(uint64_t matID, AdvViz::SDK::EChannelType channel, RWLockBase const&) const;
 	ITwinChannelMap GetChannelColorMap(uint64_t matID, AdvViz::SDK::EChannelType channel) const;
 	void SetChannelColorMap(uint64_t matID, AdvViz::SDK::EChannelType channel, ITwinChannelMap const& colorMap, bool& bValueModified);
@@ -162,8 +229,9 @@ public:
 
 	void ListITwinTexturesToDownload(std::vector<std::string>& missingTextureIds, WLock const&);
 	void ListITwinTexturesToResolve(std::unordered_map<AdvViz::SDK::TextureKey, std::string>& itwinTextures,
+		std::vector<uint64_t>& ownerMaterialIds,
 		RWLockBase const&) const;
-	void AppendITwinTexturesToResolveFromMaterial(
+	bool AppendITwinTexturesToResolveFromMaterial(
 		std::unordered_map<AdvViz::SDK::TextureKey, std::string>& itwinTextures,
 		uint64_t matID,
 		RWLockBase const&) const;
@@ -265,23 +333,45 @@ private:
 	template <typename ParamHelper>
 	void TSetChannelParam(ParamHelper const& helper, uint64_t matID, bool& bValueModified);
 
+	struct PerMaterialData;
+
+	inline AdvViz::SDK::ITwinMaterial const* GetITwinRenderMaterialDefinition(
+		PerMaterialData const& matData,
+		RWLockBase const& lock) const;
 
 	void CompleteDefinitionWithDefaultValues(AdvViz::SDK::ITwinMaterial& matDefinition,
-		uint64_t matID, RWLockBase const& lock) const;
-
+		std::optional<uint64_t> const& matIDOpt,
+		AdvViz::SDK::ITwinRenderMaterialProperties const* renderMaterialProps,
+		RWLockBase const& lock) const;
 
 
 	struct PerMaterialData
 	{
-		AdvViz::SDK::ITwinMaterialProperties iTwinProps_;
-		AdvViz::SDK::ITwinMaterial iTwinMaterialDefinition_;
+		//! The custom material definition, if it differs from the original iModel material definition.
+		//! For all properties which were not customized, the default value should be deduced from the
+		//! original iModel material definition, if any (see iTwinRenderMaterialID_).
+		AdvViz::SDK::ITwinMaterial customMaterialDefinition_;
+		//! The ID of the original iModel material definition to refer to for default values, if any. If not
+		//! set, some default values will be used. The original material definition should be found in 
+		//! #iTwinRenderMaterialMap_.
+		std::optional<uint64_t> iTwinRenderMaterialID_;
+		//! The alpha mode (Cesium) currently required by the material, based on its properties and textures.
+		//! Once computed, it should match one of the constants defined in CesiumGltf::Material::#AlphaMode.
 		std::string currentAlphaMode_;
-		std::string nameInIModel_; // used mostly for debugging/logging
 
 		PerMaterialData() = default;
-		PerMaterialData(AdvViz::SDK::ITwinMaterialProperties const& props);
 	};
+	//! Map of material customizations, and their original RenderMaterial ID, by iTwin Material ID.
+	//! The key here is the iTwin Material ID, which is the unique identifier for an iModel's material in the
+	//! current decoration (loaded from the Decoration Service).
+	//! By default, the mapping between iTwin Material ID and iModel RenderMaterial ID is the identity, so
+	//! both IDs will be the same initially, but this will no longer be true when we implement per-element
+	//! material assignment.
 	std::unordered_map<uint64_t, PerMaterialData> materialMap_;
+
+	//! Map of iTwin RenderMaterials by their ID - where iTwin RenderMaterial's properties were converted to
+	//! the ITwinMaterial format upon loading.
+	std::unordered_map<uint64_t, AdvViz::SDK::ITwinMaterial> iTwinRenderMaterialMap_;
 
 	struct TextureData
 	{
@@ -314,7 +404,7 @@ private:
 
 //! Helper template to fetch a given property with an expected type
 template <typename T>
-inline T const* TryGetMaterialAttribute(AdvViz::SDK::AttributeMap const& attributes, std::string const& prop_name)
+inline T const* TryGetMaterialAttribute(AdvViz::SDK::ITwinRenderMaterialAttributeMap const& attributes, std::string const& prop_name)
 {
 	auto itProp = attributes.find(prop_name);
 	if (itProp == attributes.cend())
@@ -323,18 +413,18 @@ inline T const* TryGetMaterialAttribute(AdvViz::SDK::AttributeMap const& attribu
 }
 
 template <typename T>
-inline T const* TryGetMaterialProperty(AdvViz::SDK::ITwinMaterialProperties const& props, std::string const& prop_name)
+inline T const* TryGetMaterialProperty(AdvViz::SDK::ITwinRenderMaterialProperties const& props, std::string const& prop_name)
 {
 	return TryGetMaterialAttribute<T>(props.attributes, prop_name);
 }
 
-inline bool GetMaterialBoolProperty(AdvViz::SDK::ITwinMaterialProperties const& props, std::string const& prop_name)
+inline bool GetMaterialBoolProperty(AdvViz::SDK::ITwinRenderMaterialProperties const& props, std::string const& prop_name)
 {
 	bool const* pBool = TryGetMaterialAttribute<bool>(props.attributes, prop_name);
 	return pBool && *pBool;
 }
 
-inline std::optional<uint64_t> TryGetId64(AdvViz::SDK::AttributeMap const& attributes, std::string const& id_name)
+inline std::optional<uint64_t> TryGetId64(AdvViz::SDK::ITwinRenderMaterialAttributeMap const& attributes, std::string const& id_name)
 {
 	std::string const* pStrId = TryGetMaterialAttribute<std::string>(attributes, id_name);
 	if (pStrId)

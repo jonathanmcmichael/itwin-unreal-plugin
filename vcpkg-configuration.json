@@ -6,11 +6,11 @@
 		"repository": "https://github.com/microsoft/vcpkg"
 	},
 	"overlay-ports": [
-		"vcpkg-overlays",
+		"Public/vcpkg-overlays",
 		"Public/Extern/cesium-unreal/extern/vcpkg-overlays"
 		,"Public/Extern/cesium-unreal/extern/cesium-native/extern/vcpkg/ports"
 	],
 	"overlay-triplets": [
-		"vcpkg-triplets"
+		"Public/vcpkg-triplets"
 	]
 }

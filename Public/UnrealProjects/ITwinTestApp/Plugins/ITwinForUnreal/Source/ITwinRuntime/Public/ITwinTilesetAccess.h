@@ -39,7 +39,12 @@ namespace ITwin
 
 	using TilesetAccessUPtr = TUniquePtr<FITwinTilesetAccess>;
 	using TilesetAccessUPtrArray = TArray<TilesetAccessUPtr>;
+	//! Gathers the tilesets of the given model type in the world, and fills the given array with their
+	//! access objects.
 	ITWINRUNTIME_API void GatherTilesetsOfModelType(TilesetAccessUPtrArray& OutTilesets, EITwinModelType ModelType, UWorld const* World);
+	//! Returns the number of tilesets of the given model type.
+	ITWINRUNTIME_API int32 CountTilesetsOfModelType(EITwinModelType ModelType, UWorld const* World);
+	//! Returns the tileset access object corresponding to the given model link, or nullptr if not found.
 	ITWINRUNTIME_API TilesetAccessUPtr GetTilesetAccessFromModelLink(const ModelLink& ModelLink, UWorld const* World);
 	//! This is the screenspace error it is best limiting oneself to with Google 3D Tiles,
 	//! to avoid huge memory usage and download times

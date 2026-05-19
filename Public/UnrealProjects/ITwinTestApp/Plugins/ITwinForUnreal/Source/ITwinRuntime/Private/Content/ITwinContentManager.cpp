@@ -169,6 +169,13 @@ void UITwinContentManager::MountPak(const FString& path,const FString& id)
 {
 	BE_LOGI("ContentHelper", "Trying to mount pak file: " << TCHAR_TO_UTF8(*path));
     // Check if the pak file exists
+    if (path.IsEmpty())
+    {
+        // fake pak to add id to DownloadedComponents
+        DownloadedComponents.insert(id);
+        BE_LOGI("ContentHelper", TCHAR_TO_UTF8(*id) << " added to DownloadedComponents ( fake pak).");
+        return;
+    }
 	if (!FPaths::FileExists(path))
 	{
         BE_LOGE("ContentHelper", "Pak file " << TCHAR_TO_UTF8(*path) << " does not exist.");
@@ -194,6 +201,7 @@ void UITwinContentManager::MountPak(const FString& path,const FString& id)
     if(!id.IsEmpty())
 	{
 		DownloadedComponents.insert(id);
+        BE_LOGI("ContentHelper", TCHAR_TO_UTF8(*id) << " added to DownloadedComponents.");
     }
     BE_LOGI("ContentHelper", TCHAR_TO_UTF8(*path) << " successfully mounted.");
 }

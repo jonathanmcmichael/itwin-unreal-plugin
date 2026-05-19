@@ -232,26 +232,28 @@ MODULE_EXPORT namespace AdvViz::SDK
 	};
 
 
-	// For now, consider a material as an array of { key, value } attributes.
-	using ITwinMaterialAttributeValue = std::variant<bool,
-													 double,
-													 std::array<double, 2>,
-													 std::array<double, 3>,
-													 std::string
-													>;
-	using AttributeMap = std::unordered_map<std::string, ITwinMaterialAttributeValue>;
+	// An iModel material is basically represented as an array of { key, value } attributes.
+	using ITwinRenderMaterialAttributeValue = std::variant<bool,
+														   double,
+														   std::array<double, 2>,
+														   std::array<double, 3>,
+														   std::string
+														   >;
+	using ITwinRenderMaterialAttributeMap = std::unordered_map<std::string, ITwinRenderMaterialAttributeValue>;
 
-	struct ITwinMaterialProperties
+	// Material properties as retrieved from IModelRpc interface: a set of attributes (key-value pairs) and
+	// texture maps (map name to attributes).
+	struct ITwinRenderMaterialProperties
 	{
 		std::string id;
 		std::string name;
-		AttributeMap attributes;
-		std::map<std::string, AttributeMap> maps; // texture maps
+		ITwinRenderMaterialAttributeMap attributes;
+		std::map<std::string, ITwinRenderMaterialAttributeMap> maps; // texture maps
 	};
 
-	struct ITwinMaterialPropertiesMap
+	struct ITwinRenderMaterialPropertiesMap
 	{
-		std::map<std::string, ITwinMaterialProperties> data_;
+		std::map<std::string, ITwinRenderMaterialProperties> data_;
 	};
 
 	// from https://www.itwinjs.org/v3/reference/core-common/entities/texturedata/

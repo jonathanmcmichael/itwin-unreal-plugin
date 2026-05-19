@@ -152,6 +152,8 @@ public:
 
 	/// Return some statistics
 	FString Stats() const;
+	size_t FetchedFromRemote() const;
+	size_t FetchedFromCache() const;
 	/// Resets the time used for statistics as the start time of the first request (useful to avoid accouting
 	/// for the delay between the initial listing of the schedules of an iModel and the start of the actual
 	/// querying of bindings)

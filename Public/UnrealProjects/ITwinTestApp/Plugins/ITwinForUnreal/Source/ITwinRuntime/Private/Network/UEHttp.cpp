@@ -66,7 +66,7 @@ namespace
 }
 FUEHttp::Response FUEHttp::Do(FString verb, const std::string& url, const BodyParams& bodyParams,
 	const Headers& headers /*= {}*/, bool isFullUrl /*= false*/,
-	std::function<void(const Response&)> callbackFct /*= {}*/,
+	const std::function<void(Response&)> &callbackFct /*= {}*/,
 	EAsyncCallbackExecutionMode asyncCBExecMode /*= Default*/)
 {
 	using namespace AdvViz::SDK;
@@ -108,17 +108,17 @@ FUEHttp::Response FUEHttp::Do(FString verb, const std::string& url, const BodyPa
 		HttpRequest->OnProcessRequestComplete().BindLambda([callbackFct, asyncCBExecMode]
 			(FHttpRequestPtr pRequest, FHttpResponsePtr pResponse, bool connectedSuccessfully)
 				{
-					auto Response = ConvertUnrealHttpResponse({}, pResponse, connectedSuccessfully);
+					auto Response = ConvertUnrealHttpResponse({}, pRequest, pResponse, connectedSuccessfully);
 					if (asyncCBExecMode == EAsyncCallbackExecutionMode::GameThread)
 					{
-						callbackFct(std::move(Response));
+						callbackFct(Response);
 					}
 					else
 					{
 						UE::Tasks::Launch(UE_SOURCE_LOCATION,
 							[callbackFct, Response = std::move(Response)]() mutable
 							{
-								callbackFct(std::move(Response));
+								callbackFct(Response);
 							},
 							UE::Tasks::ETaskPriority::Normal);
 					}
@@ -163,7 +163,8 @@ FUEHttp::Response FUEHttp::Do(FString verb, const std::string& url, const BodyPa
 		std::unique_lock<std::mutex> lock(mtx);
 		cv.wait_for(lock, std::chrono::hours(1), [&completed]() { return completed; });
 
-		return ConvertUnrealHttpResponse({}, HttpRequest->GetResponse(), connectedSuccessfully);
+		return ConvertUnrealHttpResponse({}, HttpRequest.ToSharedPtr(), HttpRequest->GetResponse(),
+										 connectedSuccessfully);
 	}
 }
 
@@ -195,7 +196,7 @@ namespace
 
 FUEHttp::Response FUEHttp::DoFile(FString verb, const std::string& url, const std::string& fileParamName, const std::string& filePath,
 	const KeyValueVector& extraParams /*= {}*/, const Headers& headers /*= {}*/,
-	std::function<void(const Response&)> callbackFct /*= {}*/,
+	const std::function<void(Response&)> &callbackFct /*= {}*/,
 	EAsyncCallbackExecutionMode asyncCBExecMode /*= Default*/)
 {
 	// inspired from: https://dev.epicgames.com/community/learning/tutorials/R6rv/unreal-engine-upload-an-image-using-http-post-request-c

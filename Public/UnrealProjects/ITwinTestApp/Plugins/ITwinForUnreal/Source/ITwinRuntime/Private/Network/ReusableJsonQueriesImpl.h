@@ -76,6 +76,8 @@ class FReusableJsonQueries::FImpl
 
 	/// Stats: total number of requests emitted in the lifetime of this instance
 	size_t TotalRequestsCount = 0;
+	/// Stats: total number of requests successfully obtained from the remote in the lifetime of this instance
+	size_t SuccessfulRequestsFromRemote = 0;
 	/// Stats: total number of requests obtained from the local cache in the lifetime of this instance
 	size_t CacheHits = 0;
 	/// Stats: start time of the first query (ever, or since the last call to ResetActiveTime)

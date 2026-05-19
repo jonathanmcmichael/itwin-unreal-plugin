@@ -49,6 +49,7 @@ namespace QueriesCache
 		case ESubtype::DEPRECATED_ElementsSourceIDs:	SubtypeFolder = TEXT("ElemSrcID"); break;
 		case ESubtype::MaterialMLPrediction:			SubtypeFolder = TEXT("MaterialMLPrediction"); break;
 		case ESubtype::ElementsMetadataCombined:		SubtypeFolder = TEXT("ElemMetadata"); break;
+		case ESubtype::ConstructionDetailing:			SubtypeFolder = TEXT("ConstrDetailing"); break;
 		default: ensure(false); return {};
 		}
 		FString const CacheFolder = FPaths::Combine(FPlatformProcess::UserSettingsDir(),
@@ -117,6 +118,7 @@ public:
 			QueriesCache::GetCacheFolder(QueriesCache::ESubtype::Schedules, Env, {}, {}, {}),
 			//QueriesCache::GetCacheFolder(QueriesCache::ESubtype::MaterialMLPrediction, Env, {}, {}, {}),
 			QueriesCache::GetCacheFolder(QueriesCache::ESubtype::ElementsMetadataCombined, Env, {}, {}, {}),
+			QueriesCache::GetCacheFolder(QueriesCache::ESubtype::ConstructionDetailing, Env, {}, {}, {}),
 		};
 		for (FString const& Dir : SubcacheFolders)
 		{
@@ -263,8 +265,7 @@ public:
 		if (Found.second) // was inserted, ie _not_ found -> we are initializing a new cache folder
 		{
 			Entry = MRU.insert(MRU.begin(),
-				MRUEntry{ CacheFolder, FDateTime::UtcNow(), 0ULL, nullptr/*set in MarkAsUsed*/,
-								 DisplayName });
+				MRUEntry{ CacheFolder, FDateTime::UtcNow(), 0ULL, nullptr/*set in MarkAsUsed*/, DisplayName });
 		}
 		else
 		{
@@ -481,7 +482,7 @@ void FJsonQueriesCache::Write(TSharedRef<FJsonObject>& JsonObj, int const Respon
 			JsonString += LINE_TERMINATOR;
 			JsonString += TEXT("\t\"reply\": ");
 			JsonString += LINE_TERMINATOR;
-			JsonString += ContentAsString;
+			JsonString += ContentAsString.IsEmpty() ? FString(TEXT("{}")) : ContentAsString;
 			JsonString += LINE_TERMINATOR;
 			JsonString += TEXT('}');
 		}

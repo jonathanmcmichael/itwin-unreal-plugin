@@ -15,6 +15,9 @@
 /// Small time offset in seconds, used to avoid strictly superimposed key frames
 #define KEYFRAME_TIME_EPSILON .01
 
+#define S4D_FLOAT_ALPHA_DISABLED 2.f
+#define S4D_UINT8_ALPHA_DISABLED (uint8)1
+
 #define PRIVATE_S4D_BGR_DISABLED_VAL 0
 #define PRIVATE_S4D_BGR_DISABLED \
 	PRIVATE_S4D_BGR_DISABLED_VAL, PRIVATE_S4D_BGR_DISABLED_VAL, PRIVATE_S4D_BGR_DISABLED_VAL

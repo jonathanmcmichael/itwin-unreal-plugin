@@ -37,6 +37,21 @@ struct Empty
 {
 };
 
+// Add new helper struct to store pre-fetched data context
+struct PrimitivePrefetchContext
+{
+	// Callback to store pre-fetched data from GltfTuner back to Unreal side
+	using StorePrefetchDataCallback = std::function<void(
+		const CesiumGltf::Model& model,
+		const CesiumGltf::MeshPrimitive& primitive,
+		int32_t meshIndex,
+		int32_t primitiveIndex,
+		void* userData)>;
+		
+	StorePrefetchDataCallback storeCallback_;
+	void* userData_ = nullptr;
+};
+
 //! Used to create an AccessorView.
 template<template<class> class _ViewHolder>
 struct Maker
@@ -167,7 +182,7 @@ public:
 	{
 		/// gltf material ID (refers to the material exported by the Mesh Export service)
 		int32_t material_ = -1;
-		/// iTwin material ID (if provided as meta-data by the Mesh Export service)
+		/// iTwin material ID (in case a material customization is requested for this cluster)
 		std::optional<uint64_t> itwinMaterialID_;
 		/// identifier for Synchro4D-related groups (see anim4DGroups_): when set but empty, by convention,
 		/// it means the "translucent non-transformed Elements group", otherwise it's a list of possibly
@@ -300,11 +315,32 @@ public:
 		// Process the primitives of each mesh.
 		// Note: we do not merge primitives belonging to different meshes,
 		// since it would break the structure of the model's scene.
+		int32_t meshIndex = 0;
 		for (const auto& mesh: model_.meshes)
 		{
 			ClusterList clusters;
+			int32_t primitiveIndex = 0;
 			for (const auto& primitive: mesh.primitives)
 			{
+				// *** NEW: Invoke primitive pre-fetch callback if registered ***
+				if (rulesEx_.tuningRules_.primitivePreFetchCallback_)
+				{
+					try
+					{
+						rulesEx_.tuningRules_.primitivePreFetchCallback_(
+							model_, 
+							primitive, 
+							meshIndex, 
+							primitiveIndex,
+							rulesEx_.tuningRules_.primitivePreFetchUserData_);
+					}
+					catch (...)
+					{
+						// Catch any exceptions from callback to prevent crashing the tuner
+						// In production, consider logging this error
+					}
+				}
+
 				// Look for the _FEATURE_ID_X corresponding to our metadata.
 				const auto getFeatureIdsAccessorIndex = [&](std::optional<UInt64AccessorView> const& propTableView, int64_t propTableIndex)
 					{
@@ -344,8 +380,10 @@ public:
 					AccessorViews::Maker<AccessorViews::FeatureIds>{elementFeatIdsAccessorIndex},
 					AccessorViews::Maker<AccessorViews::Colors>{colorAttributeIt == primitive.attributes.end() ? -1 : colorAttributeIt->second}),
 					primitive, { .hasMaterialFeatureId_ = primHasMaterialIDs }, clusters);
+				
+				++primitiveIndex;
 			}
-			int32_t const meshIndex = static_cast<int32_t>(gltfBuilder.GetModel().meshes.size());
+			int32_t const outputMeshIndex = static_cast<int32_t>(gltfBuilder.GetModel().meshes.size());
 			gltfBuilder.GetModel().meshes.emplace_back();
 			CesiumGltf::Node const* nodeUsingThisMesh = nullptr;
 			// To have reproducible output (which is needed for unit tests), we add the primitives
@@ -373,7 +411,7 @@ public:
 						matInfo, cluster.colors_);
 					materialId = matInfo.gltfMaterialIndex_;
 				}
-				auto primitive = gltfBuilder.AddMeshPrimitive(meshIndex, materialId, clusterId.mode_);
+				auto primitive = gltfBuilder.AddMeshPrimitive(outputMeshIndex, materialId, clusterId.mode_);
 				primitive.SetIndices(cluster.indices_, true);
 				primitive.SetPositions(cluster.positions_);
 				if (!cluster.normals_.empty())
@@ -414,7 +452,7 @@ public:
 						// Note that there is often just one mesh (with several primitives) and one node in a
 						// tile...
 						auto itNode = std::find_if(model_.nodes.cbegin(), model_.nodes.end(),
-							[meshIndex](auto const& node) { return node.mesh == meshIndex; });
+							[outputMeshIndex](auto const& node) { return node.mesh == outputMeshIndex; });
 						BE_ASSERT(itNode != model_.nodes.end());
 						if (itNode != model_.nodes.end())
 						{
@@ -431,6 +469,8 @@ public:
 				if (clusterId.itwinMaterialID_) // the final primitive will have 1 iTwin material
 					primitive.SetITwinMaterialID(*clusterId.itwinMaterialID_);
 			}
+			
+			++meshIndex;
 		}
 		// Copy everything else from the input model.
 		// We skip some properties (eg skins) because they may reference data contained in buffers,
@@ -579,16 +619,19 @@ private:
 				const bool hasMaterialFeatureId = primProps.hasMaterialFeatureId_;
 				BE_ASSERT(!hasMaterialFeatureId || (hasFeatureId && materialPropertyTableView_));
 
-				// Get the original material identifier in the iModel, if it was exported by the Mesh-Export
-				// Service (should be the case since 08/2024)
+				// For the material:
+				// - if the element ID is in a group, use this group's material,
+				// - otherwise, use the material of the primitive.
 				std::optional<uint64_t> itwinMatID;
 				int32_t material = -1;
 				if (groupIt == rulesEx_.elementToGroups_.end() || none == groupIt->second.first)
 				{
-					// For the material:
-					// - if the element ID is in a group, use this group's material,
-					// - otherwise, use the material of the primitive.
+					// No group for this element.
 					material = primitive.material;
+					// Get the original material identifier in the iModel, if it was exported by the
+					// Mesh-Export Service (should be the case since 08/2024).
+					// So by default, the iTwin Material ID will be the same as the original "iModel"
+					// material ID!
 					if (hasMaterialFeatureId)
 					{
 						itwinMatID = (*materialPropertyTableView_)[firstFeatureId];
@@ -596,7 +639,7 @@ private:
 				}
 				else
 				{
-					auto& matGroup = rulesEx_.tuningRules_.materialGroups_[groupIt->second.first];
+					auto const& matGroup = rulesEx_.tuningRules_.materialGroups_[groupIt->second.first];
 					material = matGroup.material_;
 					itwinMatID = matGroup.itwinMaterialID_;
 				}
@@ -772,6 +815,11 @@ void GltfTuner::Impl::UpdateRulesIfNeeded(Cesium3DTilesSelection::GltfModifier c
 			rulesEx_.anim4DRulesVersion_ = anim4DRulesVersion_;
 			rulesEx_.tuningRules_.anim4DGroups_ = std::move(nextTuningRules_.anim4DGroups_);
 		}
+		
+		// *** NEW: Copy callback and user data (these are always "active" regardless of version) ***
+		rulesEx_.tuningRules_.primitivePreFetchCallback_ = nextTuningRules_.primitivePreFetchCallback_;
+		rulesEx_.tuningRules_.primitivePreFetchUserData_ = nextTuningRules_.primitivePreFetchUserData_;
+		
 		rulesEx_.version_ = *tuner.getCurrentVersion();
 		constexpr size_t none = (size_t)-1;
 		auto& elemToGroups = rulesEx_.elementToGroups_;
@@ -980,6 +1028,17 @@ void GltfTuner::SetMaterialInfoReadCallback(ITwinMaterialInfoReadCallback const&
 void GltfTuner::SetMaterialHelper(std::shared_ptr<GltfMaterialHelper> const& matHelper)
 {
 	impl_->materialHelper_ = matHelper;
+}
+
+void GltfTuner::SetPrimitivePreFetchCallback(PrimitivePreFetchCallback const& callback, void* userData)
+{
+	BeUtils::WLock wlock(impl_->mutex_);
+	impl_->nextTuningRules_.primitivePreFetchCallback_ = callback;
+	impl_->nextTuningRules_.primitivePreFetchUserData_ = userData;
+	// Note: We don't call trigger() here because this callback doesn't affect model versioning
+	// It will be picked up on the next UpdateRulesIfNeeded call
+	// However, if you want immediate effect, you can uncomment the following:
+	// if (getCurrentVersion()) trigger();
 }
 
 } // namespace BeUtils

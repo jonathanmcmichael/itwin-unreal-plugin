@@ -29,10 +29,12 @@ MODULE_EXPORT namespace AdvViz::SDK
 	{
 		Undefined = 0,
 		MapCutout = 1,
-		TrafficPath = 2,
+		AnimPathTraffic = 2,
 		PopulationZone = 3,
 		PopulationPath = 4,
-		AnimPath = 5
+		AnimPath = 5,
+		EdgeDisplayHelper = 6,
+		AnimPathCrowd = 7,
 	};
 
 	enum class ESplineTangentMode : uint8_t

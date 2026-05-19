@@ -24,6 +24,11 @@ public:
 	UPROPERTY()
 	bool bSelectElement = true;
 
+	//! When true, the picked element is added to (or toggled from) the current selection
+	//! instead of replacing it. Constrains picking to the iModel that already owns the selection.
+	UPROPERTY()
+	bool bAdditiveSelection = false;
+
 	//! Indicates whether the picked iTwin MaterialID, if any, should be selected.
 	UPROPERTY()
 	bool bSelectMaterial = true;

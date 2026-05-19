@@ -24,7 +24,10 @@ namespace BeUtils
 		static inline constexpr const char* ExtensionName = "ITWIN_material_identifier";
 
 		/**
-		 * @brief The material identifier in the original model file.
+		 * @brief The material identifier.
+		 *
+		 * @warning May differ from the iModel Material ID found in the original model (exported as meta-data
+		 * by the Mesh-Export Service).
 		 */
 		uint64_t materialId = 0;
 	};

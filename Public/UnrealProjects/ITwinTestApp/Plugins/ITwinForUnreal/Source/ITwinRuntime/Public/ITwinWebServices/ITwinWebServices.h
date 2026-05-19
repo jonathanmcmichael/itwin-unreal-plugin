@@ -18,6 +18,7 @@
 #include <MaterialPrediction/ITwinMaterialPredictionStatus.h>
 
 #include <ITwinRuntime/Private/Compil/BeforeNonUnrealIncludes.h>
+#	include <SDK/Core/Network/Network.h>
 #	include <SDK/Core/ITwinAPI/ITwinAuthObserver.h>
 #	include <SDK/Core/ITwinAPI/ITwinAuthStatus.h>
 #	include <SDK/Core/ITwinAPI/ITwinRequestTypes.h>
@@ -199,6 +200,8 @@ public:
 		FString ChangesetId, FString ECSQLQuery, int Offset, int Count);
 	void QueryIModelRows(FString iTwinId, FString iModelId, FString ChangesetId,
 		FString ECSQLQuery, int Offset, int Count, std::function<void(HttpRequestID)>&& NotifyRequestID,
+		std::function<void(const AdvViz::expected<AdvViz::SDK::Http::Response, std::string>&)>&& onFinished = {},
+		AdvViz::SDK::Http::EAsyncCallbackExecutionMode asyncCBExecMode = AdvViz::SDK::Http::EAsyncCallbackExecutionMode::MainThread,
 		AdvViz::SDK::ITwinAPIRequestInfo const* RequestInfo = nullptr,
 		AdvViz::SDK::FilterErrorFunc&& FilterError = {});
 

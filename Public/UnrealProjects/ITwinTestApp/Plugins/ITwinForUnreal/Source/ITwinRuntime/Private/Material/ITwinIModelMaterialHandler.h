@@ -25,7 +25,7 @@
 #include <vector>
 
 class AITwinIModel;
-class FITwinSceneMapping;
+class TSceneMappingPtr;
 class UITwinMaterialDefaultTexturesHolder;
 class IITwinWebServicesObserver;
 class UITwinWebServices;
@@ -43,7 +43,7 @@ namespace AdvViz::SDK
 	enum class EMaterialKind : uint8_t;
 	struct ITwinMaterial;
 	struct ITwinMaterialPrediction;
-	struct ITwinMaterialPropertiesMap;
+	struct ITwinRenderMaterialPropertiesMap;
 	struct ITwinTextureData;
 	struct ITwinUVTransform;
 	class MaterialPersistenceManager;
@@ -84,7 +84,7 @@ public:
 		return GltfMatHelper;
 	}
 
-	void OnMaterialPropertiesRetrieved(AdvViz::SDK::ITwinMaterialPropertiesMap const& props, AITwinIModel& IModel);
+	void OnMaterialPropertiesRetrieved(AdvViz::SDK::ITwinRenderMaterialPropertiesMap const& props, AITwinIModel& IModel);
 
 	void OnTextureDataRetrieved(std::string const& textureId, AdvViz::SDK::ITwinTextureData const& textureData);
 	
@@ -109,7 +109,7 @@ public:
 
 	double GetMaterialChannelIntensity(uint64_t MaterialId, AdvViz::SDK::EChannelType Channel) const;
 	void SetMaterialChannelIntensity(uint64_t MaterialId, AdvViz::SDK::EChannelType Channel, double Intensity,
-		FITwinSceneMapping& SceneMapping);
+		TSceneMappingPtr& SceneMapping);
 
 	//! Return the color defined for this channel. Beware the 'A' component of this color has no meaning for
 	//! EChannelType::Color, as the opacity is to be retrieved from EChannelType::Opacity.
@@ -117,21 +117,21 @@ public:
 	//! Sets the color for the given channel. Beware the 'A' component of this color will be ignored for
 	//! EChannelType::Color, as the opacity is controlled by the EChannelType::Opacity channel.
 	void SetMaterialChannelColor(uint64_t MaterialId, AdvViz::SDK::EChannelType Channel, FLinearColor const& Color,
-		FITwinSceneMapping& SceneMapping);
+		TSceneMappingPtr& SceneMapping);
 
 	FString GetMaterialChannelTextureID(uint64_t MaterialId, AdvViz::SDK::EChannelType Channel, AdvViz::SDK::ETextureSource& OutSource) const;
 	void SetMaterialChannelTextureID(uint64_t MaterialId, AdvViz::SDK::EChannelType Channel,
 		FString const& TextureId, AdvViz::SDK::ETextureSource eSource,
-		FITwinSceneMapping& SceneMapping,
+		TSceneMappingPtr& SceneMapping,
 		UITwinMaterialDefaultTexturesHolder const& DefaultTexturesHolder);
 
 	AdvViz::SDK::ITwinUVTransform GetMaterialUVTransform(uint64_t MaterialId) const;
 	void SetMaterialUVTransform(uint64_t MaterialId, AdvViz::SDK::ITwinUVTransform const& UVTransform,
-		FITwinSceneMapping& SceneMapping);
+		TSceneMappingPtr& SceneMapping);
 
 	AdvViz::SDK::EMaterialKind GetMaterialKind(uint64_t MaterialId) const;
 	void SetMaterialKind(uint64_t MaterialId, AdvViz::SDK::EMaterialKind NewKind,
-		FITwinSceneMapping& SceneMapping);
+		TSceneMappingPtr& SceneMapping);
 
 	//! Retrieves some properties which have an impact on the base material used at render time.
 	//! Returns whether the given material has a custom definition.
@@ -166,7 +166,7 @@ public:
 	bool LoadMaterialFromAssetFile(uint64_t MaterialId,
 		FMaterialAssetInfo const& MaterialAssetInfo,
 		FString const& IModelId,
-		FITwinSceneMapping& SceneMapping,
+		TSceneMappingPtr& SceneMapping,
 		UITwinMaterialDefaultTexturesHolder const& DefaultTexturesHolder,
 		LoadOptions const& Options = {});
 
@@ -205,7 +205,7 @@ private:
 
 	template <typename MaterialParamHelper>
 	void TSetMaterialChannelParam(MaterialParamHelper const& Helper, uint64_t MaterialId,
-		FITwinSceneMapping& SceneMapping);
+		TSceneMappingPtr& SceneMapping);
 
 	// Persistence management for ML material prediction.
 	void SaveMLPredictionState();

@@ -43,6 +43,9 @@ namespace AdvViz::SDK
 		for (auto const& itemPtr : items)
 		{
 			auto item = itemPtr->GetAutoLock();
+			if (jsonConverter.ShouldSkip(*item))
+				continue;
+
 			if (!item->HasDBIdentifier())
 			{
 				jsonConverter.AppendItem(jInPost, *item);

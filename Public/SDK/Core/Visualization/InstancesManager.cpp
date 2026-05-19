@@ -367,8 +367,6 @@ namespace AdvViz::SDK
 				[SThis, onCreatedGroupCallback](SJsonInstGroupWithId const& row) -> expected<void, std::string>
 				{
 					IInstancesGroup* group;
-					std::optional<Tools::AutoLockObject<RWLockablePtrObject<IInstancesGroup>>> dgpLocked;
-
 					{
 						auto thdata = SThis->thdata_.GetAutoLock();
 						group = IInstancesGroup::New();

@@ -19,7 +19,7 @@
 
 AdvViz::SDK::Http::Response ConvertUnrealHttpResponse(
 	AdvViz::SDK::HttpRequest::RequestPtr const& SDKRequestPtr,
-	FHttpResponsePtr UEResponse, bool connectedSuccessfully);
+	FHttpRequestPtr UERequest, FHttpResponsePtr UEResponse, bool connectedSuccessfully);
 
 class FUEHttpRequest : public AdvViz::SDK::HttpRequest
 {
@@ -42,7 +42,7 @@ public:
 
 protected:
 	virtual void DoSetVerb(AdvViz::SDK::EVerb verb) override;
-	virtual void DoSetResponseCallback(ResponseCallback const& callback) override;
+	virtual void DoSetResponseCallback(ResponseCallback const& callback, AdvViz::SDK::Http::EAsyncCallbackExecutionMode asyncCBExecMode) override;
 
 private:
 	class FImpl;

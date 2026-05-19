@@ -42,14 +42,14 @@ class FIModelInvariants
 public:
 	FITwinIModelInternals& Internals;
 	std::function<FBox(FElementsGroup const&)> const GroupBBoxGetter;
-	std::function<FBox const& (ITwinElementID const&)> const BBoxGetter;
+//	std::function<FBox const& (ITwinElementID const&)> const BBoxGetter;
 
 	FIModelInvariants(AITwinIModel& IModel)
 		: Internals(GetInternals(IModel))
 		, GroupBBoxGetter(std::bind(&FITwinIModelInternals::GetBoundingBox, &Internals,
 																			std::placeholders::_1))
-		, BBoxGetter(std::bind(&FITwinSceneMapping::GetBoundingBox, &Internals.SceneMapping,
-																	std::placeholders::_1))
+		//, BBoxGetter(std::bind(&FITwinSceneMapping::GetBoundingBox, &Internals.SceneMapping,
+		//															std::placeholders::_1))
 	{
 	}
 };
@@ -91,7 +91,7 @@ class FITwinSynchro4DAnimator::FImpl
 					   std::optional<std::pair<double const&, double const&>> const& TimeIncrement,
 					   std::optional<ITwinScene::TileIdx> OnlySceneTile, bool const bOnlyVisibleTiles);
 	/// \param OnlyThisTile If nullptr, stop animation in all tiles
-	void StopAnimationInTiles(FITwinSceneTile* OnlyThisTile = nullptr);
+	void StopAnimationInTiles(const TITwinSceneTilePtr& OnlyThisTile = {});
 
 public:
 	FImpl(FITwinSynchro4DAnimator& InOwner) : Owner(InOwner) {}
@@ -200,12 +200,12 @@ void FITwinSynchro4DAnimator::Stop()
 	}
 }
 
-void FITwinSynchro4DAnimator::DisableAnimationInTile(FITwinSceneTile& SceneTile)
+void FITwinSynchro4DAnimator::DisableAnimationInTile(const TITwinSceneTilePtr& SceneTilePtr)
 {
-	Impl->StopAnimationInTiles(&SceneTile);
+	Impl->StopAnimationInTiles(SceneTilePtr);
 }
 
-void FITwinSynchro4DAnimator::FImpl::StopAnimationInTiles(FITwinSceneTile* OnlyThisTile/*= nullptr*/)
+void FITwinSynchro4DAnimator::FImpl::StopAnimationInTiles(const TITwinSceneTilePtr& OnlyThisTile/*= nullptr*/)
 {
 	auto* IModel = Cast<AITwinIModel>(Owner.Owner.GetOwner());
 	if (!IModel)
@@ -213,8 +213,10 @@ void FITwinSynchro4DAnimator::FImpl::StopAnimationInTiles(FITwinSceneTile* OnlyT
 	auto&& SchedInternals = GetInternals(Owner.Owner);
 	auto const& NonAnimatedDuplicates = SchedInternals.GetTimeline().GetNonAnimatedDuplicates();
 	auto const& StopAnimForTile = [&SchedInternals, &NonAnimatedDuplicates]
-		(FITwinSceneTile& SceneTile)
+		(const TITwinSceneTilePtr& SceneTilePtr)
 		{
+			auto SceneTileLock = SceneTilePtr->GetAutoLock();
+			auto& SceneTile = *SceneTileLock;
 			if (SceneTile.HighlightsAndOpacities)
 				SceneTile.HighlightsAndOpacities->FillWith(S4D_MAT_BGRA_DISABLED(255));
 			if (SceneTile.CuttingPlanes)
@@ -225,14 +227,21 @@ void FITwinSynchro4DAnimator::FImpl::StopAnimationInTiles(FITwinSceneTile* OnlyT
 						Extracted.TransformableMeshComponent->SetWorldTransform(Extracted.OriginalTransform, false,
 							nullptr, ETeleportType::TeleportPhysics);
 				});
-			SchedInternals.HideNonAnimatedDuplicates(SceneTile, NonAnimatedDuplicates);
+			SchedInternals.HideNonAnimatedDuplicates(SceneTilePtr, NonAnimatedDuplicates);
 		};
 	FITwinIModelInternals& IModelInternals = GetInternals(*IModel);
 	if (OnlyThisTile)
-		StopAnimForTile(*OnlyThisTile);
+		StopAnimForTile(OnlyThisTile);
 	else
-		IModelInternals.SceneMapping.ForEachKnownTile(StopAnimForTile);
-	IModelInternals.SceneMapping.Update4DAnimTextures();
+	{
+		auto SceneMappingLocked = IModelInternals.SceneMapping->GetAutoLock();
+		SceneMappingLocked->ForEachKnownTile(StopAnimForTile);
+	}
+
+	{
+		auto SceneMappingLocked = IModelInternals.SceneMapping->GetAutoLock();
+		SceneMappingLocked->Update4DAnimTextures();
+	}
 }
 
 void FITwinSynchro4DAnimator::OnChangedAnimationSpeed()
@@ -278,22 +287,26 @@ void FITwinSynchro4DAnimator::OnFadeOutNonAnimatedElements()
 		: std::array<uint8, 4>(S4D_MAT_BGRA_DISABLED(255));
 	FITwinIModelInternals& IModelInternals = GetInternals(*IModel);
 	auto const& NonAnimatedDuplicates = Timeline.GetNonAnimatedDuplicates();
-	IModelInternals.SceneMapping.ForEachKnownTile(
-		[&IModelInternals, &FillColor, &SchedInternals, &NonAnimatedDuplicates,
+	auto SceneMappingLocked = IModelInternals.SceneMapping->GetAutoLock();
+	auto sceneMapping = SceneMappingLocked.GetPtr();
+	sceneMapping->ForEachKnownTile(
+		[&IModelInternals, sceneMapping, &FillColor, &SchedInternals, &NonAnimatedDuplicates,
 			bNeedHideNonAnimDupl = (!Owner.bMaskOutNonAnimatedElements)]
-		(FITwinSceneTile& SceneTile)
+		(TITwinSceneTilePtr SceneTilePtr)
 	{
+		auto SceneTileLock = SceneTilePtr->GetAutoLock();
+		FITwinSceneTile& SceneTile = *SceneTileLock;
 		bool bJustCreatedOpaTex = false;
 		SceneTile.ForEachElementFeatures(
-			[&IModelInternals, &FillColor, &SceneTile, &bJustCreatedOpaTex]
+			[&IModelInternals, sceneMapping, &FillColor, &SceneTile, &bJustCreatedOpaTex]
 			(FITwinElementFeaturesInTile& ElementFeatures)
 			{
-				if (IModelInternals.SceneMapping.ElementFor(ElementFeatures.SceneRank).AnimationKeys.empty())
+				if (sceneMapping->ElementFor(ElementFeatures.SceneRank).AnimationKeys.empty())
 				{
 					if (!SceneTile.HighlightsAndOpacities)
 					{
 						bJustCreatedOpaTex = true;
-						IModelInternals.SceneMapping.CreateHighlightsAndOpacitiesTexture(SceneTile);
+						sceneMapping->CreateHighlightsAndOpacitiesTexture(SceneTile);
 					}
 					if (bJustCreatedOpaTex)
 					{
@@ -303,7 +316,7 @@ void FITwinSynchro4DAnimator::OnFadeOutNonAnimatedElements()
 				}
 			});
 		if (bNeedHideNonAnimDupl)
-			SchedInternals.HideNonAnimatedDuplicates(SceneTile, NonAnimatedDuplicates);
+			SchedInternals.HideNonAnimatedDuplicates(SceneTilePtr, NonAnimatedDuplicates);
 	});
 	if (Impl->bIsPlaying || Impl->bIsPaused)
 		Impl->ApplyAnimation(true);
@@ -312,8 +325,8 @@ void FITwinSynchro4DAnimator::OnFadeOutNonAnimatedElements()
 		bool bWaitingForTextures = false;
 		// we don't need the value set into bWaitingForTextures, as long as the return value is true, it means
 		// Update4DAnimTextures has been called already
-		if (!IModelInternals.SceneMapping.TilesHaveNew4DAnimTextures(bWaitingForTextures))
-			IModelInternals.SceneMapping.Update4DAnimTextures();
+		if (!SceneMappingLocked->TilesHaveNew4DAnimTextures(bWaitingForTextures))
+			SceneMappingLocked->Update4DAnimTextures();
 	}
 }
 
@@ -325,12 +338,22 @@ namespace Detail
 	{
 		return static_cast<uint8>(255. * std::clamp(v, 0.f, 1.f));
 	}
-
+	static uint8 ClampCastAlphaWithSpecialValuetoU8(float const alpha)
+	{
+		if (S4D_FLOAT_ALPHA_DISABLED == alpha)
+			return S4D_UINT8_ALPHA_DISABLED;
+		else
+		{
+			uint8 const alphaU8 = ClampCast01toU8(alpha);
+			// avoid the special value for "use original alpha"
+			return (S4D_UINT8_ALPHA_DISABLED == alphaU8) ? 0 : alphaU8;
+		}
+	}
 	static std::array<uint8, 4> ClampCast01toBGRA8ReplacingDisabled(FVector const& RGBColor, float const Alpha)
 	{
 		std::array<uint8, 4> ColorBGRA8 =
 			{ ClampCast01toU8(RGBColor.Z), ClampCast01toU8(RGBColor.Y), ClampCast01toU8(RGBColor.X),
-			  ClampCast01toU8(Alpha) };
+			  ClampCastAlphaWithSpecialValuetoU8(Alpha) };
 		// Note: this is indeed late to do the replacement, that's because the timeline stores the color as
 		// a float vector - TODO_GCO keep uint8 all along since 4D animations are actually described with
 		// uint8 components too (and transparencies as a percentage!).
@@ -356,14 +379,15 @@ namespace Detail
 		{
 			if (!AsBGRA)
 			{
-				float const alpha = Props.Visibility.value_or(1.f).Value;
+				float const alpha = Props.Visibility.value_or(S4D_FLOAT_ALPHA_DISABLED).Value;
 				if (Props.Color)
 				{
 					AsBGRA.emplace(ClampCast01toBGRA8ReplacingDisabled(Props.Color->Value, alpha));
 				}
 				else
 				{
-					AsBGRA.emplace(std::array<uint8, 4> S4D_MAT_BGRA_DISABLED(ClampCast01toU8(alpha)));
+					AsBGRA.emplace(
+						std::array<uint8, 4> S4D_MAT_BGRA_DISABLED(ClampCastAlphaWithSpecialValuetoU8(alpha)));
 				}
 			}
 		}
@@ -406,8 +430,9 @@ namespace Detail
 		{
 			if (!AsTransform && Props.Transform)
 			{
+				auto SceneMappingLocked = IModelInvariants.Internals.SceneMapping->GetAutoLock();
 				AsTransform.emplace(FITwinSynchro4DSchedulesInternals::ComputeTransformFromFinalizedKeyframe(
-					IModelInvariants.Internals.SceneMapping.GetIModel2UnrealCoordConv(), *Props.Transform,
+					SceneMappingLocked->GetIModel2UnrealCoordConv(), *Props.Transform,
 					ElementsTimeline.GetIModelElementsBBox(IModelInvariants.GroupBBoxGetter).GetCenter(),
 					/*bWantsResultAsIfIModelUntransformed*/false));
 			}
@@ -504,7 +529,8 @@ void FITwinSynchro4DAnimator::FImpl::ApplyAnimation(bool const bForceUpdateAll)
 		IModelInvariants.emplace(*IModel);
 	}
 	bool bWaitingForTextures = false;
-	if (IModelInvariants->Internals.SceneMapping.TilesHaveNew4DAnimTextures(bWaitingForTextures))
+	auto SceneMappingLocked = IModelInvariants->Internals.SceneMapping->GetAutoLock();
+	if (SceneMappingLocked->TilesHaveNew4DAnimTextures(bWaitingForTextures))
 	{
 		// restart from scratch
 		LastAnimationTime.reset();
@@ -522,7 +548,7 @@ void FITwinSynchro4DAnimator::FImpl::ApplyAnimation(bool const bForceUpdateAll)
 			return;
 		}
 	}
-	IModelInvariants->Internals.SceneMapping.HandleNew4DAnimTexturesNeedingSetupInMaterials();
+	SceneMappingLocked->HandleNew4DAnimTexturesNeedingSetupInMaterials();
 
 	double const StartAnim = FPlatformTime::Seconds();
 	double LastStepTime = StartAnim;
@@ -553,7 +579,7 @@ void FITwinSynchro4DAnimator::FImpl::ApplyAnimation(bool const bForceUpdateAll)
 	if (Owner.Owner.bDebugSelectedElemAnim)
 	{
 		if (!DebugElem) DebugElem.emplace();
-		*DebugElem = IModelInvariants->Internals.SceneMapping.GetSelectedElement();
+		*DebugElem = SceneMappingLocked->GetSelectedElement();
 		if (ITwin::NOT_ELEMENT == (*DebugElem))
 			DebugElem.reset();
 	}
@@ -598,7 +624,7 @@ void FITwinSynchro4DAnimator::FImpl::ApplyAnimation(bool const bForceUpdateAll)
 		if (bHasUpdatedSomething)
 		{
 			LastStepTime = FPlatformTime::Seconds();
-			IModelInvariants->Internals.SceneMapping.Update4DAnimTextures();
+			SceneMappingLocked->Update4DAnimTextures();
 			double const CurTime = FPlatformTime::Seconds();
 			if ((CurTime - LastStepTime) > 0.1)
 			{
@@ -726,11 +752,14 @@ void FITwinSynchro4DAnimator::FImpl::ApplyTimeline(FITwinElementTimeline& Timeli
 			State.Visibility ? State.Visibility->Value : 1.f,
 			State.ClippingPlane ? 1 : 0, State.Transform ? 1 : 0);
 	}
+
+	auto SceneMappingLocked = IModelInvariants->Internals.SceneMapping->GetAutoLock();
 	for (auto&& TileOptim : TimelineOptim->Tiles)
 	{
 		if (OnlySceneTile && (*OnlySceneTile) != TileOptim.Rank)
 			continue;
-		auto& SceneTile = IModelInvariants->Internals.SceneMapping.KnownTile(TileOptim.Rank);
+		auto SceneTileLock = SceneMappingLocked->KnownTile(TileOptim.Rank)->GetAutoLock();
+		auto& SceneTile = *SceneTileLock;
 		if (!SceneTile.IsLoaded() || (bOnlyVisibleTiles && !SceneTile.bVisible))
 			continue;
 		// NO! Let's fill the texture data appropriately even if the textures are not yet plugged into the
@@ -761,34 +790,43 @@ void FITwinSynchro4DAnimator::FImpl::ApplyTimeline(FITwinElementTimeline& Timeli
 
 /// Will apply *all* timelines at once: this is particularly necessary for newly loaded tiles, to avoid
 /// 4D effects "popping" into existence after the tile has been shown with 4D anim incompletely applied
-void FITwinSynchro4DAnimator::ApplyAnimationOnTile(FITwinSceneTile& SceneTile)
+void FITwinSynchro4DAnimator::ApplyAnimationOnTile(const TITwinSceneTilePtr& SceneTilePtr)
 {
-	if (SceneTile.TimelinesIndices.empty())
-		return;
-	AITwinIModel* IModel = Cast<AITwinIModel>(Owner.GetOwner());
-	if (!IModel)
-		return;
-	auto&& SchedInternals = GetInternals(Owner);
-	if (!Impl->bIsPlaying && !Impl->bIsPaused) // ie Stopped
+	FITwinIModelInternals* IModelInternals;
 	{
-		Impl->StopAnimationInTiles(&SceneTile);
-		return;
+		auto SceneTileLock = SceneTilePtr->GetAutoLock();
+		auto& SceneTile = *SceneTileLock;
+		if (SceneTile.TimelinesIndices.empty())
+			return;
+		AITwinIModel* IModel = Cast<AITwinIModel>(Owner.GetOwner());
+		if (!IModel)
+			return;
+		auto&& SchedInternals = GetInternals(Owner);
+		if (!Impl->bIsPlaying && !Impl->bIsPaused) // ie Stopped
+		{
+			Impl->StopAnimationInTiles(SceneTilePtr);
+			return;
+		}
+		if (SchedInternals.PrefetchWholeSchedule()
+			&& !SchedInternals.IsPrefetchedAvailableAndApplied())
+		{
+			return;
+		}
+		auto&& AllTimelines = SchedInternals.GetTimeline().GetContainer();
+		IModelInternals = &GetInternals(*IModel);
+		auto SceneMappingLocked = IModelInternals->SceneMapping->GetRAutoLock();
+		auto const TileRank = SceneMappingLocked->KnownTileRank(SceneTilePtr);
+		for (auto&& Index : SceneTile.TimelinesIndices)
+		{
+			Impl->ApplyTimeline(*AllTimelines[Index], {}/*TODO_GCO: store last applied time*/, TileRank,
+				/*bOnlyVisibleTiles*/false/*because flag not toggled yet!*/);
+		}
 	}
-	if (SchedInternals.PrefetchWholeSchedule()
-		&& !SchedInternals.IsPrefetchedAvailableAndApplied())
 	{
-		return;
+		auto SceneMappingLocked = IModelInternals->SceneMapping->GetAutoLock();
+		size_t dummy1, dummy2;
+		SceneMappingLocked->Update4DAnimTileTextures(SceneTilePtr, dummy1, dummy2);
 	}
-	auto&& AllTimelines = SchedInternals.GetTimeline().GetContainer();
-	auto& IModelInternals = GetInternals(*IModel);
-	auto const TileRank = IModelInternals.SceneMapping.KnownTileRank(SceneTile);
-	for (auto&& Index : SceneTile.TimelinesIndices)
-	{
-		Impl->ApplyTimeline(*AllTimelines[Index], {}/*TODO_GCO: store last applied time*/, TileRank,
-							/*bOnlyVisibleTiles*/false/*because flag not toggled yet!*/);
-	}
-	size_t dummy1, dummy2;
-	IModelInternals.SceneMapping.Update4DAnimTileTextures(SceneTile, dummy1, dummy2);
 }
 
 namespace ITwin::Timeline::Interpolators {
@@ -832,7 +870,8 @@ void FinalizeDeferredProperty(::Detail::FFinalizeDeferredPropData& UserData, FDe
 				? (*FString::Printf(TEXT("Element 0x%I64x"), IModelElements.begin()->value()))
 				: (*FString::Printf(TEXT("%llu Elements"), IModelElements.size())),
 			*IModelElementsBBox.ToString());
-		Finalizer(UserData.IModelInternals.SceneMapping.GetIModel2UnrealCoordConv(), Deferred,
+		auto SceneMappingLocked = UserData.IModelInternals.SceneMapping->GetRAutoLock();
+		Finalizer(SceneMappingLocked->GetIModel2UnrealCoordConv(), Deferred,
 				  IModelElementsBBox);
 	}
 }

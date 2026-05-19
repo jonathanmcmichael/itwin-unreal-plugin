@@ -73,7 +73,8 @@ namespace AdvViz::SDK
 		static constexpr auto minimalScope_ = "itwin-platform" \
 			OPTIONAL_OFFLINE_ACCESS_SCOPE \
 			;
-		// Additional scopes may be added by the client application (this is the case in Carrot currently).
+		// Additional scopes may be added by the client application (this is the case in iTwin Engage
+		// currently).
 		static std::string extraScopes_;
 
 	public:
@@ -338,9 +339,8 @@ namespace AdvViz::SDK
 		Lock lock(mutex_);
 		overrideAccessToken_ = accessToken;
 		overrideMode_ = overrideMode;
-		if (accessToken.empty() && overrideMode != EITwinAuthOverrideMode::None)
+		if (accessToken.empty())
 		{
-			BE_ISSUE("inconsistent override mode (will revert to None)", (size_t)overrideMode);
 			overrideMode_ = EITwinAuthOverrideMode::None;
 		}
 		currentToken_->Set(GetCurrentAccessToken());

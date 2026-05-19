@@ -146,6 +146,14 @@ public:
 	UFUNCTION(Category = "iTwin", BlueprintCallable)
 	void SetUsedOnCutoutPrimitive(bool bForCutout);
 
+	/// Switch the tool usage to animation path mode on or off.
+	UFUNCTION(Category = "iTwin", BlueprintCallable)
+	void SetUsedForPathAnim(bool bForPathAnim);
+
+	/// Returns true if the tool is currently used for creating an animation path.
+	UFUNCTION(Category = "iTwin", BlueprintCallable)
+	bool IsUsedForPathAnim() const;
+
 	UFUNCTION(Category = "iTwin", BlueprintCallable)
 	bool IsCompatibleWithGizmo() const;
 
@@ -191,6 +199,9 @@ protected:
 
 	virtual void SetUsedOnCutoutPrimitiveImpl(bool /*bForCutout*/) { }
 	virtual bool IsUsedOnCutoutPrimitiveImpl() const { return false; }
+
+	virtual void SetUsedForPathAnimImpl(bool /*bForPathAnim*/) { }
+	virtual bool IsUsedForPathAnimImpl() const { return false; }
 
 	virtual bool IsCompatibleWithGizmoImpl() const { return true; }
 	virtual bool ShowOnlyTranslationZGizmoImpl() const { return false; }

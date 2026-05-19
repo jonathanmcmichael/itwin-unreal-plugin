@@ -967,12 +967,13 @@ void ResolveTexturesMatchingSource(
 		getAssetAccessor(), getAsyncSystem(), pLock);
 }
 
-void ResolveTexturesLocatedOnDisk(
+size_t ResolveTexturesLocatedOnDisk(
 	std::unordered_map<AdvViz::SDK::TextureKey, std::string> const& LocalTextures,
 	AITwinIModel::GltfMaterialHelperPtr gltfMatHelper,
 	std::filesystem::path const& textureDir,
 	BeUtils::WLock const* pLock = nullptr)
 {
+	size_t numResolvedTextures = 0;
 	// Remark: following merge with Cesium 2.14.1, we no longer use #resolveExternalData for local textures
 	// (using the file:/// protocol): it does not work at all in packaged version...
 	std::vector<CesiumGltf::Image> cesiumImages;
@@ -997,6 +998,10 @@ void ResolveTexturesLocatedOnDisk(
 			{
 				BE_LOGE("ITwinDecoration", "Could not load Cesium image '" << basename
 					<< "' - error: " << loadResult.error().message);
+			}
+			else
+			{
+				numResolvedTextures++;
 			}
 		}
 		imgIndex++;
@@ -1025,6 +1030,7 @@ void ResolveTexturesLocatedOnDisk(
 			imgIndex++;
 		}
 	}
+	return numResolvedTextures;
 }
 
 }
@@ -1102,12 +1108,14 @@ UTexture2D* ITwin::ResolveAsUnrealTexture(
 	return FImageUtils::ImportBufferAsTexture2D(Buffer);
 }
 
-void ITwin::ResolveITwinTextures(
-	std::unordered_map<AdvViz::SDK::TextureKey, std::string> const& iTwinTextures,
+size_t ITwin::ResolveITwinTextures(
+	std::unordered_map<AdvViz::SDK::TextureKey,
+	std::string> const& iTwinTextures,
 	AITwinIModel::GltfMaterialHelperPtr GltfMatHelper,
-	std::filesystem::path const& textureDir)
+	std::filesystem::path const& TextureDir,
+	BeUtils::WLock const* pLock /*= nullptr*/)
 {
-	Detail::ResolveTexturesLocatedOnDisk(iTwinTextures, GltfMatHelper, textureDir);
+	return Detail::ResolveTexturesLocatedOnDisk(iTwinTextures, GltfMatHelper, TextureDir, pLock);
 }
 
 namespace

@@ -223,7 +223,7 @@ namespace BeUtils
 
 
 	/// Responsible for the preparation of textures (merging the different channels sharing a same texture in
-	/// glTF format. It should be done before any tuning occurs.
+	/// glTF format). It should be done before any tuning occurs.
 	class ITwinToGltfTextureConverter : public GltfMaterialTuner
 	{
 		using Super = GltfMaterialTuner;

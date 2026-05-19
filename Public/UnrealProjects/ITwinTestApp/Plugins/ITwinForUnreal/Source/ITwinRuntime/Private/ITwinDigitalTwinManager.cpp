@@ -110,6 +110,8 @@ public:
 		LoadDecoration
 	};
 	EOperationUponAuth PendingOperation = EOperationUponAuth::None;
+	TMap<FString, FString> IModelIdToLoadableLayerNameMap;
+	TMap<FString, FString> RealityDataIdToLoadableLayerNameMap;
 };
 
 AITwinDigitalTwinManager::FImpl::FImpl(AITwinDigitalTwinManager& InOwner)
@@ -166,13 +168,22 @@ AITwinDigitalTwinManager::AITwinDigitalTwinManager()
 	: Impl(MakePimpl<FImpl>(*this))
 {
 	SetRootComponent(CreateDefaultSubobject<USceneComponent>(TEXT("root")));
-	//PrimaryActorTick.bCanEverTick = true;
+
+#if WITH_EDITOR
+	// In Editor, outside of PIE, delegates are not called, so we use Tick to check for load status updates
+	// instead.
+	PrimaryActorTick.bCanEverTick = true;
+#endif
 }
 
 void AITwinDigitalTwinManager::ResetITwin()
 {
 	IModelsMap.Empty();
+	IModelLoadStatusMap.Empty();
+	Impl->IModelIdToLoadableLayerNameMap.Empty();
 	RealityDataMap.Empty();
+	RealityDataLoadStatusMap.Empty();
+	Impl->RealityDataIdToLoadableLayerNameMap.Empty();
 	LoadedObjects.Empty();
 
 	const auto ChildrenCopy = Children;
@@ -326,6 +337,22 @@ void AITwinDigitalTwinManager::OnIModelsRetrieved(bool bSuccess, FIModelInfos co
 		for (FIModelInfo const& IModelInfo : IModelInfos.iModels)
 		{
 			IModelsMap.FindOrAdd(IModelInfo.Id) = IModelInfo;
+
+			// Also create a helper which will allow to easily load this iModel from the Editor.
+			TObjectPtr<UITwinLoadableIModel> LoadableIModel = NewObject<UITwinLoadableIModel>(this,
+				FName(*IModelInfo.DisplayName),
+				RF_Transient);
+			LoadableIModel->Owner = this;
+			LoadableIModel->Info = IModelInfo;
+
+			FITwinLoadableLayerHelper& LoadableIModelHelper = IModelLoadStatusMap.FindOrAdd(LoadableIModel->GetName());
+			LoadableIModelHelper.LoadableLayer = LoadableIModel;
+
+			// Store the mapping between layer ID and loadable layer name, to be able to find the
+			// corresponding loadable layer when only the layer ID is known.
+			// (See #SetLoadStatus for example).
+			Impl->IModelIdToLoadableLayerNameMap.FindOrAdd(IModelInfo.Id) = LoadableIModel->GetName();
+
 			if (bAutoLoadAllComponents)
 			{
 				PendingLoadIds.FindOrAdd(IModelInfo.Id, EITwinLoadContext::Single);
@@ -369,6 +396,23 @@ void AITwinDigitalTwinManager::OnRealityData3DInfoRetrieved(bool bSuccess, FITwi
 	if (bSuccess)
 	{
 		RealityDataMap.FindOrAdd(Info.Id) = Info;
+
+		// Also create a helper which will allow to easily load this iModel from the Editor.
+		TObjectPtr<UITwinLoadableRealityData> LoadableRealityData;
+		LoadableRealityData = NewObject<UITwinLoadableRealityData>(this,
+			FName(*Info.DisplayName),
+			RF_Transient);
+		LoadableRealityData->Owner = this;
+		LoadableRealityData->Info = Info;
+
+		FITwinLoadableLayerHelper& LoadableRealityDataHelper = RealityDataLoadStatusMap.FindOrAdd(LoadableRealityData->GetName());
+		LoadableRealityDataHelper.LoadableLayer = LoadableRealityData;
+
+		// Store the mapping between layer ID and loadable layer name, to be able to find the
+		// corresponding loadable layer when only the layer ID is known.
+		// (See #SetLoadStatus for example).
+		Impl->RealityDataIdToLoadableLayerNameMap.FindOrAdd(Info.Id) = LoadableRealityData->GetName();
+
 		if (bAutoLoadAllComponents)
 		{
 			PendingLoadIds.FindOrAdd(Info.Id, EITwinLoadContext::Single);
@@ -443,7 +487,112 @@ void AITwinDigitalTwinManager::Load(FITwinLoadInfo const& Info, EITwinLoadContex
 	}
 }
 
-void AITwinDigitalTwinManager::LoadIModel(FIModelInfo Info, EITwinLoadContext LoadContext)
+void AITwinDigitalTwinManager::SetLoadStatus(EITwinModelType ModelType, FString const& StringId, EITwinLayerLoadStatus NewStatus)
+{
+	// Update load status (useful in Editor).
+
+	TMap<FString, FITwinLoadableLayerHelper>& LoadStatusMap = (ModelType == EITwinModelType::IModel)
+		? IModelLoadStatusMap
+		: RealityDataLoadStatusMap;
+
+	TMap<FString, FString> const& IdToLoadableLayerNameMap = (ModelType == EITwinModelType::IModel)
+		? Impl->IModelIdToLoadableLayerNameMap
+		: Impl->RealityDataIdToLoadableLayerNameMap;
+
+	const FString* LoadableLayerNamePtr = IdToLoadableLayerNameMap.Find(StringId);
+	if (ensure(LoadableLayerNamePtr))
+	{
+		FITwinLoadableLayerHelper* LoadStatusHelper = LoadStatusMap.Find(*LoadableLayerNamePtr);
+		if (ensure(LoadStatusHelper))
+		{
+			LoadStatusHelper->LoadStatus = NewStatus;
+
+			if (NewStatus != EITwinLayerLoadStatus::InProgress)
+			{
+				LoadStatusHelper->bLoad = (NewStatus == EITwinLayerLoadStatus::Complete);
+			}
+		}
+	}
+}
+
+#if WITH_EDITOR
+namespace
+{
+	template <typename TLayer>
+	std::optional<EITwinLayerLoadStatus> TGetITwinLayerLoadStatus(TLayer const& Layer)
+	{
+		if (Layer.HasLoadedTileset())
+		{
+			return EITwinLayerLoadStatus::Complete;
+		}
+		else if (Layer.HasTilesetLoadFailure())
+		{
+			return EITwinLayerLoadStatus::Failed;
+		}
+		return std::nullopt;
+	}
+}
+#endif // WITH_EDITOR
+
+bool AITwinDigitalTwinManager::ShouldTickIfViewportsOnly() const
+{
+#if WITH_EDITOR
+	return true;
+#else
+	return Super::ShouldTickIfViewportsOnly();
+#endif
+}
+
+void AITwinDigitalTwinManager::Tick(float DeltaTime)
+{
+	Super::Tick(DeltaTime);
+
+#if WITH_EDITOR
+
+	auto const UpdateLoadStatus = [this](TMap<FString, FITwinLoadableLayerHelper> const& StatusMap)
+	{
+		// Find which iModel should be loaded/unloaded:
+		for (auto const& [_, LoadableLayerHelper] : StatusMap)
+		{
+			if (LoadableLayerHelper.LoadableLayer
+				&& LoadableLayerHelper.LoadStatus == EITwinLayerLoadStatus::InProgress)
+			{
+				// In progress: check if the layer has finished loading or not, and update the status accordingly.
+				std::optional<EITwinLayerLoadStatus> NewStatus;
+
+				EITwinModelType const ModelType = LoadableLayerHelper.LoadableLayer->GetModelType();
+				FString const& LayerId = LoadableLayerHelper.LoadableLayer->GetLayerId();
+				if (ModelType == EITwinModelType::IModel)
+				{
+					AITwinIModel const* IModel = GetIModel(LayerId);
+					if (IModel)
+					{
+						NewStatus = TGetITwinLayerLoadStatus<AITwinIModel>(*IModel);
+					}
+				}
+				else
+				{
+					AITwinRealityData const* RealityData = GetRealityData(LayerId);
+					if (RealityData)
+					{
+						NewStatus = TGetITwinLayerLoadStatus<AITwinRealityData>(*RealityData);
+					}
+				}
+				if (NewStatus && *NewStatus != EITwinLayerLoadStatus::InProgress)
+				{
+					SetLoadStatus(ModelType, LayerId, *NewStatus);
+				}
+			}
+		}
+	};
+	UpdateLoadStatus(IModelLoadStatusMap);
+	UpdateLoadStatus(RealityDataLoadStatusMap);
+
+#endif // WITH_EDITOR
+}
+
+
+void AITwinDigitalTwinManager::LoadIModel(FIModelInfo const& Info, EITwinLoadContext LoadContext)
 {
 	ensureMsgf(LoadContext != EITwinLoadContext::Unknown, TEXT("always specify a context!"));
 
@@ -451,6 +600,8 @@ void AITwinDigitalTwinManager::LoadIModel(FIModelInfo Info, EITwinLoadContext Lo
 		<< " with ID " << TCHAR_TO_ANSI(*Info.Id));
 
 	FLoadingScope LoadingScope(*this);
+
+	SetLoadStatus(EITwinModelType::IModel, Info.Id, EITwinLayerLoadStatus::InProgress);
 
 	FActorSpawnParameters SpawnParams;
 	SpawnParams.Owner = this;
@@ -486,12 +637,14 @@ void AITwinDigitalTwinManager::ConnectLoadedIModelToUI(AITwinIModel* /*IModel*/)
 
 }
 
-void AITwinDigitalTwinManager::LoadRealityData(FITwinRealityData3DInfo Info, EITwinLoadContext /*LoadContext*/)
+void AITwinDigitalTwinManager::LoadRealityData(FITwinRealityData3DInfo const& Info, EITwinLoadContext /*LoadContext*/)
 {
 	BE_LOGV("ITwinAdvViz", "ITwinManager: Loading RealityData " << TCHAR_TO_ANSI(*Info.DisplayName)
 		<< " with ID " << TCHAR_TO_ANSI(*Info.Id));
 
 	FLoadingScope LoadingScope(*this);
+
+	SetLoadStatus(EITwinModelType::RealityData, Info.Id, EITwinLayerLoadStatus::InProgress);
 
 	FActorSpawnParameters SpawnParams;
 	SpawnParams.Owner = this;
@@ -519,6 +672,10 @@ void AITwinDigitalTwinManager::LoadRealityData(FITwinRealityData3DInfo Info, EIT
 
 void AITwinDigitalTwinManager::OnRealityDataInfoLoaded(bool bSuccess, FString StringId)
 {
+	// Update load status (useful in Editor).
+	SetLoadStatus(EITwinModelType::RealityData, StringId,
+		bSuccess ? EITwinLayerLoadStatus::Complete : EITwinLayerLoadStatus::Failed);
+
 	AITwinRealityData* AsRealityData = nullptr;
 	if (bSuccess && LoadedObjects.Contains(StringId)
 		&& (AsRealityData = Cast<AITwinRealityData>(LoadedObjects[StringId])) != nullptr)
@@ -568,6 +725,11 @@ void AITwinDigitalTwinManager::LoadComponent(FString const& StringId, EITwinLoad
 void AITwinDigitalTwinManager::OnIModelLoaded(bool bSuccess, FString StringId)
 {
 	AITwinIModel* AsIModel = nullptr;
+
+	// Update load status (useful in Editor).
+	SetLoadStatus(EITwinModelType::IModel, StringId,
+		bSuccess ? EITwinLayerLoadStatus::Complete : EITwinLayerLoadStatus::Failed);
+
 	if (bSuccess && LoadedObjects.Contains(StringId)
 		&& (AsIModel = Cast<AITwinIModel>(LoadedObjects[StringId])) != nullptr)
 	{
@@ -657,12 +819,15 @@ void AITwinDigitalTwinManager::RemoveComponent(FString const& StringId)
 	{
 		if (ActiveModelId == StringId)
 		{
+			// If the removed model was active, reset the active model. If any other model is loaded, set the
+			// first one as active.
 			ActiveModelId = {};
-			for (auto const& [_, Info] : IModelsMap)
+			for (auto const& [IModelId, _] : IModelsMap)
 			{
-				if (LoadedObjects.Contains(Info.Id))
+				if (LoadedObjects.Contains(IModelId))
 				{
-					ActiveModelId = Info.Id;
+					ensure(IModelId != StringId); // We have just removed StringId from LoadedObjects...
+					ActiveModelId = IModelId;
 					break;
 				}
 			}
@@ -670,11 +835,15 @@ void AITwinDigitalTwinManager::RemoveComponent(FString const& StringId)
 		Synchro4DSchedules.Remove(StringId);
 		iModel->Destroy();
 		ComponentRemovedEvent.Broadcast(StringId, EITwinModelType::IModel);
+
+		SetLoadStatus(EITwinModelType::IModel, StringId, EITwinLayerLoadStatus::NotStarted);
 	}
 	else if (auto RealityData = Cast<AITwinRealityData>(Comp))
 	{
 		RealityData->Destroy();
 		ComponentRemovedEvent.Broadcast(StringId, EITwinModelType::RealityData);
+
+		SetLoadStatus(EITwinModelType::RealityData, StringId, EITwinLayerLoadStatus::NotStarted);
 	}
 }
 
@@ -767,6 +936,7 @@ void AITwinDigitalTwinManager::PostEditChangeProperty(FPropertyChangedEvent& Pro
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 
 	FName const PropertyName = (PropertyChangedEvent.Property != nullptr) ? PropertyChangedEvent.Property->GetFName() : NAME_None;
+	FName const MemberPropertyName = (PropertyChangedEvent.MemberProperty != nullptr) ? PropertyChangedEvent.MemberProperty->GetFName() : NAME_None;
 	if (PropertyName == GET_MEMBER_NAME_CHECKED(AITwinDigitalTwinManager, ServerConnection) ||
 		PropertyName == GET_MEMBER_NAME_CHECKED(AITwinDigitalTwinManager, ITwinId))
 	{
@@ -775,6 +945,43 @@ void AITwinDigitalTwinManager::PostEditChangeProperty(FPropertyChangedEvent& Pro
 	if (PropertyName == GET_MEMBER_NAME_CHECKED(AITwinDigitalTwinManager, bAutoLoadAllComponents))
 	{
 		SetAutoLoadAllComponents(bAutoLoadAllComponents);
+	}
+	if (PropertyName == GET_MEMBER_NAME_CHECKED(AITwinDigitalTwinManager, ITwinId)
+		&& !ITwinId.IsEmpty()
+		&& !bAutoLoadAllComponents)
+	{
+		UpdateITwin();
+	}
+
+	auto const ModifyLoadStatus = [this](TMap<FString, FITwinLoadableLayerHelper> const& StatusMap)
+	{
+		// Find which iModel should be loaded/unloaded:
+		for (auto const& [_, LoadableLayerHelper] : StatusMap)
+		{
+			if (LoadableLayerHelper.LoadableLayer)
+			{
+				if (LoadableLayerHelper.bLoad && LoadableLayerHelper.LoadStatus != EITwinLayerLoadStatus::Complete)
+				{
+					LoadableLayerHelper.LoadableLayer->Load();
+				}
+				else if (!LoadableLayerHelper.bLoad && LoadableLayerHelper.LoadStatus == EITwinLayerLoadStatus::Complete)
+				{
+					LoadableLayerHelper.LoadableLayer->Remove();
+				}
+			}
+		}
+	};
+	if (MemberPropertyName == GET_MEMBER_NAME_CHECKED(AITwinDigitalTwinManager, IModelLoadStatusMap)
+		&& PropertyName == GET_MEMBER_NAME_CHECKED(FITwinLoadableLayerHelper, bLoad))
+	{
+		// Find which iModel should be loaded/unloaded:
+		ModifyLoadStatus(IModelLoadStatusMap);
+	}
+	if (MemberPropertyName == GET_MEMBER_NAME_CHECKED(AITwinDigitalTwinManager, RealityDataLoadStatusMap)
+		&& PropertyName == GET_MEMBER_NAME_CHECKED(FITwinLoadableLayerHelper, bLoad))
+	{
+		// Find which reality data should be loaded/unloaded:
+		ModifyLoadStatus(RealityDataLoadStatusMap);
 	}
 }
 #endif // WITH_EDITOR

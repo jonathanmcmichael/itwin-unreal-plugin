@@ -933,8 +933,10 @@ namespace BeUtils
 		}
 		BE_ASSERT(materialHelper_.get() != nullptr);
 		RLock lock(materialHelper_->GetMutex());
-		auto const itwinMatInfo = materialHelper_->GetITwinMaterialInfo(itwinMatId, lock);
-		auto const* pItwinMatDef = itwinMatInfo.second;
+
+		MaterialDefinitionAccess const matDefinition = materialHelper_->GetMaterialDefinitionAccess(itwinMatId, lock);
+
+		auto const* pItwinMatDef = matDefinition.customMaterial;
 
 		matInfo.gltfMaterialIndex_ = gltfMatId;
 		matInfo.hasCustomDefinition_ = pItwinMatDef && AdvViz::SDK::HasCustomSettings(*pItwinMatDef);
@@ -972,15 +974,15 @@ namespace BeUtils
 			}
 
 			customMaterial.pbrMetallicRoughness->roughnessFactor =
-				materialHelper_->GetChannelIntensity(itwinMatId, AdvViz::SDK::EChannelType::Roughness, lock);
+				matDefinition.GetIntensity(AdvViz::SDK::EChannelType::Roughness);
 			customMaterial.pbrMetallicRoughness->metallicFactor =
-				materialHelper_->GetChannelIntensity(itwinMatId, AdvViz::SDK::EChannelType::Metallic, lock);
+				matDefinition.GetIntensity(AdvViz::SDK::EChannelType::Metallic);
 
 			int32_t metallicRoughnessTexIndex = -1;
 			AdvViz::SDK::ITwinChannelMap const metallicMap =
-				materialHelper_->GetChannelIntensityMap(itwinMatId, AdvViz::SDK::EChannelType::Metallic, lock);
+				matDefinition.GetIntensityMap(AdvViz::SDK::EChannelType::Metallic);
 			AdvViz::SDK::ITwinChannelMap const roughnessMap =
-				materialHelper_->GetChannelIntensityMap(itwinMatId, AdvViz::SDK::EChannelType::Roughness, lock);
+				matDefinition.GetIntensityMap(AdvViz::SDK::EChannelType::Roughness);
 			if (metallicMap.HasTexture() || roughnessMap.HasTexture())
 			{
 				metallicRoughnessTexIndex = MergeMetallicRoughnessTextures(
@@ -1002,7 +1004,7 @@ namespace BeUtils
 			}
 
 			double const alpha =
-				materialHelper_->GetChannelIntensity(itwinMatId, AdvViz::SDK::EChannelType::Alpha, lock);
+				matDefinition.GetIntensity(AdvViz::SDK::EChannelType::Alpha);
 
 			if (hasCustomAlpha)
 			{
@@ -1059,9 +1061,9 @@ namespace BeUtils
 			int32_t colorTexIndex = -1;
 
 			AdvViz::SDK::ITwinChannelMap const colorMap =
-				materialHelper_->GetChannelColorMap(itwinMatId, AdvViz::SDK::EChannelType::Color, lock);
+				matDefinition.GetColorMap(AdvViz::SDK::EChannelType::Color);
 			AdvViz::SDK::ITwinChannelMap const alphaMap =
-				materialHelper_->GetChannelIntensityMap(itwinMatId, AdvViz::SDK::EChannelType::Alpha, lock);
+				matDefinition.GetIntensityMap(AdvViz::SDK::EChannelType::Alpha);
 			bool const hasColorTexture = colorMap.HasTexture();
 			bool const hasAlphaTexture = alphaMap.HasTexture();
 			if (hasAlphaTexture)
@@ -1103,7 +1105,7 @@ namespace BeUtils
 			}
 
 			AdvViz::SDK::ITwinChannelMap const occlusionMap =
-				materialHelper_->GetChannelIntensityMap(itwinMatId, AdvViz::SDK::EChannelType::AmbientOcclusion, lock);
+				matDefinition.GetIntensityMap(AdvViz::SDK::EChannelType::AmbientOcclusion);
 			if (occlusionMap.HasTexture())
 			{
 				int32_t const occlusionTexIndex = FormatAOTexture(occlusionMap, textures, images, lock);
@@ -1125,7 +1127,7 @@ namespace BeUtils
 			}
 
 			AdvViz::SDK::ITwinChannelMap const normalMap =
-				materialHelper_->GetChannelColorMap(itwinMatId, AdvViz::SDK::EChannelType::Normal, lock);
+				matDefinition.GetColorMap(AdvViz::SDK::EChannelType::Normal);
 			if (normalMap.HasTexture())
 			{
 				int32_t const normTexIndex = ConvertTexture(normalMap, textures, images, lock);
@@ -1148,9 +1150,9 @@ namespace BeUtils
 
 			// For now, we only support specular as a scalar value, and not the full PBR-Specular workflow.
 			double const specular =
-				materialHelper_->GetChannelIntensity(itwinMatId, AdvViz::SDK::EChannelType::Specular, lock);
+				matDefinition.GetIntensity(AdvViz::SDK::EChannelType::Specular);
 			double const colorTexFactor =
-				materialHelper_->GetChannelIntensity(itwinMatId, AdvViz::SDK::EChannelType::Color, lock);
+				matDefinition.GetIntensity(AdvViz::SDK::EChannelType::Color);
 			if (specular > 0. || colorTexFactor != 1.0)
 			{
 				auto& iTwinMaterialExt = customMaterial.addExtension<BeUtils::ExtensionITwinMaterial>();
@@ -1252,19 +1254,22 @@ namespace BeUtils
 	{
 		ScopedMaterialId currentMatIdSetter(*this, itwinMatId); // for logs
 
+		MaterialDefinitionAccess const matDefinition =
+			materialHelper_->GetMaterialDefinitionAccess(itwinMatId, lock);
+
 		auto const chanTex =
-			materialHelper_->GetChannelMap(itwinMatId, channelJustEdited, lock);
+			matDefinition.GetChannelMap(channelJustEdited);
 
 		// Some channels require to be merged together (color+alpha), (metallic+roughness) or
 		// formatted to use a given R,G,B,A component
 		if (   (channelJustEdited == AdvViz::SDK::EChannelType::Alpha && chanTex.HasTexture())
 			|| (channelJustEdited == AdvViz::SDK::EChannelType::Color
-				&& materialHelper_->HasChannelMap(itwinMatId, AdvViz::SDK::EChannelType::Alpha, lock)))
+				&& matDefinition.HasChannelMap(AdvViz::SDK::EChannelType::Alpha)))
 		{
 			auto const colorTex =
-				materialHelper_->GetChannelColorMap(itwinMatId, AdvViz::SDK::EChannelType::Color, lock);
+				matDefinition.GetColorMap(AdvViz::SDK::EChannelType::Color);
 			auto const alphaTex =
-				materialHelper_->GetChannelIntensityMap(itwinMatId, AdvViz::SDK::EChannelType::Alpha, lock);
+				matDefinition.GetIntensityMap(AdvViz::SDK::EChannelType::Alpha);
 			return TMergeTexturesInHelper(
 				GetColorAlphaMergedTexId(colorTex, alphaTex),
 				[&](bool& bTranslucent) ->FormatTextureResult
@@ -1278,9 +1283,9 @@ namespace BeUtils
 		{
 			needTranslucentMat = false;
 			auto const metallicTex =
-				materialHelper_->GetChannelIntensityMap(itwinMatId, AdvViz::SDK::EChannelType::Metallic, lock);
+				matDefinition.GetIntensityMap(AdvViz::SDK::EChannelType::Metallic);
 			auto const roughnessTex =
-				materialHelper_->GetChannelIntensityMap(itwinMatId, AdvViz::SDK::EChannelType::Roughness, lock);
+				matDefinition.GetIntensityMap(AdvViz::SDK::EChannelType::Roughness);
 			if (!metallicTex.HasTexture() && !roughnessTex.HasTexture())
 			{
 				return {};
@@ -1297,7 +1302,7 @@ namespace BeUtils
 		{
 			needTranslucentMat = false;
 			auto const occlusionTex =
-				materialHelper_->GetChannelIntensityMap(itwinMatId, AdvViz::SDK::EChannelType::AmbientOcclusion, lock);
+				matDefinition.GetIntensityMap(AdvViz::SDK::EChannelType::AmbientOcclusion);
 			if (!occlusionTex.HasTexture())
 			{
 				return {};

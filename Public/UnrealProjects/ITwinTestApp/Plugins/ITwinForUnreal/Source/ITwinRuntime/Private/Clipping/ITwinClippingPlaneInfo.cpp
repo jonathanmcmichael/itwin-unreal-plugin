@@ -31,3 +31,7 @@ void FITwinClippingPlaneInfo::DoSetInvertEffect(bool bInvert)
 	}
 }
 
+void FITwinClippingPlaneInfo::BeforeDestroy()
+{
+	// Nothing to do for now (as we don't use additional actors to display edges as for boxes...)
+}

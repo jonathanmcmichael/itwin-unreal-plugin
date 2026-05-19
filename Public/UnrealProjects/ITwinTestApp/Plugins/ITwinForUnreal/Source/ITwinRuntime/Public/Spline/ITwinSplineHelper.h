@@ -59,6 +59,9 @@ public:
 	virtual void SetActorHiddenInGame(bool bNewHidden) override;
 	virtual void Tick(float DeltaTime) override;
 
+	//! Sets spline width to visualize route width for example. It does not impact the actual data of the spline.
+	void SetFixedSplineWidth(float Width);
+
 	//! Returns the USplineMeshComponent of this spline helper.
 	USplineComponent* GetSplineComponent() const { return SplineComponent.Get(); }
 
@@ -104,6 +107,9 @@ public:
 
 	//! Return the mesh component for the given spline point, if any.
 	UStaticMeshComponent* GetPointMeshComponent(int32 PointIndex) const;
+
+	//! Set the visibility of all point mesh components.
+	void SetPointsHiddenInGame(bool bNewHidden) const;
 
 	//! Given a spline mesh component (obtained by a line tracing operation after a user click for example),
 	//! return the associated segment index in this spline, if any (else return INDEX_NONE).

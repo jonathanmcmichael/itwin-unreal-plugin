@@ -195,7 +195,7 @@ ITwinElementID FITwinTracingHelper::VisitElementsUnderCursor(UWorld const* World
 
 
 bool FITwinTracingHelper::PickVisibleElement(FHitResult const& HitResult, AITwinIModel& IModel,
-	ITwinElementID& OutEltID, bool bSelectElement)
+	ITwinElementID& OutEltID, bool bSelectElement, bool bAdditive /*= false*/)
 {
 	ITwinElementID EltID = ITwin::NOT_ELEMENT;
 
@@ -212,8 +212,20 @@ bool FITwinTracingHelper::PickVisibleElement(FHitResult const& HitResult, AITwin
 	if (EltID != ITwin::NOT_ELEMENT)
 	{
 		FITwinIModelInternals& IModelInternals = GetInternals(IModel);
+		if (bAdditive && bSelectElement)
+		{
+			// Toggle: if the element is already selected, deselect it
+			auto const& SelectedElems = IModelInternals.GetSelectedElements();
+			if (SelectedElems.contains(EltID))
+			{
+				auto SceneMappingLock = IModelInternals.SceneMapping->GetAutoLock();
+				std::unordered_set<ITwinElementID> ToDeselect{ EltID };
+				SceneMappingLock->DeselectElements(ToDeselect);
+				return true;
+			}
+		}
 		if (IModelInternals.HasElementWithID(EltID)
-			&& IModelInternals.OnClickedElement(EltID, HitResult, bSelectElement))
+			&& IModelInternals.OnClickedElement(EltID, HitResult, bSelectElement, bAdditive))
 		{
 			return true;
 		}

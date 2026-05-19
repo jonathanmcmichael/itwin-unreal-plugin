@@ -189,13 +189,14 @@ void AddCuttingPlaneToTimeline(FITwinElementTimeline& ElementTimeline, FAppearan
 	}
 }
 
-float SelectAppearanceVisibility(FSimpleAppearance const& DefaultAppearance,
+std::optional<float> SelectAppearanceVisibility(FSimpleAppearance const& DefaultAppearance,
 	FSimpleAppearance const* MaybeForcedAppearance, std::optional<bool> const& ProfileForcedVisibility, bool bHidden)
 {
 	auto&& Appearance = MaybeForcedAppearance ? (*MaybeForcedAppearance) : DefaultAppearance;
 	if (ProfileForcedVisibility)
 		bHidden = !(*ProfileForcedVisibility);
-	return bHidden ? 0.f : (Appearance.bUseOriginalAlpha ? 1.f : Appearance.Alpha);
+	return bHidden ? std::optional<float>(0.f)
+				   : (Appearance.bUseOriginalAlpha ? std::optional<float>() : std::optional<float>(Appearance.Alpha));
 }
 
 void AddVisibilityToTimeline(FITwinElementTimeline& ElementTimeline,
@@ -227,10 +228,10 @@ void AddVisibilityToTimeline(FITwinElementTimeline& ElementTimeline,
 		//	return;
 		//}
 		bool const bZeroTimeTask = ((Time.second - KEYFRAME_TIME_EPSILON) <= Time.first);
-		float const AlphaBefore = SelectAppearanceVisibility(Profile.StartAppearance,
+		auto const AlphaBefore = SelectAppearanceVisibility(Profile.StartAppearance,
 			TaskDeps.ProfileForcedAppearanceBefore, TaskDeps.ProfileForcedVisibilityBefore,
 			EProfileAction::Install == Profile.ProfileType || EProfileAction::Temporary == Profile.ProfileType);
-		float const AlphaAfter = SelectAppearanceVisibility(Profile.FinishAppearance,
+		auto const AlphaAfter = SelectAppearanceVisibility(Profile.FinishAppearance,
 			TaskDeps.ProfileForcedAppearanceAfter, TaskDeps.ProfileForcedVisibilityAfter,
 			EProfileAction::Remove == Profile.ProfileType || EProfileAction::Temporary == Profile.ProfileType);
 		if (bZeroTimeTask)
@@ -242,10 +243,10 @@ void AddVisibilityToTimeline(FITwinElementTimeline& ElementTimeline,
 			ElementTimeline.SetVisibilityAt(Time.second - KF_END_2_EPSILON, AlphaAfter, EInterpolation::Step);
 			return;
 		}
-		float const StartAlpha =
-			Profile.ActiveAppearance.Base.bUseOriginalAlpha ? 1.f : Profile.ActiveAppearance.Base.Alpha;
-		float const FinishAlpha =
-			Profile.ActiveAppearance.Base.bUseOriginalAlpha ? 1.f : Profile.ActiveAppearance.FinishAlpha;
+		auto const StartAlpha = Profile.ActiveAppearance.Base.bUseOriginalAlpha
+			? std::optional<float>() : std::optional<float>(Profile.ActiveAppearance.Base.Alpha);
+		auto const FinishAlpha = Profile.ActiveAppearance.Base.bUseOriginalAlpha
+			? std::optional<float>() : std::optional<float>(Profile.ActiveAppearance.FinishAlpha);
 		if (AlphaBefore != StartAlpha)
 		{
 			ElementTimeline.SetVisibilityAt(Time.first - KF_START_EPSILON, AlphaBefore, EInterpolation::Step);

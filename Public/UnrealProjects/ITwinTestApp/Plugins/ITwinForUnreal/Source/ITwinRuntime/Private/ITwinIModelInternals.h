@@ -13,6 +13,12 @@
 #include <ITwinSceneMapping.h>
 #include <Timeline/TimelineFwd.h>
 
+#include <Interfaces/IHttpResponse.h>
+
+#include <Compil/BeforeNonUnrealIncludes.h>
+	#include <SDK/Core/Tools/Tools.h>
+#include <Compil/AfterNonUnrealIncludes.h>
+
 struct FHitResult;
 
 /// Destructors (of UObject descendents) being called only by the garbage collector, ie. at a time we
@@ -52,7 +58,7 @@ class FITwinIModelInternals
 {
 public:
 	AITwinIModel& Owner;
-	FITwinSceneMapping SceneMapping;
+	TSceneMappingPtr SceneMapping;
 	/// helper to activate clipping effects in the mesh components.
 	TStrongObjectPtr<UITwinClipping3DTilesetHelper> ClippingHelper;
 	std::shared_ptr<FIModelUninitializer> Uniniter;
@@ -60,8 +66,8 @@ public:
 	double LastScheduleDownloadProgressLogged = -100.;
 
 	FITwinIModelInternals(AITwinIModel& InOwner) : Owner(InOwner)
-		, SceneMapping(InOwner.HasAnyFlags(RF_ClassDefaultObject))
 	{
+		SceneMapping = AdvViz::SDK::Tools::MakeSharedLockableData<FITwinSceneMapping>(InOwner.HasAnyFlags(RF_ClassDefaultObject));
 		Uniniter = std::make_shared<FIModelUninitializer>();
 	}
 
@@ -78,17 +84,19 @@ public:
 
 	FBox GetBoundingBox(FElementsGroup const& Elements) const
 	{
+		auto SceneMappingLocked = SceneMapping->GetRAutoLock();
 		FBox GroupBox;
 		for (auto&& Elem : Elements)
 		{
-			GroupBox += SceneMapping.GetBoundingBox(Elem);
+			GroupBox += SceneMappingLocked->GetBoundingBox(Elem);
 		}
 		return GroupBox;
 	}
 
 	bool HasElementWithID(ITwinElementID const Element) const
 	{
-		auto const& Elem = SceneMapping.GetElement(Element);
+		auto SceneMappingLocked = SceneMapping->GetRAutoLock();
+		auto const& Elem = SceneMappingLocked->GetElement(Element);
 		return (ITwin::NOT_ELEMENT != Elem.ElementID); // <== means it was not found
 	}
 
@@ -104,11 +112,16 @@ public:
 		Unknown, Loading, Finished, NoneOrEmpty
 	};
 	void Update4DScheduleDownloadStatus(E4DScheduleStatus Sched4DStatus, double PercentComplete = 0.);
-	bool AreSynchro4DSchedulesMetadataLoaded() const;
+	bool AreSynchro4DSchedulesMetadataLoadedOrCancelled() const;
+	bool HasSynchro4DSchedulesMetadataQueryingError() const;
+	size_t ElementsMetadataFetchedFromRemote() const;
+	size_t ElementsMetadataFetchedFromCache() const;
+	EHttpResponseCodes::Type ElementsMetadataFirstErrorCode() const;
+	FString ElementsMetadataFirstErrorString() const;
 	void LogScheduleDownloadProgressed();
 
 	bool OnClickedElement(ITwinElementID const Element, FHitResult const& HitResult,
-						  bool const bSelectElement = true);
+						  bool const bSelectElement = true, bool const bAdditive = false);
 	void DescribeElement(ITwinElementID const Element, TWeakObjectPtr<UPrimitiveComponent> HitComponent = {});
 	void HideElements(std::unordered_set<ITwinElementID> const& InElementIDs, bool IsConstruction, bool Force = false);
 	void ShowElements(std::unordered_set<ITwinElementID> const& InElementIDs, bool Force = false);
@@ -118,6 +131,8 @@ public:
 	void ShowCategoriesPerModel(std::unordered_set<std::pair<ITwinElementID, ITwinElementID>, FITwinSceneTile::pair_hash> const& InCategoryPerModelIDs, bool Force =false);
 	//! Returns the selected Element's ID, if an Element is selected, or ITwin::NOT_ELEMENT.
 	ITwinElementID GetSelectedElement() const;
+	//! Returns all selected Elements' IDs, or an empty set.
+	std::unordered_set<ITwinElementID> const& GetSelectedElements() const;
 	//! Select the given material (use ITwin::NOT_MATERIAL to de-select).
 	void SelectMaterial(ITwinMaterialID const& InMaterialID);
 	//! Reset selection of both Element and Material.

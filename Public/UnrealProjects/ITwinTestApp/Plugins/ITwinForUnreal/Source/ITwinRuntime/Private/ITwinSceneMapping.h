@@ -48,6 +48,7 @@
 	#include <boost/multi_index/member.hpp>
 	#include <boost/multi_index/random_access_index.hpp>
 	#include <boost/multi_index/composite_key.hpp>
+	#include <SDK/Core/Tools/Tools.h>
 #include <Compil/AfterNonUnrealIncludes.h>
 
 
@@ -177,11 +178,12 @@ struct FITwinElementFeaturesInTile
 };
 
 /// Same as FITwinElementFeaturesInTile, but with Material ID as key (and simplified a bit, as we only use
-/// this mapping to perform per-material selection highlights.
+/// this mapping to perform per-material selection highlights).
+/// Here the material ID is the iModel Material ID (as read from the tileset metadata).
 struct FITwinMaterialFeaturesInTile
 {
 	/// same comment about constancy as for FITwinElementFeaturesInTile
-	ITwinMaterialID MaterialID;
+	ITwinRenderMaterialElementID MaterialID;
 	FITwinPropertyTextureFlag SelectingAndHidingTexFlag = {};
 
 	// There is absolutely no reason for this container to be small! In a given tile, many features can use
@@ -232,7 +234,7 @@ struct FITwinCategoryPerModelFeaturesInTile
 ///    obviously, the whole Element is probably extracted, in all tiles.
 struct FITwinExtractedEntity
 {
-	ITwinElementID const ElementID;
+	ITwinElementID ElementID;
 
 	/// Needed to restore the original world transform when an Element stops being transformed or stops
 	/// following a 3D path.
@@ -262,7 +264,7 @@ struct FITwinExtractedEntity
 
 struct FITwinExtractedElement
 {
-	ITwinElementID const ElementID;
+	ITwinElementID ElementID;
 	FSmallVec<FITwinExtractedEntity, 2> Entities;
 	/// Clear data related to this Element used after loading a given tile: we want to keep the ordering (and
 	/// the allocations (*) !!) in the FITwinSceneTile even if the tile is unloaded/reloaded.
@@ -345,7 +347,7 @@ class FITwinSceneTile
 		boost::multi_index::indexed_by<
 			boost::multi_index::random_access<boost::multi_index::tag<IndexByRank>>,
 			boost::multi_index::hashed_unique<boost::multi_index::tag<IndexByMaterialID>,
-				boost::multi_index::member<FITwinMaterialFeaturesInTile, const ITwinMaterialID,
+				boost::multi_index::member<FITwinMaterialFeaturesInTile, const ITwinRenderMaterialElementID,
 											&FITwinMaterialFeaturesInTile::MaterialID>>>>;
 
 	/// Same as for Elements, but for iTwin Model ID
@@ -432,9 +434,9 @@ private:
 	// by their rank ("IndexByRank"), we shouldn't erase entries!
 	//void EraseExtractedElement(FExtractedElementCont::const_iterator const Where);
 
-	/// Last Element ID, if any, which the tile's SelectingAndHiding texture was actually used to highlight
-	/// (ie the Element indeed has Features in this tile - see SelectedElemNotInTile below)
-	ITwinElementID SelectedElement = ITwin::NOT_ELEMENT;
+	/// Set of Element IDs, if any, which the tile's SelectingAndHiding texture was actually used to highlight
+	/// (ie the Elements indeed have Features in this tile - see SelectedElemNotInTile below)
+	std::unordered_set<ITwinElementID> SelectedElements;
 	/// Same principle, but for Material selection.
 	ITwinMaterialID SelectedMaterial = ITwin::NOT_MATERIAL;
 	
@@ -492,7 +494,9 @@ private:
 	///		when it is already selected!)
 	bool PickElement(ITwinElementID const& InElemID, FTextureNeeds& TextureNeeds, FPickingOptions const Opts);
 	/// Same as PickElement, but for a Material ID.
-	bool PickMaterial(ITwinMaterialID const& InMaterialID, FTextureNeeds& TextureNeeds, FPickingOptions const Opts);
+	bool PickMaterial(ITwinRenderMaterialElementID const& InMaterialID, FTextureNeeds& TextureNeeds, FPickingOptions const Opts);
+	/// Remove specific elements from the current selection highlight.
+	void DeselectElements(std::unordered_set<ITwinElementID> const& InElemIDs, FTextureNeeds& TextureNeeds);
 
 	template<typename SelectableHelper, typename SelectableID>
 	bool TPickSelectable(SelectableHelper const& PickHelper, SelectableID const& InElemID,
@@ -510,7 +514,7 @@ private:
 		std::function<void(FeatureType*)> HideFeatures,
 		FITwinSceneTile::FTextureNeeds& TextureNeeds,
 		FShowHideOptions const Opts,
-		std::optional<IDType> SelectedID = std::nullopt);
+		std::unordered_set<IDType> const* SelectedIDs = nullptr);
 	void HideElements(std::unordered_set<ITwinElementID> const& InElemIDs, FTextureNeeds& TextureNeeds,
 					  FShowHideOptions const Opts);
 	void HideModels(std::unordered_set<ITwinElementID> const& InModelIDs, FTextureNeeds& TextureNeeds,
@@ -605,13 +609,13 @@ public:
 	/// Finds the FITwinMaterialFeaturesInTile for the passed Material ID or return nullptr
 	/// \return A short-lived, const pointer on the existing FITwinMaterialFeaturesInTile, or nullptr
 	[[nodiscard]] FITwinMaterialFeaturesInTile const* FindMaterialFeaturesConstSLOW(
-		ITwinMaterialID const& MatID) const;
+		ITwinRenderMaterialElementID const& MatID) const;
 	/// @copydoc FindMaterialFeaturesConstSLOW
-	[[nodiscard]] FITwinMaterialFeaturesInTile* FindMaterialFeaturesSLOW(ITwinMaterialID const& MatID);
+	[[nodiscard]] FITwinMaterialFeaturesInTile* FindMaterialFeaturesSLOW(ITwinRenderMaterialElementID const& MatID);
 
 	/// Finds or inserts a FITwinMaterialFeaturesInTile for the passed Material ID
 	/// \return A short-lived, non-const reference on the existing or inserted FITwinMaterialFeaturesInTile
-	[[nodiscard]] FITwinMaterialFeaturesInTile& MaterialFeaturesSLOW(ITwinMaterialID const& MatID);
+	[[nodiscard]] FITwinMaterialFeaturesInTile& MaterialFeaturesSLOW(ITwinRenderMaterialElementID const& MatID);
 
 	/// Finds the FITwinModelFeaturesInTile for the passed Model ID or return nullptr
 	/// \return A short-lived, const pointer on the existing FITwinModelFeaturesInTile, or nullptr
@@ -648,6 +652,20 @@ public:
 	[[nodiscard]] FITwinCategoryPerModelFeaturesInTile& CategoryPerModelFeaturesSLOW(ITwinElementID const& CategoryID, ITwinElementID const& ModelID);
 
 }; // class FITwinSceneTile
+
+// We create a specific class instead of "using" to allow forward declaration.
+class TITwinSceneTilePtr :public AdvViz::SDK::Tools::TSharedLockableData<FITwinSceneTile>
+{
+public:
+	using AdvViz::SDK::Tools::TSharedLockableData<FITwinSceneTile>::TSharedLockableData;
+	using AdvViz::SDK::Tools::TSharedLockableData<FITwinSceneTile>::operator=;
+
+	// Helper constructor to allow construction from the wrapped shared_ptr type
+	TITwinSceneTilePtr(std::shared_ptr<AdvViz::SDK::Tools::RWLockableObject<FITwinSceneTile, AdvViz::SDK::Tools::TSharedRecursiveMutex>> ptr)
+		: AdvViz::SDK::Tools::TSharedLockableData<FITwinSceneTile>(std::move(ptr))
+	{
+	}
+};
 
 constexpr size_t NO_EXTRACTION = (size_t)-1;
 
@@ -750,13 +768,15 @@ public:
 	FSubElemsVec SubElemsInVec;
 };
 
+class TSceneMappingPtr;
+
 /// Helper used to postpone texture updates at the end of its scope.
 struct [[nodiscard]] FITwinTextureUpdateDisabler
 {
-	FITwinTextureUpdateDisabler(FITwinSceneMapping& InOwner);
+	FITwinTextureUpdateDisabler(TSceneMappingPtr& InOwner);
 	~FITwinTextureUpdateDisabler();
 
-	FITwinSceneMapping& Owner;
+	TSceneMappingPtr& Owner;
 	const bool bPreviouslyDisabled;
 };
 
@@ -821,8 +841,8 @@ private:
 	// consistency?)
 	//bool bTilesHaveNewSelectingAndHidingTextures = false;
 	bool bNewSelectingAndHidingTexturesNeedSetupInMaterials = false;
-	/// ID of the currently selected Element, if any
-	ITwinElementID SelectedElement = ITwin::NOT_ELEMENT;
+	/// IDs of the currently selected Elements, if any
+	std::unordered_set<ITwinElementID> SelectedElements;
 	/// ID of the currently selected Material, if any
 	ITwinMaterialID SelectedMaterial = ITwin::NOT_MATERIAL;
 	//enum class EHiddenByFlag : uint8_t
@@ -859,30 +879,40 @@ private:
 	bool bNeedConvertElemBBoxes = false;
 
 public:
-	using FSceneTilesCont = boost::multi_index_container<FITwinSceneTile,
+	struct ExtractTileID
+	{
+		typedef CesiumTileID result_type;
+		result_type operator()(TITwinSceneTilePtr const& tile) const
+		{
+			auto lock = tile->GetRAutoLock();
+			return lock->TileID;
+		}
+	};
+
+	using FSceneTilesCont = boost::multi_index_container<TITwinSceneTilePtr,
 		boost::multi_index::indexed_by<
-			boost::multi_index::random_access<boost::multi_index::tag<IndexByRank>>,
-			boost::multi_index::hashed_unique<boost::multi_index::tag<IndexByTileID>,
-				boost::multi_index::member<FITwinSceneTile, const CesiumTileID,
-											&FITwinSceneTile::TileID>>>>;
+		boost::multi_index::random_access<boost::multi_index::tag<IndexByRank>>,
+		boost::multi_index::hashed_unique<boost::multi_index::tag<IndexByTileID>,
+		ExtractTileID>>>;
+
 	FSceneTilesCont KnownTiles;
 
-	void ForEachKnownTile(std::function<void(FITwinSceneTile&)> const& Func);
-	void ForEachKnownTile(std::function<void(FITwinSceneTile const&)> const& Func) const;
-	[[nodiscard]] FITwinSceneTile& KnownTile(ITwinScene::TileIdx const Rank);
-	FITwinSceneTile& KnownTileSLOW(ICesiumLoadedTile& CesiumTile, ITwinScene::TileIdx* Rank = nullptr);
-	[[nodiscard]] FITwinSceneTile* FindKnownTileSLOW(CesiumTileID const& TileId);
+	void ForEachKnownTile(std::function<void(TITwinSceneTilePtr const&)> const& Func) const;
+	[[nodiscard]] TITwinSceneTilePtr KnownTile(ITwinScene::TileIdx const Rank) const;
+	TITwinSceneTilePtr& KnownTileSLOW(ICesiumLoadedTile& CesiumTile, ITwinScene::TileIdx* Rank = nullptr);
+	[[nodiscard]] TITwinSceneTilePtr FindKnownTileSLOW(CesiumTileID const& TileId) const;
 	/// Do not actually erase the tile from the KnownTiles container, as it would shift all
 	/// ITwinScene::TileIdx ;^^ Keep the (light-weight) structure forever, just clear its content.
-	void UnloadKnownTile(FITwinSceneTile& SceneTile);
-	[[nodiscard]] ITwinScene::TileIdx KnownTileRank(FITwinSceneTile const& SceneTile) const;
+	void UnloadKnownTile(const TITwinSceneTilePtr& SceneTilePtr);
+	[[nodiscard]] ITwinScene::TileIdx KnownTileRank(const TITwinSceneTilePtr& SceneTilePtr) const;
 
 	// map to retrieve all elementsIDs for a given categoryID
-	std::unordered_map<ITwinElementID, std::unordered_set<ITwinElementID>> CategoryIDToElementIDs;
+	//typedef AdvViz::SDK::Tools::TSharedLockableData<std::unordered_map<ITwinElementID, std::unordered_set<ITwinElementID>>> TSharedLockableITwinElementIDMap;
+	//TSharedLockableITwinElementIDMap CategoryIDToElementIDs;
 	// map to retrieve all elementsIDs for a given modelID
-	std::unordered_map<ITwinElementID, std::unordered_set<ITwinElementID>> ModelIDToElementIDs;
+	//TSharedLockableITwinElementIDMap ModelIDToElementIDs;
 	// map to retrieve all elementsIDs for a given geometryID
-	std::unordered_map<uint8_t, std::unordered_set<ITwinElementID>> GeometryIDToElementIDs;
+	AdvViz::SDK::Tools::TSharedLockableData<std::unordered_map<uint8_t, std::unordered_set<ITwinElementID>>> GeometryIDToElementIDs;
 	
 	FITwinSceneMapping(bool const forCDO);
 
@@ -925,7 +955,8 @@ public:
 	[[nodiscard]] bool FindGUIDForElement(ITwinElementID const Elem, FGuid& Found) const;
 	void ReserveIModelMetadata(int TotalElements);
 	void FinishedParsingIModelMetadata();
-	int ParseIModelMetadata(TArray<TSharedPtr<FJsonValue>> const& JsonRows);
+	static int ParseIModelMetadata(TSceneMappingPtr sceneMappingPtr, TArray<TSharedPtr<FJsonValue>> const& JsonRows);
+	static bool CheckParentChildGraph(TSceneMappingPtr sceneMappingPtr);
 	int ParseConstructionDetailingParentIDs(TArray<TSharedPtr<FJsonValue>> const& JsonRows);
 	FDuplicateElementsVec const& GetDuplicateElements(ITwinElementID const ElemID) const;
 	std::vector<ITwinScene::ElemIdx> const& GetConstructionDetailingParentsToHide() const;
@@ -939,11 +970,11 @@ public:
 		FITwinGltfMeshComponentWrapper& GltfMeshData, bool bUpdatingTile = false);
 	/// Same as the other SetupFeatureIDsInVertexUVs, but for all meshes of the tile (used for dev only)
 	void SetupFeatureIDsInVertexUVs(FITwinSceneTile& SceneTile, bool bUpdatingTile = false);
-	void OnNewTileBuilt(FITwinSceneTile& SceneTile);
-	void OnVisibilityChanged(FITwinSceneTile& SceneTile, bool bVisible);
+	void OnNewTileBuilt(const TITwinSceneTilePtr& SceneTilePtr);
+	void OnVisibilityChanged(const TITwinSceneTilePtr& SceneTilePtr, bool bVisible);
 	/// Prepares a tile's internal properties and structures to allow animation for a timeline
 	void OnElementsTimelineModified(
-		std::variant<ITwinScene::TileIdx, std::reference_wrapper<FITwinSceneTile>> const KnownTile,
+		std::variant<ITwinScene::TileIdx, TITwinSceneTilePtr> const KnownTile,
 		FITwinElementTimeline& ModifiedTimeline, std::vector<ITwinElementID> const* OnlyForElements,
 		bool const bTileIsTunedFor4D, int const TimelineIndex);
 	/// See long comment before call, in FITwinSynchro4DSchedulesInternals::HandleReceivedElements.
@@ -956,13 +987,13 @@ public:
 	/// \return Number of textures for which we have to wait before being able to attach them to any
 	///		materials (indeed, one cannot update a material with a texture which as never been fully updated).
 	size_t Update4DAnimTextures();
-	void Update4DAnimTileTextures(FITwinSceneTile& SceneTile, size_t& DirtyTexCount, size_t& TexToWait);
+	void Update4DAnimTileTextures(const TITwinSceneTilePtr& SceneTile, size_t& DirtyTexCount, size_t& TexToWait);
 	/// Update all dirty textures (which may post asynchronous tasks to be performed by the render thread)
 	/// related to selection highlights and (non-4D related) hiding of Elements.
 	/// \return Number of textures for which we have to wait before being able to attach them to any
 	///		materials (indeed, one cannot update a material with a texture which as never been fully updated).
 	size_t UpdateSelectingAndHidingTextures();
-	void UpdateSelectingAndHidingTileTextures(FITwinSceneTile& SceneTile, size_t& DirtyTexCount,
+	void UpdateSelectingAndHidingTileTextures(TITwinSceneTilePtr SceneTile, size_t& DirtyTexCount,
 											  size_t& TexToWait);
 	/// Disables (or re-enable) the update of dirty textures.
 	void DisableUpdateSelectingAndHidingTextures(bool b);
@@ -1016,6 +1047,9 @@ public:
 	///		it is already selected.
 	bool PickVisibleElement(ITwinElementID const& InElemID,
 							FPickingOptions Opts = FPickingOptions::CreateDefaultPickVisible());
+	bool PickVisibleElements(std::unordered_set<ITwinElementID> const& InElemIDs,
+							 FPickingOptions Opts = FPickingOptions::CreateDefaultPickVisible());
+	void DeselectElements(std::unordered_set<ITwinElementID> const& InElemIDs);
 
 	void HideElements(std::unordered_set<ITwinElementID> const& InElemIDs, bool IsConstruction, bool Force = false);
 	void ShowElements(std::unordered_set<ITwinElementID> const& InElemIDs, bool Force = false);
@@ -1023,16 +1057,22 @@ public:
 	void HideCategories(std::unordered_set<ITwinElementID> const& InCategoryIDs, bool Force = false);
 	void HideCategoriesPerModel(std::unordered_set<std::pair<ITwinElementID, ITwinElementID>,FITwinSceneTile::pair_hash> const& InCategoryPerModelIDs, bool Force = false);
 	void ShowCategoriesPerModel(std::unordered_set<std::pair<ITwinElementID, ITwinElementID>, FITwinSceneTile::pair_hash> const& InCategoryPerModelIDs, bool Force = false);
-	/// Not const because empty set may be added to GeometryIDToElementIDs before being returned
-	[[nodiscard]] std::unordered_set<ITwinElementID> const& ConstructionDataElements();
 	void ShouldHideConstructionData(bool bHide) { bHiddenConstructionData = bHide; }
 	[[nodiscard]] std::unordered_set<ITwinElementID> const& GetSavedViewHiddenElements() const;
 	[[nodiscard]] std::unordered_set<ITwinElementID> const& GetSavedViewHiddenModels() const;
 	[[nodiscard]] std::unordered_set<ITwinElementID> const& GetSavedViewHiddenCategories() const;
+	[[nodiscard]] std::unordered_set<std::pair<ITwinElementID, ITwinElementID>, FITwinSceneTile::pair_hash> const& GetSavedViewHiddenCategoriesPerModel() const;
+	[[nodiscard]] std::unordered_set<std::pair<ITwinElementID, ITwinElementID>, FITwinSceneTile::pair_hash> const& GetSavedViewAlwaysDrawnCategoriesPerModel() const;
+	[[nodiscard]] std::unordered_set<ITwinElementID> const& GetSavedViewAlwaysDrawnElements() const;
 	[[nodiscard]] bool IsElementHiddenInSavedView(ITwinElementID const& InElemID) const;
 
-	//! Returns the selected Element's ID, if an Element is selected, or ITwin::NOT_ELEMENT.
-	[[nodiscard]] ITwinElementID GetSelectedElement() const { return SelectedElement; }
+	//! Returns the first selected Element's ID, if an Element is selected, or ITwin::NOT_ELEMENT.
+	//! For backward compatibility; prefer GetSelectedElements() for multi-selection.
+	[[nodiscard]] ITwinElementID GetSelectedElement() const {
+		return SelectedElements.empty() ? ITwin::NOT_ELEMENT : *SelectedElements.begin();
+	}
+	//! Returns all selected Elements' IDs, or an empty set.
+	[[nodiscard]] std::unordered_set<ITwinElementID> const& GetSelectedElements() const { return SelectedElements; }
 
 	using ITwinColor = std::array<double, 4>;
 
@@ -1074,14 +1114,22 @@ private:
 	template<typename TSomeID, typename TMapByRank>
 	bool ParseSomeElementIdentifier(TMapByRank& OutIDMap, ITwinScene::ElemIdx const ElemIdx,
 		TSharedPtr<FJsonValue> const& Entry, int& GoodEntry, int& EmptyEntry);
-	bool ParseElementBBox(TSharedPtr<FJsonValue> const& BBoxLow, TSharedPtr<FJsonValue> const& BBoxHigh,
-						  FBox& ElemBBox);
-	void ApplySelectingAndHiding(FITwinSceneTile& SceneTile);
+	void ApplySelectingAndHiding(const TITwinSceneTilePtr& SceneTilePtr);
+	static bool ParseElementBBox(TSharedPtr<FJsonValue> const& BBoxLow,
+								 TSharedPtr<FJsonValue> const& BBoxHigh, FBox& ElemBBox);
 
 	template<typename Container>
 	void GatherTimelineElemInfos(FITwinSceneTile& SceneTile, FITwinElementTimeline const& Timeline,
 		Container const& TimelineElements, std::vector<ITwinScene::ElemIdx>& SceneElems,
 		std::vector<ITwinTile::ElemIdx>& TileElems);
+};
+
+// We create a specific class instead of "using" to allow forward declaration.
+class TSceneMappingPtr :public AdvViz::SDK::Tools::TSharedLockableData<FITwinSceneMapping>
+{
+public:
+	using AdvViz::SDK::Tools::TSharedLockableData<FITwinSceneMapping>::TSharedLockableData;
+	using AdvViz::SDK::Tools::TSharedLockableData<FITwinSceneMapping>::operator=;
 };
 
 namespace ITwinMatParamInfo
@@ -1090,6 +1138,8 @@ namespace ITwinMatParamInfo
 	void SetupSelectingAndHidingInfo();
 	void SetupFeatureIdInfo();
 }
+
+
 
 #if ENABLE_DRAW_DEBUG
 	extern float ITwinDebugBoxNextLifetime;

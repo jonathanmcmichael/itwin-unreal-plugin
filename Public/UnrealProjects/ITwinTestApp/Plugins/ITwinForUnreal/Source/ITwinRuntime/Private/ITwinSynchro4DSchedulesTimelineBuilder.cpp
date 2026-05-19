@@ -308,9 +308,11 @@ void FITwinScheduleTimelineBuilder::FinalizeTimeline(FITwinSchedule& Schedule)
 	if (!ensure(IModel || IsUnitTesting()))
 		return;
 	FITwinSceneMapping* pScene = nullptr;
+	std::optional<decltype(GetInternals(*IModel).SceneMapping->GetAutoLock())> optionalLock;
 	if (!IsUnitTesting()) // TODO_GCO: Source ID mapping not loaded yet for unit testing :/
 	{
-		pScene = &GetInternals(*IModel).SceneMapping;
+		optionalLock.emplace(GetInternals(*IModel).SceneMapping->GetAutoLock());
+		pScene = optionalLock->GetPtr();
 	}
 	for (auto ElemTimelinePtr : Impl->MainTimeline.GetContainer())
 	{
@@ -535,12 +537,13 @@ void FITwinScheduleTimelineBuilder::Uninitialize()
 		AITwinIModel* IModel = Cast<AITwinIModel>(Impl->Owner->GetOwner());
 		if (ensure(IModel))
 		{
-			auto& SceneMapping = GetInternals(*IModel).SceneMapping;
-			SceneMapping.ForEachKnownTile([](FITwinSceneTile& SceneTile)
+			auto SceneMappingLocked = GetInternals(*IModel).SceneMapping->GetAutoLock();
+			SceneMappingLocked->ForEachKnownTile([](const TITwinSceneTilePtr& SceneTilePtr)
 				{
-					SceneTile.TimelinesIndices.clear();
+					auto SceneTileLock = SceneTilePtr->GetAutoLock();
+					SceneTileLock->TimelinesIndices.clear();
 				});
-			SceneMapping.MutateElements([](FITwinElement& Elem)
+			SceneMappingLocked->MutateElements([](FITwinElement& Elem)
 				{
 					Elem.AnimationKeys.clear();
 					Elem.Requirements = {};

@@ -12,6 +12,7 @@
 
 #include <Interfaces/IHttpResponse.h>
 #include <HttpModule.h>
+#include <Tasks/Task.h>
 
 class FUEHttpRequest::FImpl
 {
@@ -28,15 +29,41 @@ public:
 
 	void SetResponseCallback(
 		AdvViz::SDK::HttpRequest::RequestPtr const& requestPtr,
-		AdvViz::SDK::HttpRequest::ResponseCallback const& callback)
+		AdvViz::SDK::HttpRequest::ResponseCallback const& callback,
+		AdvViz::SDK::Http::EAsyncCallbackExecutionMode asyncCBExecMode)
 	{
-		UERequest->OnProcessRequestComplete().BindLambda(
+		using namespace AdvViz::SDK;
+
+		auto fct =
 			[this, ResultCallback = callback, SDKRequestPtr = requestPtr]
-			(FHttpRequestPtr /*pUERequest*/, FHttpResponsePtr UEResponse, bool connectedSuccessfully)
+			(FHttpRequestPtr pUERequest, FHttpResponsePtr UEResponse, bool connectedSuccessfully)
+			{
+				auto response = ConvertUnrealHttpResponse(
+					SDKRequestPtr, pUERequest, UEResponse, connectedSuccessfully);
+				ResultCallback(SDKRequestPtr, response);
+			};
+
+		if (asyncCBExecMode == Http::EAsyncCallbackExecutionMode::GameThread)
 		{
-			ResultCallback(SDKRequestPtr,
-						   ConvertUnrealHttpResponse(SDKRequestPtr, UEResponse, connectedSuccessfully));
-		});
+			UERequest->SetDelegateThreadPolicy(EHttpRequestDelegateThreadPolicy::CompleteOnGameThread);
+			UERequest->OnProcessRequestComplete().BindLambda(fct);
+		}
+		else
+		{
+			// Reduce latency, doesn't wait the next GT tick
+			UERequest->SetDelegateThreadPolicy(EHttpRequestDelegateThreadPolicy::CompleteOnHttpThread);
+			auto fct2 = [fct = std::move(fct)](FHttpRequestPtr pUERequest, FHttpResponsePtr UEResponse, bool connectedSuccessfully)
+				{
+					UE::Tasks::Launch(UE_SOURCE_LOCATION,
+						[fct = std::move(fct), pUERequest, UEResponse, connectedSuccessfully]()
+						{
+							fct(pUERequest, UEResponse, connectedSuccessfully);
+						},
+						UE::Tasks::ETaskPriority::Normal);
+				};
+
+			UERequest->OnProcessRequestComplete().BindLambda(fct2);
+		}
 	}
 
 	void Process(AdvViz::SDK::Http const& http,
@@ -97,7 +124,7 @@ private:
 
 AdvViz::SDK::Http::Response ConvertUnrealHttpResponse(
 	AdvViz::SDK::HttpRequest::RequestPtr const& SDKRequestPtr,
-	FHttpResponsePtr UEResponse, bool connectedSuccessfully)
+	FHttpRequestPtr UERequest, FHttpResponsePtr UEResponse, bool connectedSuccessfully)
 {
 	AdvViz::SDK::Http::Response Response;
 	if (connectedSuccessfully && UEResponse.IsValid())
@@ -128,14 +155,28 @@ AdvViz::SDK::Http::Response ConvertUnrealHttpResponse(
 			}
 		}
 	}
-	else if (connectedSuccessfully)
-	{
-		Response.first = FUEHttpRequest::HTTP_INVALID_UE_RESPONSE;
-	}
 	else
 	{
-		// Signal a connection error (see CheckResponse)
-		Response.first = FUEHttpRequest::HTTP_CONNECT_ERR;
+		if (connectedSuccessfully)
+		{
+			Response.first = FUEHttpRequest::HTTP_INVALID_UE_RESPONSE;
+		}
+		else
+		{
+			// Signal a connection error (see CheckResponse)
+			Response.first = FUEHttpRequest::HTTP_CONNECT_ERR;
+		}
+		// No Response headers to copy, but we want to have the correlation ID in the logs, and since it was set on
+		// the request, we don't need the UEResponse:
+		if (ensure(UERequest.IsValid()))
+		{
+			FString const XCorrelationID = UERequest->GetHeader(TEXT("X-Correlation-ID"));
+			if (!XCorrelationID.IsEmpty())
+			{
+				Response.headers_ = std::make_unique<AdvViz::SDK::Http::Headers>();
+				Response.headers_->emplace_back("X-Correlation-ID", TCHAR_TO_UTF8(*XCorrelationID));
+			}
+		}
 	}
 	return std::move(Response);
 }
@@ -166,8 +207,8 @@ void FUEHttpRequest::DoSetVerb(AdvViz::SDK::EVerb verb)
 	Impl->SetVerb(verb);
 }
 
-void FUEHttpRequest::DoSetResponseCallback(ResponseCallback const& callback)
+void FUEHttpRequest::DoSetResponseCallback(ResponseCallback const& callback, AdvViz::SDK::Http::EAsyncCallbackExecutionMode asyncCBExecMode)
 {
-	Impl->SetResponseCallback(shared_from_this(), callback);
+	Impl->SetResponseCallback(shared_from_this(), callback, asyncCBExecMode);
 }
 

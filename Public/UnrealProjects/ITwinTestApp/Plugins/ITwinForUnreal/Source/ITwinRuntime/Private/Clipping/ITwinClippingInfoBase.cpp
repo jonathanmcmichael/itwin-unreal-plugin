@@ -7,15 +7,12 @@
 +--------------------------------------------------------------------------------------*/
 
 #include <Clipping/ITwinClippingInfoBase.h>
+#include <Clipping/ITwinClippingInfoBase.inl>
 
 #include <Clipping/ITwinTileExcluderBase.h>
 #include <ITwinTilesetAccess.h>
 
 #include <DrawDebugHelpers.h>
-
-#include <Compil/BeforeNonUnrealIncludes.h>
-#	include <BeHeaders/Compil/EnumSwitchCoverage.h>
-#include <Compil/AfterNonUnrealIncludes.h>
 
 
 void FITwinClippingInfluenceInfo::SetInfluenceNone()
@@ -75,30 +72,9 @@ void FITwinClippingInfoBase::DeactivatePrimitiveInExcluder(UITwinTileExcluderBas
 	Excluder.Deactivate();
 }
 
-inline FITwinClippingInfluenceInfo& FITwinClippingInfoBase::MutableInfluenceInfo(EITwinModelType ModelType)
+void FITwinClippingInfoBase::SetEdgeVisibility(bool /*bVisible*/)
 {
-	switch (ModelType)
-	{
-	BE_UNCOVERED_ENUM_ASSERT_AND_FALLTHROUGH(
-	case EITwinModelType::AnimationKeyframe:
-	case EITwinModelType::Scene:
-	case EITwinModelType::Invalid:)
-
-	case EITwinModelType::GlobalMapLayer: return GlobalMapLayersInfluenceInfo;
-	case EITwinModelType::IModel: return IModelInfluenceInfo;
-	case EITwinModelType::RealityData: return RealityDataInfluenceInfo;
-	}
-}
-
-inline FITwinClippingInfluenceInfo const& FITwinClippingInfoBase::GetInfluenceInfo(EITwinModelType ModelType) const
-{
-	return const_cast<FITwinClippingInfoBase*>(this)->MutableInfluenceInfo(ModelType);
-}
-
-inline bool FITwinClippingInfoBase::DoesInfluenceModel(const ITwin::ModelLink& ModelIdentifier) const
-{
-	FITwinClippingInfluenceInfo const& InfluenceInfo = GetInfluenceInfo(ModelIdentifier.first);
-	return InfluenceInfo.bInfluenceAll || InfluenceInfo.SpecificIDs.Contains(ModelIdentifier.second);
+	// Does nothing in base class (see override for FITwinClippingBoxInfo).
 }
 
 bool FITwinClippingInfoBase::ShouldInfluenceModel(const ITwin::ModelLink& ModelIdentifier) const

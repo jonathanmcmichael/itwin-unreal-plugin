@@ -150,6 +150,13 @@ namespace ITwin
 		}
 	}
 
+	int32 CountTilesetsOfModelType(EITwinModelType ModelType, UWorld const* World)
+	{
+		TilesetAccessUPtrArray Tilesets;
+		GatherTilesetsOfModelType(Tilesets, ModelType, World);
+		return Tilesets.Num();
+	}
+
 	TUniquePtr<FITwinTilesetAccess> GetTilesetAccess(AActor* Actor)
 	{
 		AITwinGoogle3DTileset* GoogleTileset = Cast<AITwinGoogle3DTileset>(Actor);

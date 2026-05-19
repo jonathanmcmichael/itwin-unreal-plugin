@@ -72,7 +72,14 @@ RasterOverlayUpsampler::loadTileContent(const TileLoadInput& loadInput) {
   size_t index = 0;
   const std::vector<CesiumGeospatial::Projection>& parentProjections =
       pParentRenderContent->getRasterOverlayDetails().rasterOverlayProjections;
-  CESIUM_ASSERT(!parentProjections.empty());
+  if (parentProjections.empty()) {
+    // Parent doesn't have any raster overlay projection, so we don't know how
+    // to upsample it. This does happen when we remove a raster overlay from a
+    // tileset, for example.
+    return loadInput.asyncSystem.createResolvedFuture(
+        TileLoadResult::createFailedResult(loadInput.pAssetAccessor, nullptr));
+  }
+
   for (const RasterMappedTo3DTile& mapped : pParent->getMappedRasterTiles()) {
     if (mapped.isMoreDetailAvailable()) {
       const CesiumGeospatial::Projection& projection =
@@ -91,19 +98,16 @@ RasterOverlayUpsampler::loadTileContent(const TileLoadInput& loadInput) {
       getProjectionEllipsoid(projection);
 
   const CesiumGltf::Model& parentModel = pParentRenderContent->getModel();
-  return loadInput.asyncSystem.runInWorkerThread(
-      [&parentModel,
-       pParentRenderContent,
-       ellipsoid,
-       transform = loadInput.tile.getTransform(),
-       textureCoordinateIndex = index,
-       tileID = *pTileID,
-       pAssetAccessor = loadInput.pAssetAccessor]() mutable {
-        // Read-lock the parent model so that it is not replaced during the
-        // upsampling!
-        std::shared_lock<std::shared_mutex> rlock(
-            pParentRenderContent->getModelMutex());
 
+  pParentRenderContent->incrementUpSamplingTaskCount();
+  return loadInput.asyncSystem
+      .runInWorkerThread([&parentModel,
+                          pParentRenderContent,
+                          ellipsoid,
+                          transform = loadInput.tile.getTransform(),
+                          textureCoordinateIndex = index,
+                          tileID = *pTileID,
+                          pAssetAccessor = loadInput.pAssetAccessor]() mutable {
         if (pParentRenderContent->getGltfModifierState() ==
             GltfModifierState::WorkerRunning) {
           // Parent tile is being modified, no need to spend time upsampling an
@@ -145,6 +149,11 @@ RasterOverlayUpsampler::loadTileContent(const TileLoadInput& loadInput) {
             {},
             TileLoadResultState::Success,
             ellipsoid};
+      })
+      .thenInMainThread([pParentRenderContent](TileLoadResult&& result) {
+        CESIUM_ASSERT(pParentRenderContent->isBeingUpSampled());
+        pParentRenderContent->decrementUpSamplingTaskCount();
+        return std::move(result);
       });
 }
 

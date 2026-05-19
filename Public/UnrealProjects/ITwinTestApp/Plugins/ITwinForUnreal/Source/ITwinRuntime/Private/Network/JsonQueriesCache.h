@@ -34,6 +34,7 @@ namespace QueriesCache
 		DEPRECATED_ElementsSourceIDs,
 		MaterialMLPrediction,
 		ElementsMetadataCombined,
+		ConstructionDetailing,
 	};
 
 	/// \param ITwinId If empty, the base folder for all caches of the passed Type is returned. IModelId,

@@ -10,6 +10,7 @@
 //	and vue.git/viewer/Code/RealTimeBuilder/IModel/RenderSchedule.cpp
 
 #include "Timeline.h"
+#include <Timeline/SchedulesConstants.h>
 #include <Timeline/TimelineBase.h>
 #include <Math/UEMathExts.h>
 
@@ -165,8 +166,12 @@ void ElementTimelineEx::SetVisibilityAt(double const Time, std::optional<float> 
 	}
 	else
 	{
-		// assuming Alpha is multiplied, so 1. indeed means "use original alpha"
-		Visibility.Values.insert(MakeEntry<PVisibility>(Time, 1.f, Interp));
+		// Hack: we'll use a special value here to identify the "use original alpha" situation.
+		// Converted to (uint8)1 in the uint8 texture (see Detail::ClampCast01toU8) and back to float in the GLSL,
+		// which gives around 0.0039 - we compare 0 < a < 0.005 anyway. This means a slight loss of precision, but
+		// having a 4D appearance profile using an _almost_ transparent color would be quite meaningless anyway.
+		Visibility.Values.insert(
+			MakeEntry<PVisibility>(Time, S4D_FLOAT_ALPHA_DISABLED/*see HasPartialVisibility below*/, Interp));
 	}
 }
 
@@ -187,14 +192,18 @@ bool ElementTimelineEx::HasPartialVisibility() const
 {
 	for (auto It = Visibility.Values.begin(), ItEnd = Visibility.Values.end(); It != ItEnd; ++It)
 	{
+		if (It->Value == S4D_FLOAT_ALPHA_DISABLED)
+		{
+			continue; // see special value in SetVisibilityAt above, skip BOTH tests below
+		}
 		if (It->Value != 0.f && It->Value != 1.f)
 		{
 			return true;
 		}
 		auto NextIt = It;
 		++NextIt;
-		// The only way to have transparency between the two frames is if going from 0 to 1 or 1 to 0 with
-		// Linear interpolation:
+		// The only way to have partial transparency between the two frames even if none of them are partially
+		// transparent is obviously if going from 0 to 1 or 1 to 0 with Linear interpolation:
 		if (It->Interpolation == EInterpolation::Linear && NextIt != ItEnd && It->Value != NextIt->Value)
 		{
 			return true;

@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <ITwinLoadableLayer.h>
 #include <ITwinServiceActor.h>
 
 #include <Containers/Map.h>
@@ -93,7 +94,8 @@ public:
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif
-
+	virtual void Tick(float DeltaSeconds) override;
+	virtual bool ShouldTickIfViewportsOnly() const override;
 	virtual void Destroyed() override;
 
 	/// Starts the requests fetching the content of the current iTwin.
@@ -110,7 +112,9 @@ public:
 	// Gather all the information about the iTwin and its components
 	void Init(FString const& InITwinId, FString const& InDisplayName);
 
-	// Load specified iModel or Reality Data into the scene
+	/// Load specified iModel or Reality Data into the scene.
+	UFUNCTION(Category = "iTwin",
+		BlueprintCallable)
 	void LoadComponent(FString const& StringId, EITwinLoadContext LoadContext);
 
 	// Specialized method for loading iModel when export ID and changeset ID are provided (typically, when loading from browser)
@@ -139,7 +143,7 @@ public:
 	/// overridden from FITwinDefaultWebServicesObserver
 	virtual const TCHAR* GetObserverName() const override;
 
-	const TMap<FString, FIModelInfo>& GetIModelsMap() const { return IModelsMap;  }
+	const TMap<FString, FIModelInfo>& GetIModelsMap() const { return IModelsMap; }
 	const TMap<FString, FITwinRealityData3DInfo>& GetRealityDataMap() const { return RealityDataMap; }
 
 	const FString& GetITwinName() const { return DisplayName; }
@@ -165,10 +169,12 @@ public:
 	AITwinIModel* GetActiveIModel() const { return GetIModel(ActiveModelId); }
 	void SetActiveIModel(FString const& StringId) { ActiveModelId = StringId; }
 
-	TMap<FString, UITwinSynchro4DSchedules*> const& GetSynchro4DSchedules() const {
+	TMap<FString/*iModelID*/, UITwinSynchro4DSchedules*> const& GetSynchro4DSchedules() const {
 		return Synchro4DSchedules;
 	}
 
+	UFUNCTION(Category = "iTwin",
+		BlueprintCallable)
 	void RemoveComponent(FString const& StringId);
 
 	UFUNCTION()
@@ -210,9 +216,15 @@ protected:
 
 private:
 	void RequestData();
-	// Load specified iModel or Reality Data into the scene
-	void LoadIModel(FIModelInfo Info, EITwinLoadContext LoadContext);
-	void LoadRealityData(FITwinRealityData3DInfo Info, EITwinLoadContext LoadContext);
+
+	// Load specified iModel into the scene.
+	void LoadIModel(FIModelInfo const& Info, EITwinLoadContext LoadContext);
+
+	// Load specified Reality Data into the scene.
+	void LoadRealityData(FITwinRealityData3DInfo const& Info, EITwinLoadContext LoadContext);
+
+	void SetLoadStatus(EITwinModelType ModelType, FString const& StringId, EITwinLayerLoadStatus NewStatus);
+
 	void OnComponentInfoRetrieved();
 
 
@@ -226,18 +238,34 @@ private:
 		EditAnywhere)
 	FString DisplayName;
 
-	// lists of all the objects (iModels and RealityData) present in the iTwin (loaded or not in the scene)
+	/// Map of all the iModels present in the iTwin (loaded or not in the scene).
 	UPROPERTY(Category = "iTwin",
-		VisibleAnywhere)
+		BlueprintReadOnly,
+		Meta = (AllowPrivateAccess))
 	TMap<FString, FIModelInfo> IModelsMap;
+
+	/// Map of all the Reality-Data layers present in the iTwin (loaded or not in the scene).
 	UPROPERTY(Category = "iTwin",
-		VisibleAnywhere)
+		BlueprintReadOnly,
+		Meta = (AllowPrivateAccess))
 	TMap<FString, FITwinRealityData3DInfo> RealityDataMap;
 
+	/// Map of all the iModels present in the iTwin, with their load status.
+	/// The key is the display name of the iModel, for easier understanding in Editor.
+	UPROPERTY(Category = "iTwin",
+		EditAnywhere)
+	TMap<FString, FITwinLoadableLayerHelper> IModelLoadStatusMap;
+
+	/// Map of all the Reality-Data layers present in the iTwin, with their load status.
+	/// The key is the display name of the Reality-Data, for easier understanding in Editor.
+	UPROPERTY(Category = "iTwin",
+		EditAnywhere)
+	TMap<FString, FITwinLoadableLayerHelper> RealityDataLoadStatusMap;
+
 	FString ActiveModelId;
-	// map of already loaded objects (keep in mind that iModels added to this list may not be fully loaded yet)
-	TMap<FString, AActor*> LoadedObjects;
-	TMap<FString, UITwinSynchro4DSchedules*> Synchro4DSchedules;
+	/// Map of already loaded objects (keep in mind that iModels added to this list may not be fully loaded yet)
+	TMap<FString/*iModelID*/, AActor*> LoadedObjects;
+	TMap<FString/*iModelID*/, UITwinSynchro4DSchedules*> Synchro4DSchedules;
 
 	/// Components to load once this manager is fully initialized.
 	TMap<FString, EITwinLoadContext> PendingLoadIds;

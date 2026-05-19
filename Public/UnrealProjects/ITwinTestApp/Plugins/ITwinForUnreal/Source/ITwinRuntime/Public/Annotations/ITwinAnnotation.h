@@ -11,6 +11,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "Components/TextRenderComponent.h"
+#include "Components/WidgetComponent.h"
 #include "Engine/EngineTypes.h"
 
 #include <ITwinRuntime/Private/Compil/BeforeNonUnrealIncludes.h>
@@ -59,9 +60,14 @@ class ITWINRUNTIME_API AITwinAnnotation : public AActor
 	GENERATED_BODY()
 
 	static bool bVRMode;
+	static bool bUseWorldSpaceWidgets;
 
 	UPROPERTY(VisibleDefaultsOnly, Category=Interface)
 	USceneComponent* root = nullptr;
+	
+	UPROPERTY(VisibleDefaultsOnly, Category=Interface)
+	UWidgetComponent* widgetComponent = nullptr;
+	
 	UITwin2DAnnotationWidgetImpl* onScreen = nullptr;
 
 public:
@@ -72,13 +78,13 @@ public:
 
 	static bool VRMode() { return bVRMode; }
 
+	static bool UseWorldSpaceWidgets() { return bUseWorldSpaceWidgets; }
+
 	/// Set a custom font to use for the on-screen representation of the annotations.
 	static void SetCustomFontObject(const UObject* InFontObject);
 
 
 	AITwinAnnotation();
-	
-	bool Destroy(bool bNetForce = false, bool bShouldModifyLevel = true );
 
 	AdvViz::SDK::AnnotationPtr GetAVizAnnotation() const;
 	void LoadAVizAnnotation(const AdvViz::SDK::AnnotationPtr& annotation);
@@ -111,7 +117,7 @@ public:
 	void SetColorThemeFromIndex(int color);
 	UFUNCTION(BluePrintCallable, Category = "Interface")
 	EITwinAnnotationColor GetColorTheme() const;
-	UFUNCTION(BluePrintCallable, Category = "Interface")
+	UFUNCTION(BlueprintCallable, Category = "Interface")
 	int GetColorThemeIndex() const;
 
 
@@ -134,6 +140,12 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Interface")
 	int GetFontSize() const;
 
+	/// Applies current annotation display settings (text, colors, font, mode) to the given widget.
+	void ConfigureWidget(UITwin2DAnnotationWidgetImpl* Widget) const;
+
+	/// Returns the distance at which the annotation label collapses to just the pin marker.
+	float GetLabelCollapseDistance() const { return labelCollapseDistance; }
+
 	void SetShouldSave(bool shouldSave);
 
 	void SetId(int inId);
@@ -144,8 +156,8 @@ protected:
 	virtual void Tick(float DeltaTime) override;
 
 	void BuildWidget();
+	void InitWorldSpaceWidget();
 
-	bool CalculatePinPosition(FVector2D& out);
 	void UpdateDisplay();
 	void OnModeChanged();
 
@@ -167,14 +179,19 @@ protected:
 
 	bool bVisible = true;
 	float labelCollapseDistance = 10000.0f;
+	float worldWidgetScale = 0.5f; // Scale factor for world-space widgets
 
 	mutable AdvViz::SDK::AnnotationPtr aVizAnnotationPtr = nullptr;
+
+public:
 
 	static std::string ColorThemeToString(EITwinAnnotationColor	color);
 	static std::string DisplayModeToString(EITwinAnnotationMode mode, bool visibility);
 	static EITwinAnnotationColor ColorThemeToEnum(const std::string& color);
 	static EITwinAnnotationMode DisplayModeToEnum(const std::string& mode);
 	static FLinearColor ColorThemeToBackgroundColor(EITwinAnnotationColor color);
+
+protected:
 
 	const static inline std::map<EITwinAnnotationColor, std::string> colorNames {
 		{ EITwinAnnotationColor::Dark, "Dark" },

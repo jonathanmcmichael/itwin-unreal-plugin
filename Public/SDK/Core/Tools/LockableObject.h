@@ -145,6 +145,13 @@ namespace AdvViz::SDK::Tools
 			return AutoLock(*(const_cast<thisType*>(this)));
 		}
 
+		typedef std::optional<AutoLock> TOptionalAutoLock;
+
+		static TOptionalAutoLock GetOptionalAutoLock()
+		{
+			return{};
+		}
+
 		Mutex& GetMutex() { return mutex_; }
 
 		Type &UnsafeAccess() { return obj_; }

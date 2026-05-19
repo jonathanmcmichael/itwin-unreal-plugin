@@ -136,7 +136,12 @@ ACesium3DTileset::ACesium3DTileset()
   PlatformName = UGameplayStatics::GetPlatformName();
 }
 
-ACesium3DTileset::~ACesium3DTileset() { this->DestroyTileset(); }
+ACesium3DTileset::~ACesium3DTileset() {
+  this->DestroyTileset();
+#if WITH_EDITOR
+  FEditorDelegates::PreBeginPIE.RemoveAll(this);
+#endif
+}
 
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
@@ -850,6 +855,12 @@ void ACesium3DTileset::OnConstruction(const FTransform& Transform) {
   this->ResolveGeoreference();
   this->ResolveCameraManager();
   this->ResolveCreditSystem();
+
+#if WITH_EDITOR
+  FEditorDelegates::PreBeginPIE.AddUObject(
+      this,
+      &ACesium3DTileset::OnPreBeginPIE);
+#endif
 
   this->LoadTileset();
 
@@ -2137,12 +2148,12 @@ void ACesium3DTileset::Tick(float DeltaTime) {
   this->ResolveCameraManager();
   this->ResolveCreditSystem();
 
-  UCesium3DTilesetRoot* pRoot = Cast<UCesium3DTilesetRoot>(this->RootComponent);
-  if (!pRoot) {
+  if (this->SuspendUpdate) {
     return;
   }
 
-  if (this->SuspendUpdate) {
+  UCesium3DTilesetRoot* pRoot = Cast<UCesium3DTilesetRoot>(this->RootComponent);
+  if (!pRoot) {
     return;
   }
   // IsHidden means actor is hidden *in game*, not in Editor
@@ -2477,6 +2488,12 @@ void ACesium3DTileset::RuntimeSettingsChanged(
           ->EnableExperimentalOcclusionCullingFeature;
   if (occlusionCullingAvailable != this->CanEnableOcclusionCulling) {
     this->CanEnableOcclusionCulling = occlusionCullingAvailable;
+    this->DestroyTileset();
+  }
+}
+
+void ACesium3DTileset::OnPreBeginPIE(bool bIsSimulating) {
+  if (this->UnloadEditorTilesInPlayMode) {
     this->DestroyTileset();
   }
 }

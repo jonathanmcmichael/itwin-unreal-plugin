@@ -33,7 +33,7 @@ struct FEcefLocation;
 
 namespace AdvViz::SDK {
 	struct ITwinInfo;
-	struct ITwinMaterialPropertiesMap;
+	struct ITwinRenderMaterialPropertiesMap;
 	struct ITwinMaterialPrediction;
 	struct ITwinTextureData;
 	struct GeoCoordsReply;
@@ -82,7 +82,7 @@ public:
 		AdvViz::SDK::GeoCoordsReply const& GeoCoords, HttpRequestID const& RequestID) = 0;
 	virtual void OnIModelQueried(bool bSuccess, FString const& QueryResult, HttpRequestID const& RequestID) = 0;
 
-	virtual void OnMaterialPropertiesRetrieved(bool bSuccess, AdvViz::SDK::ITwinMaterialPropertiesMap const& props) = 0;
+	virtual void OnMaterialPropertiesRetrieved(bool bSuccess, AdvViz::SDK::ITwinRenderMaterialPropertiesMap const& props) = 0;
 	virtual void OnTextureDataRetrieved(bool bSuccess, std::string const& textureId, AdvViz::SDK::ITwinTextureData const& textureData) = 0;
 	virtual void OnMatMLPredictionRetrieved(bool bSuccess, AdvViz::SDK::ITwinMaterialPrediction const& prediction, std::string const& error = {}) = 0;
 	virtual void OnMatMLPredictionProgress(float fProgressRatio) = 0;
@@ -129,7 +129,7 @@ public:
 		AdvViz::SDK::GeoCoordsReply const& GeoCoords, HttpRequestID const& RequestID) override;
 	virtual void OnIModelQueried(bool bSuccess, FString const& QueryResult, HttpRequestID const& RequestID) override;
 
-	virtual void OnMaterialPropertiesRetrieved(bool bSuccess, AdvViz::SDK::ITwinMaterialPropertiesMap const& props) override;
+	virtual void OnMaterialPropertiesRetrieved(bool bSuccess, AdvViz::SDK::ITwinRenderMaterialPropertiesMap const& props) override;
 	virtual void OnTextureDataRetrieved(bool bSuccess, std::string const& textureId, AdvViz::SDK::ITwinTextureData const& textureData) override;
 	virtual void OnMatMLPredictionRetrieved(bool bSuccess, AdvViz::SDK::ITwinMaterialPrediction const& prediction, std::string const& error = {}) override;
 	virtual void OnMatMLPredictionProgress(float fProgressRatio) override;

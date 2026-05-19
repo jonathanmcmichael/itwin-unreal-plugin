@@ -374,68 +374,82 @@ FITwinSceneMapping::FITwinSceneMapping(bool const forCDO)
 {
 	//if (!forCDO)
 	//	AllElements.reserve(16384); <== no longer needed, see ReserveIModelMetadata
+	GeometryIDToElementIDs = AdvViz::SDK::Tools::MakeSharedLockableData<std::unordered_map<uint8_t, std::unordered_set<ITwinElementID>>>();
+	auto GeometryIDToElementIDsLock = GeometryIDToElementIDs->GetAutoLock();
+	(*GeometryIDToElementIDsLock)[1]; // makes sure the index 1 is created.
 }
 
-FITwinSceneTile& FITwinSceneMapping::KnownTile(ITwinScene::TileIdx const Rank)
+TITwinSceneTilePtr FITwinSceneMapping::KnownTile(ITwinScene::TileIdx const Rank) const
 {
 	// Same comment about const_cast as on FITwinSceneTile::FindElementFeaturesSLOW
-	return const_cast<FITwinSceneTile&>(KnownTiles.get<IndexByRank>()[Rank.value()]);
+	return KnownTiles.get<IndexByRank>()[Rank.value()];
 }
 
-FITwinSceneTile& FITwinSceneMapping::KnownTileSLOW(ICesiumLoadedTile& CesiumTile,
+TITwinSceneTilePtr& FITwinSceneMapping::KnownTileSLOW(ICesiumLoadedTile& CesiumTile,
 												   ITwinScene::TileIdx* Rank/*= nullptr*/)
 {
 	auto& ByRank = KnownTiles.get<IndexByRank>();
-	auto const It = ByRank.emplace_back(ITwin::GetCesiumTileID(CesiumTile)).first;
+	TITwinSceneTilePtr NewTile(std::make_shared<AdvViz::SDK::Tools::RWLockableObject<FITwinSceneTile, AdvViz::SDK::Tools::TSharedRecursiveMutex>>(
+		ITwin::GetCesiumTileID(CesiumTile)
+	));
+	auto const It = ByRank.emplace_back(std::move(NewTile)).first;
 	if (Rank)
 	{
 		*Rank = ITwinScene::TileIdx(static_cast<uint32_t>(It - ByRank.begin()));
 	}
 	// Same comment about const_cast as on FITwinSceneTile::FindElementFeaturesSLOW
-	auto& SceneTile = const_cast<FITwinSceneTile&>(*It);
-	ensure(!SceneTile.pCesiumTile || SceneTile.pCesiumTile == &CesiumTile);
-	SceneTile.pCesiumTile = &CesiumTile;
-	return SceneTile;
+	auto& SceneTilePtr = const_cast<TITwinSceneTilePtr&>(*It);
+	auto SceneTile = SceneTilePtr->GetAutoLock();
+	ensure(!SceneTile->pCesiumTile || SceneTile->pCesiumTile == &CesiumTile);
+	SceneTile->pCesiumTile = &CesiumTile;
+	return SceneTilePtr;
 }
 
-FITwinSceneTile* FITwinSceneMapping::FindKnownTileSLOW(CesiumTileID const& TileId)
+TITwinSceneTilePtr FITwinSceneMapping::FindKnownTileSLOW(CesiumTileID const& TileId) const
 {
 	auto& ByID = KnownTiles.get<IndexByTileID>();
 	auto const It = ByID.find(TileId);
 	if (It != ByID.end())
 	{
 		// Same comment about const_cast as on FITwinSceneTile::FindElementFeaturesSLOW
-		return const_cast<FITwinSceneTile*>(&(*It));
+		return (*It);
 	}
-	else return nullptr;
+	else 
+		return{};
 }
 
-void FITwinSceneMapping::ForEachKnownTile(std::function<void(FITwinSceneTile const&)> const& Func) const
+void FITwinSceneMapping::ForEachKnownTile(std::function<void(const TITwinSceneTilePtr&)> const& Func) const
 {
 	for (auto&& SceneTile : KnownTiles)
 		Func(SceneTile);
 }
 
-void FITwinSceneMapping::ForEachKnownTile(std::function<void(FITwinSceneTile&)> const& Func)
+void FITwinSceneMapping::UnloadKnownTile(const TITwinSceneTilePtr& SceneTilePtr)
 {
-	for (auto&& SceneTile : KnownTiles)
-	{
-		// Same comment about const_cast as on FITwinSceneTile::FindElementFeaturesSLOW
-		Func(const_cast<FITwinSceneTile&>(SceneTile));
-	}
+	auto SceneTile = SceneTilePtr->GetAutoLock();
+	SceneTile->Unload();
 }
 
-void FITwinSceneMapping::UnloadKnownTile(FITwinSceneTile& SceneTile)
+ITwinScene::TileIdx FITwinSceneMapping::KnownTileRank(const TITwinSceneTilePtr& SceneTilePtr) const
 {
-	SceneTile.Unload();
-}
+	if (!SceneTilePtr)
+		return ITwinScene::NOT_TILE;
 
-ITwinScene::TileIdx FITwinSceneMapping::KnownTileRank(FITwinSceneTile const& SceneTile) const
-{
+	// Get the TileID from the SceneTile
+	auto SceneTileLock = SceneTilePtr->GetRAutoLock();
+	CesiumTileID const TileId = SceneTileLock->TileID;
+
+	// Find by TileID using the hashed index (O(1))
+	auto& ByID = KnownTiles.get<IndexByTileID>();
+	auto const ItByID = ByID.find(TileId);
+	if (ItByID == ByID.end())
+		return ITwinScene::NOT_TILE;
+
+	// Project to the ranked index to get the rank
 	auto& ByRank = KnownTiles.get<IndexByRank>();
-	auto const Known = ByRank.iterator_to(SceneTile);
+	auto const Known = KnownTiles.project<IndexByRank>(ItByID);
+
 	auto const Rank = Known - ByRank.begin();
-	//if (Known != ByRank.end()) - being an element of the container is a requirement, hence the hard check:
 	check(0 <= Rank && Rank < (decltype(Rank))ByRank.size());
 	return ITwinScene::TileIdx(static_cast<uint32_t>(Rank));
 }
@@ -470,7 +484,6 @@ FITwinElement* FITwinSceneMapping::GetElementForSLOW(ITwinElementID const KnownE
 FITwinElement& FITwinSceneMapping::ElementForSLOW(ITwinElementID const ElementID,
 												  ITwinScene::ElemIdx* Rank)
 {
-	ensure(IsInGameThread());// see comment on GetElementForSLOW in header
 	auto& ByRank = AllElements.get<IndexByRank>();
 	auto const Known = ByRank.emplace_back(FITwinElement{ false, ElementID });
 	auto const It = Known.first;
@@ -527,14 +540,9 @@ void FITwinSceneMapping::MutateElements(std::function<void(FITwinElement&)>&& Fu
 
 /// Setup the tile's SelectingAndHiding texture while its render-readiness is still false, so that the tile
 /// is only shown when the Elements that need to be hidden are indeed made so.
-void FITwinSceneMapping::OnNewTileBuilt(FITwinSceneTile& SceneTile)
+void FITwinSceneMapping::OnNewTileBuilt(const TITwinSceneTilePtr& SceneTilePtr)
 {
-	ApplySelectingAndHiding(SceneTile);
-}
-
-std::unordered_set<ITwinElementID> const& FITwinSceneMapping::ConstructionDataElements()
-{
-	return GeometryIDToElementIDs[1];
+	ApplySelectingAndHiding(SceneTilePtr);
 }
 
 std::unordered_set<ITwinElementID> const& FITwinSceneMapping::GetSavedViewHiddenElements() const
@@ -552,22 +560,53 @@ std::unordered_set<ITwinElementID> const& FITwinSceneMapping::GetSavedViewHidden
 	return HiddenCategoriesFromSavedView;
 }
 
+std::unordered_set<std::pair<ITwinElementID, ITwinElementID>, FITwinSceneTile::pair_hash> const& FITwinSceneMapping::GetSavedViewHiddenCategoriesPerModel() const
+{
+	return HiddenCategoriesPerModelFromSavedView;
+}
+
+std::unordered_set<std::pair<ITwinElementID, ITwinElementID>, FITwinSceneTile::pair_hash> const& FITwinSceneMapping::GetSavedViewAlwaysDrawnCategoriesPerModel() const
+{
+	return AlwaysDrawnCategoriesPerModelFromSavedView;
+}
+
+std::unordered_set<ITwinElementID> const& FITwinSceneMapping::GetSavedViewAlwaysDrawnElements() const
+{
+	return AlwaysDrawnElementsFromSavedView;
+}
+
 bool FITwinSceneMapping::IsElementHiddenInSavedView(ITwinElementID const& InElemID) const
 {
 	return std::find(HiddenElementsFromSavedView.begin(), HiddenElementsFromSavedView.end(), InElemID)
 		!= HiddenElementsFromSavedView.end();
 }
 
-void FITwinSceneMapping::ApplySelectingAndHiding(FITwinSceneTile& SceneTile)
+void FITwinSceneMapping::ApplySelectingAndHiding(const TITwinSceneTilePtr& SceneTilePtr)
 {
+	auto SceneTileLock = SceneTilePtr->GetAutoLock();
+	auto &SceneTile = *SceneTileLock;
 	if (SceneTile.IsLoaded())
 	{
 		//if (ITwin::NOT_ELEMENT != SelectedElement) <== No, may need to deselect!
 		FITwinSceneTile::FTextureNeeds TextureNeeds;
 		// Note: keeping the default value of 'false' for FPickingOptions::OnlyVisibleTiles because
 		// bVisible is not yet set! (same for FShowHideOptions)
-		SceneTile.PickElement(SelectedElement, TextureNeeds, FPickingOptions().MakeSelected(true));
-		SceneTile.PickMaterial(SelectedMaterial, TextureNeeds, FPickingOptions().MakeSelected(true)
+		{
+			bool bFirst = true;
+			for (auto const& SelElemID : SelectedElements)
+			{
+				auto PickOpts = FPickingOptions().MakeSelected(true);
+				if (!bFirst)
+					PickOpts = PickOpts.SkipResetSelection(true);
+				bFirst = false;
+				SceneTile.PickElement(SelElemID, TextureNeeds, PickOpts);
+			}
+			if (SelectedElements.empty())
+				SceneTile.PickElement(ITwin::NOT_ELEMENT, TextureNeeds, FPickingOptions().MakeSelected(true));
+		}
+		SceneTile.PickMaterial(ITwinRenderMaterialElementID{ SelectedMaterial.getValue() },
+							   // TODO_JDE: Fix confusion iModelMaterialID vs iTwinMaterialID!
+			TextureNeeds, FPickingOptions().MakeSelected(true)
 			// For all calls except the first one above, skip the ResetSelection call otherwise the element
 			// selected is overwritten... (azdev#1808163)
 			.SkipResetSelection(true));
@@ -580,8 +619,14 @@ void FITwinSceneMapping::ApplySelectingAndHiding(FITwinSceneTile& SceneTile)
 		SceneTile.HideElements(HiddenElementsFromSavedView, TextureNeeds, ShowHideOpts);
 		SceneTile.ShowElements(AlwaysDrawnElementsFromSavedView, TextureNeeds, ShowHideOpts);
 		//if (bHiddenConstructionData) <== No, may need to un-hide!
-		SceneTile.HideElements(
-			bHiddenConstructionData ? ConstructionDataElements() : std::unordered_set<ITwinElementID>(),
+		std::unordered_set<ITwinElementID> emptyElements;
+		const std::unordered_set<ITwinElementID>* hiddenElements = &emptyElements;
+		auto GeometryIDToElementIDsLock = GeometryIDToElementIDs->GetRAutoLock();
+		auto& geometryIDToElementIDs = *GeometryIDToElementIDsLock;
+		if (bHiddenConstructionData)
+			hiddenElements = &geometryIDToElementIDs.at(1); //ConstructionDataElements
+
+		SceneTile.HideElements(*hiddenElements,
 			TextureNeeds, FShowHideOptions(ShowHideOpts).ConstructionData(true));
 		this->bNewSelectingAndHidingTexturesNeedSetupInMaterials |= TextureNeeds.bWasCreated;
 		if (TextureNeeds.bWasChanged)
@@ -589,12 +634,11 @@ void FITwinSceneMapping::ApplySelectingAndHiding(FITwinSceneTile& SceneTile)
 	}
 }
 
-void FITwinSceneMapping::OnVisibilityChanged(FITwinSceneTile& SceneTile, bool bVisible)
+void FITwinSceneMapping::OnVisibilityChanged(const TITwinSceneTilePtr& SceneTilePtr, bool bVisible)
 {
 	if (bVisible)
 	{
-		ensure(!SceneTile.bVisible);//should have been tested earlier
-		ApplySelectingAndHiding(SceneTile);
+		ApplySelectingAndHiding(SceneTilePtr);
 	}
 	//SceneTile->bVisible = bVisible; <== NO, done by FITwinIModelInternals::OnVisibilityChanged
 }
@@ -641,12 +685,10 @@ bool FITwinSceneMapping::ParseElementBBox(TSharedPtr<FJsonValue> const& BBoxLow,
 	return true;
 }
 
-int FITwinSceneMapping::ParseIModelMetadata(TArray<TSharedPtr<FJsonValue>> const& JsonRows)
+int FITwinSceneMapping::ParseIModelMetadata(TSceneMappingPtr sceneMappingPtr,
+											TArray<TSharedPtr<FJsonValue>> const& JsonRows)
 {
 	int GoodSrcIDs = 0, GoodFedGUIDs = 0, EmptyFedGUIDs = 0, EmptySrcIDs = 0, NoBBoxElems = 0;
-	auto& GuidMap = FederatedElementGUIDs.get<IndexByGUID>();
-	auto& SourceIdMap = SourceElementIDs.get<IndexBySourceID>();
-	int i = 0;
 	for (auto const& Row : JsonRows)
 	{
 		auto const& Entries = Row->AsArray();
@@ -655,81 +697,103 @@ int FITwinSceneMapping::ParseIModelMetadata(TArray<TSharedPtr<FJsonValue>> const
 		ITwinElementID const ElemId = ITwin::ParseElementID(Entries[0]->AsString());
 		if (!ensure(ITwin::NOT_ELEMENT != ElemId))
 			continue;
-		++i;
-		ITwinScene::ElemIdx InVec = ITwinScene::NOT_ELEM;
-		FITwinElement& Elem = ElementForSLOW(ElemId, &InVec);
-		if (ITwinScene::NOT_ELEM != Elem.ParentInVec)
-			continue; // already known - our SQL query indeed generates duplicates in some iModels, why...?
-		if (Entries.Num() >= 3)
-			NoBBoxElems += (ParseElementBBox(Entries[1], Entries[2], Elem.BBox) ? 0 : 1);
-		else
-			++NoBBoxElems;
+
 		ITwinElementID const ParentId = (Entries.Num() < 4 || Entries[3]->IsNull())
 			? ITwin::NOT_ELEMENT : ITwin::ParseElementID(Entries[3]->AsString());
-		if (ITwin::NOT_ELEMENT != ParentId)
 		{
-			FITwinElement& ParentElem = ElementForSLOW(ParentId, &Elem.ParentInVec);
-			// TODO_GCO: optimize with a first loop that creates all ParentElem and counts their children,
-			// exploiting the fact that children of the same parent "seem" to be contiguous (but let's not
-			// assume it's always the case...), then a second loop that reserves the SubElems vectors and
-			// fills them
-			ParentElem.SubElemsInVec.push_back(InVec);
-		}
-		if (Entries.Num() >= 5)
-			ParseSomeElementIdentifier<FGuid>(GuidMap, InVec, Entries[4], GoodFedGUIDs, EmptyFedGUIDs);
-		else
-			++EmptyFedGUIDs;
-		if (Entries.Num() >= 6)
-			ParseSomeElementIdentifier<FString>(SourceIdMap, InVec, Entries[5], GoodSrcIDs, EmptySrcIDs);
-		else
-			++EmptySrcIDs;
-	}
-	// check there is no loop in the parent-child graph, it would be fatal
-	size_t const Count = AllElements.size();
-	std::vector<bool> Visited(Count, false);
-	bool bError = false;
-	for (size_t LoopIdxInVec = 0; LoopIdxInVec < Count; ++LoopIdxInVec)
-	{
-		if (Visited[LoopIdxInVec]) continue; // ok here
-		ITwinScene::ElemIdx InVec(LoopIdxInVec);
-		int Depth = 0;
-		FITwinElement const* Elem = nullptr;
-		do
-		{
-			//if (Visited[InVec]) break; <== not here, we'd never reach Count in case of a loop!!
-			Visited[InVec.value()] = true;
-			++Depth;
-			Elem = &GetElement(InVec);
-			InVec = Elem->ParentInVec;
-		} while (ITwinScene::NOT_ELEM != InVec && Depth <= Count);
+			auto sceneLocked = sceneMappingPtr->GetAutoLock(); // locking in the loop gives more chance for others (game thread) to get the lock
+			auto& GuidMap = sceneLocked->FederatedElementGUIDs.get<IndexByGUID>();
+			auto& SourceIdMap = sceneLocked->SourceElementIDs.get<IndexBySourceID>();
 
-		if (Depth > Count) // we have obviously been looping "forever", let's stop
-		{
-			bError = true;
-			break;
+			ITwinScene::ElemIdx InVec = ITwinScene::NOT_ELEM;
+			FITwinElement& Elem = sceneLocked->ElementForSLOW(ElemId, &InVec);
+			if (ITwinScene::NOT_ELEM != Elem.ParentInVec)
+				continue; // already known - our SQL query indeed generates duplicates in some iModels, why...?
+			if (Entries.Num() >= 3)
+				NoBBoxElems += (ParseElementBBox(Entries[1], Entries[2], Elem.BBox) ? 0 : 1);
+			else
+				++NoBBoxElems;
+			if (ITwin::NOT_ELEMENT != ParentId)
+			{
+				FITwinElement& ParentElem = sceneLocked->ElementForSLOW(ParentId, &Elem.ParentInVec);
+				// TODO_GCO: optimize with a first loop that creates all ParentElem and counts their children,
+				// exploiting the fact that children of the same parent "seem" to be contiguous (but let's not
+				// assume it's always the case...), then a second loop that reserves the SubElems vectors and
+				// fills them
+				ParentElem.SubElemsInVec.push_back(InVec);
+			}
+			if (Entries.Num() >= 5)
+			{
+				sceneLocked->ParseSomeElementIdentifier<FGuid>(GuidMap, InVec, Entries[4], GoodFedGUIDs, EmptyFedGUIDs);
+			}
+			else
+				++EmptyFedGUIDs;
+			if (Entries.Num() >= 6)
+			{
+				sceneLocked->ParseSomeElementIdentifier<FString>(SourceIdMap, InVec, Entries[5], GoodSrcIDs, EmptySrcIDs);
+			}
+			else
+				++EmptySrcIDs;
 		}
 	}
-	if (bError)
-	{
-		for (auto& Elem : AllElements) // it's so unlikely, let's just trash all relationships
-		{
-			// Same comment about const_cast as on FITwinSceneTile::FindElementFeaturesSLOW
-			const_cast<FITwinElement&>(Elem).ParentInVec = ITwinScene::NOT_ELEM;
-		}
-		BE_LOGE("ITwinAPI", "Loop found in iModel Elements hierarchy, it will be IGNORED!");
-		return 0;
-	}
-	if (GoodFedGUIDs != JsonRows.Num() || GoodSrcIDs != JsonRows.Num() || NoBBoxElems != 0)
+
+	if (GoodFedGUIDs != JsonRows.Num() || GoodSrcIDs != JsonRows.Num())
 	{
 		int const OtherErr = (2 * JsonRows.Num() - EmptyFedGUIDs - EmptySrcIDs) - GoodFedGUIDs - GoodSrcIDs;
-		UE_LOG(ITwinSceneMap, Display, TEXT("When parsing Element metadata: out of %d entries received, %d have no valid BBox, %d had no Federation GUID, %d had no Source Element ID%s"),
-			JsonRows.Num(), NoBBoxElems, EmptyFedGUIDs, EmptySrcIDs, OtherErr
+		UE_LOG(ITwinSceneMap, Display, TEXT("When parsing Element metadata: out of %d entries received, %d had no Federation GUID, %d had no Source Element ID%s"),
+			JsonRows.Num(), EmptyFedGUIDs, EmptySrcIDs, OtherErr
 			? (*FString::Printf(
 				TEXT(", %d Federation GUIDs or Source Element IDs were incomplete or could not be parsed"),
 				OtherErr))
 			: TEXT(""));
 	}
-	return i;
+	return GoodFedGUIDs;//informative only, but FedGUIDs are more important than SrcID
+}
+
+bool FITwinSceneMapping::CheckParentChildGraph(TSceneMappingPtr sceneMappingPtr)
+{
+	bool bError = false;
+	// check there is no loop in the parent-child graph, it would be fatal
+	{
+		auto sceneLocked = sceneMappingPtr->GetRAutoLock();
+		size_t const Count = sceneLocked->AllElements.size();
+		std::vector<bool> Visited(Count, false);
+		for (size_t LoopIdxInVec = 0; LoopIdxInVec < Count; ++LoopIdxInVec)
+		{
+			if (Visited[LoopIdxInVec]) continue; // ok here
+			ITwinScene::ElemIdx InVec(LoopIdxInVec);
+			int Depth = 0;
+			FITwinElement const* Elem = nullptr;
+			do
+			{
+				//if (Visited[InVec]) break; <== not here, we'd never reach Count in case of a loop!!
+				Visited[InVec.value()] = true;
+				++Depth;
+				Elem = &sceneLocked->GetElement(InVec);
+				InVec = Elem->ParentInVec;
+			} while (ITwinScene::NOT_ELEM != InVec && Depth <= Count);
+
+			if (Depth > Count) // we have obviously been looping "forever", let's stop
+			{
+				bError = true;
+				break;
+			}
+		}
+	}
+	{
+		if (bError)
+		{
+			auto sceneLocked = sceneMappingPtr->GetAutoLock();
+			for (auto& Elem : sceneLocked->AllElements) // it's so unlikely, let's just trash all relationships
+			{
+				// Same comment about const_cast as on FITwinSceneTile::FindElementFeaturesSLOW
+				const_cast<FITwinElement&>(Elem).ParentInVec = ITwinScene::NOT_ELEM;
+			}
+			BE_LOGE("ITwinAPI", "Loop found in iModel Elements hierarchy, it will be IGNORED!");
+			return false;
+		}
+	}
+	return true;
 }
 
 template<typename TSomeID, typename TMapByRank>
@@ -819,7 +883,7 @@ std::vector<ITwinScene::ElemIdx> const& FITwinSceneMapping::GetConstructionDetai
 	return ConstructionDetailingParentsToHide;
 }
 
-void FITwinSceneMapping::Update4DAnimTileTextures(FITwinSceneTile& SceneTile, size_t& DirtyTexCount,
+void FITwinSceneMapping::Update4DAnimTileTextures(const TITwinSceneTilePtr& SceneTilePtr, size_t& DirtyTexCount,
 												  size_t& TexToWait)
 {
 	// Can't really do that, because we have a global "bTilesHaveNew4DAnimTextures" flag, which would thus
@@ -830,6 +894,8 @@ void FITwinSceneMapping::Update4DAnimTileTextures(FITwinSceneTile& SceneTile, si
 	// Note that methods like FITwinSynchro4DAnimator::Stop() also need to update textures for *all* tiles
 	//if (!SceneTile.bVisible)
 	//	return;
+	auto SceneTileLock = SceneTilePtr->GetRAutoLock();
+	auto& SceneTile = *SceneTileLock;
 	if (SceneTile.HighlightsAndOpacities && SceneTile.HighlightsAndOpacities->UpdateTexture())
 	{
 		++DirtyTexCount;
@@ -877,27 +943,28 @@ void FITwinSceneMapping::HandleNew4DAnimTexturesNeedingSetupInMaterials()
 	if (bNew4DAnimTexturesNeedSetupInMaterials)
 	{
 		bool bHasPendingTextureInitialUpdates = false;
-		ForEachKnownTile([this, &bHasPendingTextureInitialUpdates](FITwinSceneTile& SceneTile)
+		ForEachKnownTile([this, &bHasPendingTextureInitialUpdates](TITwinSceneTilePtr SceneTilePtr)
 		{
-			if (SceneTile.HighlightsAndOpacities && SceneTile.bNeed4DHighlightsOpaTextureSetupInMaterials)
+			auto SceneTile = SceneTilePtr->GetAutoLock();
+			if (SceneTile->HighlightsAndOpacities && SceneTile->bNeed4DHighlightsOpaTextureSetupInMaterials)
 			{
 				SetupHighlightsAndOpacitiesInfo();
-				if (SceneTile.HighlightsAndOpacities->SetupInMaterials(SceneTile.Materials,
+				if (SceneTile->HighlightsAndOpacities->SetupInMaterials(SceneTile->Materials,
 																	   *HighlightsAndOpacitiesInfo))
 				{
-					SceneTile.bNeed4DHighlightsOpaTextureSetupInMaterials = false;
+					SceneTile->bNeed4DHighlightsOpaTextureSetupInMaterials = false;
 				}
 				else
 				{
 					bHasPendingTextureInitialUpdates = true;
 				}
 			}
-			if (SceneTile.CuttingPlanes && SceneTile.bNeed4DCuttingPlanesTextureSetupInMaterials)
+			if (SceneTile->CuttingPlanes && SceneTile->bNeed4DCuttingPlanesTextureSetupInMaterials)
 			{
 				SetupCuttingPlanesInfo();
-				if (SceneTile.CuttingPlanes->SetupInMaterials(SceneTile.Materials, *CuttingPlanesInfo))
+				if (SceneTile->CuttingPlanes->SetupInMaterials(SceneTile->Materials, *CuttingPlanesInfo))
 				{
-					SceneTile.bNeed4DCuttingPlanesTextureSetupInMaterials = false;
+					SceneTile->bNeed4DCuttingPlanesTextureSetupInMaterials = false;
 				}
 				else
 				{
@@ -909,15 +976,16 @@ void FITwinSceneMapping::HandleNew4DAnimTexturesNeedingSetupInMaterials()
 	}
 }
 
-void FITwinSceneMapping::UpdateSelectingAndHidingTileTextures(FITwinSceneTile& SceneTile,
+void FITwinSceneMapping::UpdateSelectingAndHidingTileTextures(TITwinSceneTilePtr SceneTilePtr,
 	size_t& DirtyTexCount, size_t& TexToWait)
 {
 	//if (!SceneTile.bVisible) <== see Update4DAnimTileTextures
 	//	return;
-	if (SceneTile.SelectingAndHiding && SceneTile.SelectingAndHiding->UpdateTexture())
+	auto SceneTile = SceneTilePtr->GetRAutoLock();
+	if (SceneTile->SelectingAndHiding && SceneTile->SelectingAndHiding->UpdateTexture())
 	{
 		++DirtyTexCount;
-		if (SceneTile.SelectingAndHiding->NeedToWaitForAsyncUpdate())
+		if (SceneTile->SelectingAndHiding->NeedToWaitForAsyncUpdate())
 			++TexToWait;
 	}
 }
@@ -941,16 +1009,21 @@ size_t FITwinSceneMapping::UpdateSelectingAndHidingTextures()
 }
 
 
-FITwinTextureUpdateDisabler::FITwinTextureUpdateDisabler(FITwinSceneMapping& InOwner)
-	: Owner(InOwner)
-	, bPreviouslyDisabled(InOwner.AreSelectingAndHidingTexturesUpdatesDisabled())
+FITwinTextureUpdateDisabler::FITwinTextureUpdateDisabler(TSceneMappingPtr& InOwner)
+	: Owner(InOwner),
+	bPreviouslyDisabled([](TSceneMappingPtr& owner) {
+			auto SceneMappingLock = owner->GetRAutoLock();
+			return SceneMappingLock->AreSelectingAndHidingTexturesUpdatesDisabled();
+			}(InOwner))
 {
-	Owner.DisableUpdateSelectingAndHidingTextures(true);
+	auto SceneMappingLock = Owner->GetAutoLock();
+	SceneMappingLock->DisableUpdateSelectingAndHidingTextures(true);
 }
 
 FITwinTextureUpdateDisabler::~FITwinTextureUpdateDisabler()
 {
-	Owner.DisableUpdateSelectingAndHidingTextures(bPreviouslyDisabled);
+	auto SceneMappingLock = Owner->GetAutoLock();
+	SceneMappingLock->DisableUpdateSelectingAndHidingTextures(bPreviouslyDisabled);
 }
 
 bool FITwinSceneMapping::AreSelectingAndHidingTexturesUpdatesDisabled() const
@@ -987,15 +1060,16 @@ void FITwinSceneMapping::HandleNewSelectingAndHidingTextures()
 	if (bNewSelectingAndHidingTexturesNeedSetupInMaterials)
 	{
 		bool bHasPendingTextureInitialUpdates = false;
-		ForEachKnownTile([this, &bHasPendingTextureInitialUpdates](FITwinSceneTile& SceneTile)
+		ForEachKnownTile([this, &bHasPendingTextureInitialUpdates](TITwinSceneTilePtr SceneTilePtr)
 		{
-			if (SceneTile.SelectingAndHiding && SceneTile.bNeedSelectingAndHidingTextureSetupInMaterials)
+			auto SceneTile = SceneTilePtr->GetAutoLock();
+			if (SceneTile->SelectingAndHiding && SceneTile->bNeedSelectingAndHidingTextureSetupInMaterials)
 			{
 				ITwinMatParamInfo::SetupSelectingAndHidingInfo();
-				if (SceneTile.SelectingAndHiding->SetupInMaterials(SceneTile.Materials,
+				if (SceneTile->SelectingAndHiding->SetupInMaterials(SceneTile->Materials,
 																   *ITwinMatParamInfo::SelectingAndHidingInfo))
 				{
-					SceneTile.bNeedSelectingAndHidingTextureSetupInMaterials = false;
+					SceneTile->bNeedSelectingAndHidingTextureSetupInMaterials = false;
 				}
 				else
 				{
@@ -1031,7 +1105,24 @@ void FITwinSceneMapping::SetupFeatureIDsInVertexUVs(FITwinSceneTile& SceneTile,
 		auto Mat = MeshComp->GetMaterial(m);
 		auto* AsDynMat = Cast<UMaterialInstanceDynamic>(Mat);
 		if (ensure(AsDynMat))
-			AsDynMat->SetScalarParameterValueByInfo(*FeatureIdInfo, *UVIdx);
+		{
+			if (IsInGameThread())
+			{
+				AsDynMat->SetScalarParameterValueByInfo(*FeatureIdInfo, *UVIdx);
+			}
+			else
+			{
+				TWeakObjectPtr<UMaterialInstanceDynamic> AsDynMatWptr(AsDynMat);
+				FMaterialParameterInfo featureIdInfo = *FeatureIdInfo;
+				uint32 uvIdx = *UVIdx;
+				AsyncTask(ENamedThreads::GameThread,
+					[AsDynMatWptr, featureIdInfo, uvIdx]() {
+						auto AsDynMat = AsDynMatWptr.Pin();
+						if (AsDynMat)
+							AsDynMat->SetScalarParameterValueByInfo(featureIdInfo, uvIdx);
+					});
+			}
+		}
 	}
 }
 
@@ -1057,10 +1148,11 @@ void FITwinSceneMapping::GatherTimelineElemInfos(FITwinSceneTile& SceneTile,
 bool FITwinSceneMapping::ReplicateAnimElemTextureSetupInTile(
 	std::pair<ITwinScene::TileIdx, std::unordered_set<ITwinScene::ElemIdx>> const& TileElements)
 {
-	auto& SceneTile = KnownTile(TileElements.first);
+	auto SceneTilePtr = KnownTile(TileElements.first);
+	auto SceneTile = SceneTilePtr->GetAutoLock();
 	FElemAnimRequirements TileReq = {
-		.bNeedHiliteAndOpaTex = (bool)SceneTile.HighlightsAndOpacities,
-		.bNeedCuttingPlaneTex = (bool)SceneTile.CuttingPlanes
+		.bNeedHiliteAndOpaTex = (bool)SceneTile->HighlightsAndOpacities,
+		.bNeedCuttingPlaneTex = (bool)SceneTile->CuttingPlanes
 	};
 	for (auto const& ElemRank : TileElements.second)
 	{
@@ -1080,23 +1172,23 @@ bool FITwinSceneMapping::ReplicateAnimElemTextureSetupInTile(
 			&& (!TileReq.bNeedHiliteAndOpaTex || !TileReq.bNeedCuttingPlaneTex));
 	}
 	// Note: doesn't account for DEBUG_SYNCHRO4D_BGRA
-	if (!SceneTile.HighlightsAndOpacities && TileReq.bNeedHiliteAndOpaTex)
+	if (!SceneTile->HighlightsAndOpacities && TileReq.bNeedHiliteAndOpaTex)
 	{
 		CreateHighlightsAndOpacitiesTexture(SceneTile);
 	}
 	// Even if textures were already present, we'll have to SetupInMaterials in all (new) materials
-	SceneTile.bNeed4DHighlightsOpaTextureSetupInMaterials = TileReq.bNeedHiliteAndOpaTex;
+	SceneTile->bNeed4DHighlightsOpaTextureSetupInMaterials = TileReq.bNeedHiliteAndOpaTex;
 
-	if (!SceneTile.CuttingPlanes && TileReq.bNeedCuttingPlaneTex)
+	if (!SceneTile->CuttingPlanes && TileReq.bNeedCuttingPlaneTex)
 	{
 		CreateCuttingPlanesTexture(SceneTile);
 	}
 	// Even if textures were already present, we'll have to SetupInMaterials in all (new) materials
-	SceneTile.bNeed4DCuttingPlanesTextureSetupInMaterials = TileReq.bNeedCuttingPlaneTex;
+	SceneTile->bNeed4DCuttingPlanesTextureSetupInMaterials = TileReq.bNeedCuttingPlaneTex;
 
 	// Even if textures were already present, we'll have to SetupInMaterials in all (new) materials
-	bTilesHaveNew4DAnimTextures |= SceneTile.bNeed4DHighlightsOpaTextureSetupInMaterials
-								  || SceneTile.bNeed4DCuttingPlanesTextureSetupInMaterials;
+	bTilesHaveNew4DAnimTextures |= SceneTile->bNeed4DHighlightsOpaTextureSetupInMaterials
+								  || SceneTile->bNeed4DCuttingPlanesTextureSetupInMaterials;
 	return bTilesHaveNew4DAnimTextures;
 }
 
@@ -1117,11 +1209,13 @@ void FITwinSceneMapping::CreateCuttingPlanesTexture(FITwinSceneTile& SceneTile)
 }
 
 void FITwinSceneMapping::OnElementsTimelineModified(
-	std::variant<ITwinScene::TileIdx, std::reference_wrapper<FITwinSceneTile>> const Tile,
+	std::variant<ITwinScene::TileIdx, TITwinSceneTilePtr> const Tile,
 	FITwinElementTimeline& ModifiedTimeline, std::vector<ITwinElementID> const* OnlyForElements,
 	bool const bTileIsTunedFor4D, int const TimelineIndex)
 {
-	auto& SceneTile = (Tile.index() == 0) ? KnownTile(std::get<0>(Tile)) : (std::get<1>(Tile).get());
+	auto SceneTilePtr = (Tile.index() == 0) ? KnownTile(std::get<0>(Tile)) : std::get<1>(Tile);
+	auto SceneTileLock = SceneTilePtr->GetAutoLock();
+	auto& SceneTile = *SceneTileLock;
 	if (0 == ModifiedTimeline.NumKeyframes() || ITwin::NOT_FEATURE == SceneTile.MaxFeatureID)
 	{
 		return;
@@ -1246,7 +1340,7 @@ void FITwinSceneMapping::OnElementsTimelineModified(
 	auto Entry = TimelineOptim->Tiles.insert(
 		FTimelineToSceneTile
 		{
-			.Rank = (Tile.index() == 0) ? std::get<0>(Tile) : KnownTileRank(std::get<1>(Tile).get()),
+			.Rank = (Tile.index() == 0) ? std::get<0>(Tile) : KnownTileRank(std::get<1>(Tile)),
 			.FirstElement = TimelineOptim->TileElems.size(),
 			.NbOfElements = (uint32_t)TileElems.size(),
 			.FirstExtract = bMayNeedExtraction ? TimelineOptim->Extracts.size() : NO_EXTRACTION,
@@ -1341,9 +1435,10 @@ void FITwinSceneMapping::ConvertElemBBoxesIfNeeded()
 FBox FITwinSceneMapping::GetBoundingBoxOfAllGlTFMeshes() const
 {
 	FBox Box;
-	ForEachKnownTile([&Box](FITwinSceneTile const& SceneTile)
+	ForEachKnownTile([&Box](TITwinSceneTilePtr SceneTilePtr)
 	{
-		Box += SceneTile.GetBoundingBoxOfGlTFMeshes();
+		auto SceneTileLock = SceneTilePtr->GetAutoLock();
+		Box += SceneTileLock->GetBoundingBoxOfGlTFMeshes();
 	});
 	return Box;
 }
@@ -1364,14 +1459,19 @@ bool FITwinSceneMapping::PickVisibleElement(ITwinElementID const& InElemID,
 	//	return false;
 	bool bPickedInATile = false;
 	FITwinSceneTile::FTextureNeeds TextureNeeds;
-	ForEachKnownTile([&InElemID, &bPickedInATile, &TextureNeeds, Opts](FITwinSceneTile& SceneTile)
+	ForEachKnownTile([&InElemID, &bPickedInATile, &TextureNeeds, Opts](TITwinSceneTilePtr const& SceneTilePtr)
 	{
+		auto SceneTileLock = SceneTilePtr->GetAutoLock();
+		auto& SceneTile = *SceneTileLock;
 		bPickedInATile |= SceneTile.PickElement(InElemID, TextureNeeds, Opts);
 	});
 	this->bNewSelectingAndHidingTexturesNeedSetupInMaterials |= TextureNeeds.bWasCreated;
 	if (Opts.MakeSelected())
 	{
-		SelectedElement = InElemID;
+		if (!Opts.SkipResetSelection())
+			SelectedElements.clear();
+		if (InElemID != ITwin::NOT_ELEMENT)
+			SelectedElements.insert(InElemID);
 		// Do it now for existing textures: the initial UpdateTexture call of new textures will also be attempted,
 		// but most likely the TextureRHI is not ready yet, so it will be done again automatically when calling
 		// SetupInMaterials (called from HandleNewSelectingAndHidingTextures!)
@@ -1381,12 +1481,65 @@ bool FITwinSceneMapping::PickVisibleElement(ITwinElementID const& InElemID,
 	return bPickedInATile;
 }
 
+bool FITwinSceneMapping::PickVisibleElements(std::unordered_set<ITwinElementID> const& InElemIDs,
+	FPickingOptions Opts/*= FPickingOptions::CreateDefaultPickVisible()*/)
+{
+	bool bPickedAny = false;
+	FITwinSceneTile::FTextureNeeds TextureNeeds;
+	ForEachKnownTile([&InElemIDs, &bPickedAny, &TextureNeeds, Opts]
+		(TITwinSceneTilePtr const& SceneTilePtr)
+	{
+		auto SceneTileLock = SceneTilePtr->GetAutoLock();
+		auto& SceneTile = *SceneTileLock;
+		bool bFirst = true;
+		for (auto const& ElemID : InElemIDs)
+		{
+			auto PerElemOpts = Opts;
+			if (!bFirst)
+				PerElemOpts = PerElemOpts.SkipResetSelection(true);
+			bFirst = false;
+			bPickedAny |= SceneTile.PickElement(ElemID, TextureNeeds, PerElemOpts);
+		}
+	});
+	this->bNewSelectingAndHidingTexturesNeedSetupInMaterials |= TextureNeeds.bWasCreated;
+	if (Opts.MakeSelected())
+	{
+		if (!Opts.SkipResetSelection())
+			SelectedElements.clear();
+		for (auto const& ElemID : InElemIDs)
+		{
+			if (ElemID != ITwin::NOT_ELEMENT)
+				SelectedElements.insert(ElemID);
+		}
+		if (TextureNeeds.bWasChanged)
+			UpdateSelectingAndHidingTextures();
+	}
+	return bPickedAny;
+}
+
+void FITwinSceneMapping::DeselectElements(std::unordered_set<ITwinElementID> const& InElemIDs)
+{
+	FITwinSceneTile::FTextureNeeds TextureNeeds;
+	ForEachKnownTile([&InElemIDs, &TextureNeeds](TITwinSceneTilePtr const& SceneTilePtr)
+	{
+		auto SceneTileLock = SceneTilePtr->GetAutoLock();
+		SceneTileLock->DeselectElements(InElemIDs, TextureNeeds);
+	});
+	for (auto const& ID : InElemIDs)
+		SelectedElements.erase(ID);
+	this->bNewSelectingAndHidingTexturesNeedSetupInMaterials |= TextureNeeds.bWasCreated;
+	if (TextureNeeds.bWasChanged)
+		UpdateSelectingAndHidingTextures();
+}
+
 void FITwinSceneMapping::HideElements(std::unordered_set<ITwinElementID> const& InElemIDs, bool IsConstruction,
 									  bool bForce/* = false*/)
 {
 	FITwinSceneTile::FTextureNeeds TextureNeeds;
-	ForEachKnownTile([&InElemIDs, &TextureNeeds, IsConstruction, bForce](FITwinSceneTile& SceneTile)
+	ForEachKnownTile([&InElemIDs, &TextureNeeds, IsConstruction, bForce](TITwinSceneTilePtr const& SceneTilePtr)
 	{
+		auto SceneTileLock = SceneTilePtr->GetAutoLock();
+		auto& SceneTile = *SceneTileLock;
 		SceneTile.HideElements(InElemIDs, TextureNeeds,
 			FShowHideOptions().OnlyVisibleTiles(true).ConstructionData(IsConstruction).Force(bForce));
 	});
@@ -1402,8 +1555,10 @@ void FITwinSceneMapping::HideElements(std::unordered_set<ITwinElementID> const& 
 void FITwinSceneMapping::ShowElements(std::unordered_set<ITwinElementID> const& InElemIDs, bool bForce/* = false*/)
 {
 	FITwinSceneTile::FTextureNeeds TextureNeeds;
-	ForEachKnownTile([&InElemIDs, &TextureNeeds, bForce](FITwinSceneTile& SceneTile)
+	ForEachKnownTile([&InElemIDs, &TextureNeeds, bForce](TITwinSceneTilePtr const& SceneTilePtr)
 		{
+			auto SceneTileLock = SceneTilePtr->GetAutoLock();
+			auto& SceneTile = *SceneTileLock;
 			SceneTile.ShowElements(InElemIDs, TextureNeeds,
 								   FShowHideOptions().OnlyVisibleTiles(true).Force(bForce));
 		});
@@ -1416,8 +1571,10 @@ void FITwinSceneMapping::ShowElements(std::unordered_set<ITwinElementID> const& 
 void FITwinSceneMapping::HideModels(std::unordered_set<ITwinElementID> const& InModelIDs, bool bForce/* = false*/)
 {
 	FITwinSceneTile::FTextureNeeds TextureNeeds;
-	ForEachKnownTile([&InModelIDs, &TextureNeeds, bForce](FITwinSceneTile& SceneTile)
+	ForEachKnownTile([&InModelIDs, &TextureNeeds, bForce](TITwinSceneTilePtr const& SceneTilePtr)
 		{
+			auto SceneTileLock = SceneTilePtr->GetAutoLock();
+			auto& SceneTile = *SceneTileLock;
 			SceneTile.HideModels(InModelIDs, TextureNeeds,
 								 FShowHideOptions().OnlyVisibleTiles(true).Force(bForce));
 		});
@@ -1430,8 +1587,10 @@ void FITwinSceneMapping::HideModels(std::unordered_set<ITwinElementID> const& In
 void FITwinSceneMapping::HideCategories(std::unordered_set<ITwinElementID> const& InCategoryIDs, bool bForce/* = false*/)
 {
 	FITwinSceneTile::FTextureNeeds TextureNeeds;
-	ForEachKnownTile([&InCategoryIDs, &TextureNeeds, bForce](FITwinSceneTile& SceneTile)
+	ForEachKnownTile([&InCategoryIDs, &TextureNeeds, bForce](TITwinSceneTilePtr const& SceneTilePtr)
 		{
+			auto SceneTileLock = SceneTilePtr->GetAutoLock();
+			auto& SceneTile = *SceneTileLock;
 			SceneTile.HideCategories(InCategoryIDs, TextureNeeds,
 									 FShowHideOptions().OnlyVisibleTiles(true).Force(bForce));
 		});
@@ -1446,8 +1605,10 @@ void FITwinSceneMapping::HideCategoriesPerModel(
 	bool bForce/* = false*/)
 {
 	FITwinSceneTile::FTextureNeeds TextureNeeds;
-	ForEachKnownTile([&InCategoryPerModelIDs, &TextureNeeds, bForce](FITwinSceneTile& SceneTile)
+	ForEachKnownTile([&InCategoryPerModelIDs, &TextureNeeds, bForce](TITwinSceneTilePtr const& SceneTilePtr)
 		{
+			auto SceneTileLock = SceneTilePtr->GetAutoLock();
+			auto& SceneTile = *SceneTileLock;
 			SceneTile.HideCategoriesPerModel(InCategoryPerModelIDs, TextureNeeds,
 											 FShowHideOptions().OnlyVisibleTiles(true).Force(bForce));
 		});
@@ -1462,8 +1623,10 @@ void FITwinSceneMapping::ShowCategoriesPerModel(
 	bool bForce /*= false*/)
 {
 	FITwinSceneTile::FTextureNeeds TextureNeeds;
-	ForEachKnownTile([&InCategoryPerModelIDs, &TextureNeeds, bForce](FITwinSceneTile& SceneTile)
+	ForEachKnownTile([&InCategoryPerModelIDs, &TextureNeeds, bForce](TITwinSceneTilePtr const& SceneTilePtr)
 		{
+			auto SceneTileLock = SceneTilePtr->GetAutoLock();
+			auto& SceneTile = *SceneTileLock;
 			SceneTile.ShowCategoriesPerModel(InCategoryPerModelIDs, TextureNeeds,
 											 FShowHideOptions().OnlyVisibleTiles(true).Force(bForce));
 		});
@@ -1524,9 +1687,12 @@ bool FITwinSceneMapping::PickVisibleMaterial(ITwinMaterialID const& InMaterialID
 	else
 	{
 		// General case, based on per-feature pixels in a texture, exactly as for ElementIDs.
-		ForEachKnownTile([&InMaterialID, &bPickedMaterial, &TextureNeeds](FITwinSceneTile& SceneTile)
+		const ITwinRenderMaterialElementID IModelMaterialID(InMaterialID.getValue());
+		ForEachKnownTile([&IModelMaterialID, &bPickedMaterial, &TextureNeeds](TITwinSceneTilePtr const& SceneTilePtr)
 		{
-			bPickedMaterial |= SceneTile.PickMaterial(InMaterialID, TextureNeeds,
+			auto SceneTileLock = SceneTilePtr->GetAutoLock();
+			auto& SceneTile = *SceneTileLock;
+			bPickedMaterial |= SceneTile.PickMaterial(IModelMaterialID, TextureNeeds,
 													  FPickingOptions::CreateDefaultPickVisible());
 		});
 	}
@@ -1547,8 +1713,10 @@ FITwinSceneMapping::FindOwningTileSLOW(UPrimitiveComponent const* Component) con
 	{
 		return { nullptr, nullptr };
 	}
-	for (auto&& SceneTile : KnownTiles)
+	for (auto&& SceneTilePtr : KnownTiles)
 	{
+		auto SceneTileLock = SceneTilePtr->GetRAutoLock();
+		auto& SceneTile = *SceneTileLock;
 		bool bFoundMesh = false;
 		for (auto const& gltfMeshData : SceneTile.GltfMeshes)
 		{
@@ -1566,26 +1734,32 @@ void FITwinSceneMapping::Reset()
 	bool bHiddenConstruction = bHiddenConstructionData;
 	auto HiddenModels = HiddenModelsFromSavedView;
 	auto HiddenCategories = HiddenCategoriesFromSavedView;
+	auto HiddenCategoriesPerModel = HiddenCategoriesPerModelFromSavedView;
+	auto AlwaysDrawnCategoriesPerModel = AlwaysDrawnCategoriesPerModelFromSavedView;
+	auto AlwaysDrawnElements = AlwaysDrawnElementsFromSavedView;
 	auto HiddenElements = HiddenElementsFromSavedView;
 	*this = FITwinSceneMapping(false);
 	this->bHiddenConstructionData = bHiddenConstruction;
 	this->HiddenModelsFromSavedView = HiddenModels;
 	this->HiddenCategoriesFromSavedView = HiddenCategories;
+	this->HiddenCategoriesPerModelFromSavedView = HiddenCategoriesPerModel;
+	this->AlwaysDrawnCategoriesPerModelFromSavedView = AlwaysDrawnCategoriesPerModel;
 	this->HiddenElementsFromSavedView = HiddenElements;
+	this->AlwaysDrawnElementsFromSavedView = AlwaysDrawnElements;
 }
 
 FString FITwinSceneMapping::ToString() const
 {
-	return FString::Printf(TEXT("SceneMapping: Elems:%llu (geom rec. for %llu), SourceElementIDs:%llu DuplicateElements:%llu unique (total %llu)\n\tNew4DTex:%d(NeedSetup:%d) SelHidTexNeedSetup:%d SelectedElement:%s\n\tKnownTiles:%llu (%llu loaded, %llu visible)"),
+	return FString::Printf(TEXT("SceneMapping: Elems:%llu (geom rec. for %llu), SourceElementIDs:%llu DuplicateElements:%llu unique (total %llu)\n\tNew4DTex:%d(NeedSetup:%d) SelHidTexNeedSetup:%d SelectedElements:%llu\n\tKnownTiles:%llu (%llu loaded, %llu visible)"),
 		AllElements.size(),
 		[this]() { size_t N = 0; for (auto&& Elem : AllElements) if (Elem.bHasMesh) ++N; return N; }(),
 		SourceElementIDs.size(), DuplicateElements.size(),
 		[this]() { size_t N = 0; for (auto&& DuplVec : DuplicateElements) N += DuplVec.size(); return N; }(),
 		bTilesHaveNew4DAnimTextures, bNew4DAnimTexturesNeedSetupInMaterials,
-		bNewSelectingAndHidingTexturesNeedSetupInMaterials, *ITwin::ToString(SelectedElement),
+		bNewSelectingAndHidingTexturesNeedSetupInMaterials, SelectedElements.size(),
 		KnownTiles.size(),
-		[this]() { size_t N = 0; for (auto&& Tile : KnownTiles) if (Tile.IsLoaded()) ++N; return N; }(),
-		[this]() { size_t N = 0; for (auto&& Tile : KnownTiles) if (Tile.bVisible) ++N; return N; }()
+		[this]() { size_t N = 0; for (auto&& TilePtr : KnownTiles) { auto TileLock = TilePtr->GetRAutoLock(); auto& Tile = *TileLock; if (Tile.IsLoaded()) ++N; } return N; }(),
+		[this]() { size_t N = 0; for (auto&& TilePtr : KnownTiles) { auto TileLock = TilePtr->GetRAutoLock(); auto& Tile = *TileLock; if (Tile.bVisible) ++N; } return N; }()
 	);
 }
 
@@ -1714,16 +1888,18 @@ void FITwinSceneMapping::SetITwinMaterialChannelIntensity(uint64_t ITwinMaterial
 			SetBaseColorAlpha(MatInstance,
 				ScalarHelper.ParamInfosOpt->LayerParamInfo, ScalarHelper.Intensity);
 		};
-		ForEachKnownTile([&](FITwinSceneTile& SceneTile)
+		ForEachKnownTile([&](TITwinSceneTilePtr SceneTilePtr)
 		{
-			SceneTile.ForEachMaterialInstanceMatchingID(ITwinMaterialID, UpdateAlphaInUnrealMatFunc);
+			auto SceneTileLock = SceneTilePtr->GetAutoLock();
+			SceneTileLock->ForEachMaterialInstanceMatchingID(ITwinMaterialID, UpdateAlphaInUnrealMatFunc);
 		});
 	}
 	else
 	{
-		ForEachKnownTile([&](FITwinSceneTile& SceneTile)
+		ForEachKnownTile([&](TITwinSceneTilePtr SceneTilePtr)
 		{
-			SceneTile.ForEachMaterialInstanceMatchingID(ITwinMaterialID, ScalarHelper);
+			auto SceneTileLock = SceneTilePtr->GetAutoLock();
+			SceneTileLock->ForEachMaterialInstanceMatchingID(ITwinMaterialID, ScalarHelper);
 		});
 	}
 }
@@ -1731,9 +1907,10 @@ void FITwinSceneMapping::SetITwinMaterialChannelIntensity(uint64_t ITwinMaterial
 void FITwinSceneMapping::SetITwinMaterialChannelTexture(uint64_t ITwinMaterialID,
 	AdvViz::SDK::EChannelType Channel, UTexture* pTexture)
 {
-	ForEachKnownTile([&](FITwinSceneTile& SceneTile)
+	ForEachKnownTile([&](TITwinSceneTilePtr SceneTilePtr)
 	{
-		SceneTile.SetITwinMaterialChannelTexture(ITwinMaterialID, Channel, pTexture);
+		auto SceneTileLock = SceneTilePtr->GetAutoLock();
+		SceneTileLock->SetITwinMaterialChannelTexture(ITwinMaterialID, Channel, pTexture);
 	});
 }
 
@@ -1767,9 +1944,10 @@ void FITwinSceneMapping::SetITwinMaterialUVTransform(uint64_t ITwinMaterialID, I
 		MatInstance.SetVectorParameterValueByInfo(ScaleOffsetParamInfo->LayerParamInfo, ScaleOffsetValues);
 		MatInstance.SetVectorParameterValueByInfo(RotationParamInfo->LayerParamInfo, RotationValues);
 	};
-	ForEachKnownTile([&](FITwinSceneTile& SceneTile)
+	ForEachKnownTile([&](TITwinSceneTilePtr SceneTilePtr)
 	{
-		SceneTile.ForEachMaterialInstanceMatchingID(ITwinMaterialID, UpdateUnrealMatFunc);
+		auto SceneTileLock = SceneTilePtr->GetAutoLock();
+		SceneTileLock->ForEachMaterialInstanceMatchingID(ITwinMaterialID, UpdateUnrealMatFunc);
 	});
 }
 
@@ -1798,8 +1976,9 @@ void FITwinSceneMapping::SetITwinMaterialChannelColor(uint64_t ITwinMaterialID,
 		SetBaseColorValue(MatInstance, ColorParamInfo->LayerParamInfo, NewValue, bModifyAlpha);
 	};
 
-	ForEachKnownTile([&](FITwinSceneTile& SceneTile)
+	ForEachKnownTile([&](TITwinSceneTilePtr SceneTilePtr)
 	{
-		SceneTile.ForEachMaterialInstanceMatchingID(ITwinMaterialID, UpdateUnrealMatFunc);
+		auto SceneTileLock = SceneTilePtr->GetAutoLock();
+		SceneTileLock->ForEachMaterialInstanceMatchingID(ITwinMaterialID, UpdateUnrealMatFunc);
 	});
 }

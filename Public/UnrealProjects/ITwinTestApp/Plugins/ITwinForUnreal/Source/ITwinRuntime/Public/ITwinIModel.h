@@ -40,6 +40,7 @@ namespace AdvViz::SDK
 namespace BeUtils
 {
 	class GltfMaterialHelper;
+	class GltfTuner;
 }
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnIModelLoaded, bool, bSuccess, FString, IModelId);
@@ -145,6 +146,29 @@ public:
 	UFUNCTION(BlueprintGetter)
 	UITwinSynchro4DSchedules* GetSynchro4DSchedules();
 
+	/// Clear the persistence cache for this iModel Elements metadata, used for the interpretation of the 4D schedule.
+	/// This is a helper tool that will not cancel (nor automatically restart) the loading of the iModel or its 4D
+	/// data, it will only do anything if the metadata *and* 4D loading processes are complete (no in-flight HTTP
+	/// requests left).
+	/// See also the equivalent function on UITwinSynchro4DSchedules, for the 4D data cache.
+	/// @return True when the iModel was able to delete its cache
+	UFUNCTION(Category = "iTwin", BlueprintCallable)
+	bool ClearMetadataCacheWithConfirmation();
+
+	/// Same as ClearCacheWithConfirmation, but no return value in order to have a button in the Editor
+	UFUNCTION(Category = "iTwin", CallInEditor)
+	void ClearMetadataCache();
+
+	/// Clear both metadata and 4D schedule caches
+	/// @see ClearCacheOnlyThis, UITwinSynchro4DSchedules::ClearCacheOnlyThis
+	/// @return True when both the iModel and its schedule (if any) were able to delete their cache
+	UFUNCTION(Category = "iTwin", BlueprintCallable)
+	bool ClearMetadataAnd4DCachesWithConfirmation();
+
+	/// Same as ClearMetadataAnd4DCachesWithConfirmation, but no return value in order to have a button in the Editor
+	UFUNCTION(Category = "iTwin", CallInEditor)
+	void ClearMetadataAnd4DCaches();
+
 	//! When false, Synchro4D schedule queries and loading will not happen. If some queries have been already
 	//! started, setting to false will not prevent their replies from being handled, but no new query will be
 	//! emitted: they will be stacked and should restart correctly when the flag is set to true again
@@ -154,11 +178,17 @@ public:
 		EditAnywhere)
 	bool bSynchro4DAutoLoadSchedule = true;
 
+	UFUNCTION(BlueprintGetter)
+	double GetScheduleDownloadPercentComplete() const;
+
+private:
 	/// Percentage of the data needed to replay a 4D schedule (if any) that is estimated to be available.
 	/// Includes internal iModel data not strictly part of the schedule but required for it to replay:
 	/// this data needs to be downloaded even when there is no schedule. When the schedule is fully available,
 	/// or when it had been determined that there is no schedule, the variable is set to 100.
-	UPROPERTY(Category = "iTwin", VisibleAnywhere, BlueprintReadOnly)
+	UPROPERTY(Category = "iTwin",
+		VisibleAnywhere,
+		BlueprintGetter = GetScheduleDownloadPercentComplete)
 	double ScheduleDownloadPercentComplete = 0.;
 
 public:
@@ -276,6 +306,9 @@ public:
 		BlueprintCallable)
 	void DeSelectElements();
 
+	//! Returns true if the given element is currently selected (highlighted).
+	bool IsElementSelected(const FString& ElementId) const;
+
 	//! Deselect any material previously selected. This will disable the selection highlight, if any.
 	UFUNCTION(Category = "iTwin",
 		BlueprintCallable)
@@ -319,6 +352,15 @@ public:
 		BlueprintCallable)
 	void SelectElement(const FString& ElementId);
 
+	/// Select multiple elements at once, with additive highlight.
+	void SelectElements(const TArray<FString>& ElementIds);
+
+	/// Add elements to the current selection (additive, does not clear existing selection).
+	void AddElementsToSelection(const TArray<FString>& ElementIds);
+
+	/// Remove specific elements from the current selection.
+	void RemoveElementsFromSelection(const TArray<FString>& ElementIds);
+
 	UFUNCTION(Category = "iTwin|Load",
 		BlueprintCallable)
 	void Reset();
@@ -338,6 +380,16 @@ public:
 	void Retune();
 
 
+	//! Globally enable or disable material tuning features.
+	UFUNCTION(Category = "iTwin",
+		BlueprintCallable)
+	static void EnableMaterialTuning(bool bEnable);
+
+	//! Returns whether material tuning features are globally enabled.
+	UFUNCTION(Category = "iTwin",
+		BlueprintCallable)
+	static bool IsMaterialTuningEnabled();
+
 	//! Highlight the parts of the model using the given iTwin Material ID.
 	void HighlightMaterial(uint64 MaterialID);
 
@@ -346,7 +398,7 @@ public:
 	TMap<uint64, FString> GetITwinMaterialMap() const;
 	FString GetMaterialName(uint64_t MaterialId, bool bForMaterialEditor = false) const;
 
-	//! Minimal API for material tuning in Carrot MVP
+	//! Simple API for material tuning based on the original material definitions of the iModel.
 	double GetMaterialChannelIntensity(uint64_t MaterialId, AdvViz::SDK::EChannelType Channel) const;
 	void SetMaterialChannelIntensity(uint64_t MaterialId, AdvViz::SDK::EChannelType Channel, double Intensity);
 
@@ -495,10 +547,17 @@ public:
 
 	UITwinClipping3DTilesetHelper* GetClippingHelper() const;
 	bool MakeClippingHelper();
+	std::shared_ptr<BeUtils::GltfTuner> GetGltfTuner();
 	void SetNeedForcedShadowUpdate();
 
 	bool AutoRefreshChangeset() const;
 	void DisableAutoRefresh();
+
+	UFUNCTION()
+	bool HasLoadedTileset() const;
+
+	UFUNCTION()
+	bool HasTilesetLoadFailure() const;
 
 private:
 	void SetResolvedChangesetId(FString const& InChangesetId);
@@ -528,7 +587,7 @@ private:
 	virtual void OnIModelCategoryNodesRetrieved(bool bSuccess, FIModelPagedNodesRes const& IModelNodes) override;
 	virtual void OnModelFilteredNodesRetrieved(bool bSuccess, FFilteredNodesRes const& FilteredNodes, FString const& Filter) override;
 	virtual void OnCategoryFilteredNodesRetrieved(bool bSuccess, FFilteredNodesRes const& IModelNodes, FString const& Filter) override;
-	virtual void OnMaterialPropertiesRetrieved(bool bSuccess, AdvViz::SDK::ITwinMaterialPropertiesMap const& props) override;
+	virtual void OnMaterialPropertiesRetrieved(bool bSuccess, AdvViz::SDK::ITwinRenderMaterialPropertiesMap const& props) override;
 	virtual void OnTextureDataRetrieved(bool bSuccess, std::string const& textureId, AdvViz::SDK::ITwinTextureData const& textureData) override;
 	virtual void OnIModelQueried(bool bSuccess, FString const& QueryResult, HttpRequestID const&) override;
 	virtual void OnMatMLPredictionRetrieved(bool bSuccess, AdvViz::SDK::ITwinMaterialPrediction const& prediction, std::string const& error = {}) override;

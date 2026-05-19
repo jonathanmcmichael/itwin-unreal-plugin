@@ -223,7 +223,7 @@ public:
 	virtual void OnConvertedIModelCoordsToGeoCoords(bool bSuccess,
 		AdvViz::SDK::GeoCoordsReply const& GeoCoords, AdvViz::SDK::RequestID const& FromRequestId) override;
 	virtual void OnIModelQueried(bool bSuccess, std::string const& QueryResult, AdvViz::SDK::RequestID const&) override;
-	virtual void OnMaterialPropertiesRetrieved(bool bSuccess, AdvViz::SDK::ITwinMaterialPropertiesMap const& props) override;
+	virtual void OnMaterialPropertiesRetrieved(bool bSuccess, AdvViz::SDK::ITwinRenderMaterialPropertiesMap const& props) override;
 	virtual void OnTextureDataRetrieved(bool bSuccess, std::string const& textureId, AdvViz::SDK::ITwinTextureData const& textureData) override;
 	virtual void OnMatMLPredictionRetrieved(bool bSuccess, AdvViz::SDK::ITwinMaterialPrediction const& prediction, std::string const& error = {}) override;
 	virtual void OnMatMLPredictionProgress(float fProgressRatio) override;
@@ -1025,11 +1025,11 @@ void UITwinWebServices::FImpl::OnIModelQueried(bool bSuccess, std::string const&
 	}
 }
 
-void UITwinWebServices::FImpl::OnMaterialPropertiesRetrieved(bool bSuccess, AdvViz::SDK::ITwinMaterialPropertiesMap const& coreProps)
+void UITwinWebServices::FImpl::OnMaterialPropertiesRetrieved(bool bSuccess, AdvViz::SDK::ITwinRenderMaterialPropertiesMap const& materialProps)
 {
 	if (observer_)
 	{
-		observer_->OnMaterialPropertiesRetrieved(bSuccess, coreProps);
+		observer_->OnMaterialPropertiesRetrieved(bSuccess, materialProps);
 	}
 }
 
@@ -1111,7 +1111,7 @@ UITwinWebServices::UITwinWebServices()
 		}
 		// Test whether we should grant access to the Decoration Service in the current application.
 		// This is disabled by default (to avoid forcing all users to add a new scope to their iTwin app).
-		// Note that in Carrot, we do this without condition (see AMainLevelScript::BeginPlay).
+		// Note that in Carrot, we do this without condition (see ACarrot_GameMode::BeforeAuth).
 		if (DecoSettings && DecoSettings->bLoadDecorationsInPlugin)
 		{
 			UITwinWebServices::AddScope(TEXT(ITWIN_DECORATIONS_SCOPE));
@@ -1740,12 +1740,16 @@ AdvViz::SDK::ITwinAPIRequestInfo UITwinWebServices::InfosToQueryIModel(FString i
 
 void UITwinWebServices::QueryIModelRows(FString iTwinId, FString iModelId, FString ChangesetId,
 	FString ECSQLQuery, int Offset, int Count, std::function<void(HttpRequestID)>&& NotifRequestID,
+	std::function<void(const AdvViz::expected<AdvViz::SDK::Http::Response, std::string>&)>&& onFinished/* = {}*/,
+	AdvViz::SDK::Http::EAsyncCallbackExecutionMode asyncCBExecMode /*= AdvViz::SDK::Http::EAsyncCallbackExecutionMode::MainThread*/,
 	AdvViz::SDK::ITwinAPIRequestInfo const* RequestInfo/*=nullptr*/,
 	AdvViz::SDK::FilterErrorFunc&& FilterError /*= {}*/)
 {
 	DoRequest(
 		[this, iTwinId, iModelId, ChangesetId, ECSQLQuery, Offset, Count, RequestInfo,
 		 NotifRequestID=std::move(NotifRequestID),
+		 onFinished = std::move(onFinished),
+		 asyncCBExecMode,
 		 FilterError=std::move(FilterError)] () mutable
 		{
 			Impl->QueryIModel(
@@ -1757,9 +1761,11 @@ void UITwinWebServices::QueryIModelRows(FString iTwinId, FString iModelId, FStri
 				Count,
 				[NotifRequestID = std::move(NotifRequestID)](AdvViz::SDK::RequestID const& RequestID)
 					{ if (NotifRequestID) NotifRequestID(HttpRequestID(RequestID.c_str())); },
+				std::move(onFinished),
 				RequestInfo,
 				[FilterError = std::move(FilterError)](long statusCode, std::string const& StrError, bool& bAllowRetry, bool& bLogError)
-					{ if (FilterError) FilterError(statusCode, std::string(StrError.c_str()), bAllowRetry, bLogError);  }
+					{ if (FilterError) FilterError(statusCode, std::string(StrError.c_str()), bAllowRetry, bLogError);  },
+				asyncCBExecMode
 				);
 		});
 }

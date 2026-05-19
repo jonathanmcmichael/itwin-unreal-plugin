@@ -2,15 +2,19 @@ cmake_minimum_required (VERSION 3.31)
 
 enable_testing()
 
-# Copy the Copilot agent instructions and agent definitions into the build directory
-# so that Visual Studio (and other tools) can discover them when working from the generated .sln.
-if (EXISTS "${CMAKE_SOURCE_DIR}/.github/copilot-instructions.md")
-	file (COPY "${CMAKE_SOURCE_DIR}/.github/copilot-instructions.md"
-		DESTINATION "${CMAKE_BINARY_DIR}/.github")
+# Symlink Private/.github into the build directory
+# so that Visual Studio (and other tools) can discover Copilot instructions when working from the generated .sln.
+if (EXISTS "${CMAKE_SOURCE_DIR}/Private/.github")
+	if (EXISTS "${CMAKE_BINARY_DIR}/.github" OR IS_SYMLINK "${CMAKE_BINARY_DIR}/.github")
+		file (REMOVE_RECURSE "${CMAKE_BINARY_DIR}/.github")
+	endif ()
+	file (CREATE_LINK "${CMAKE_SOURCE_DIR}/Private/.github" "${CMAKE_BINARY_DIR}/.github" SYMBOLIC)
 endif ()
-if (EXISTS "${CMAKE_SOURCE_DIR}/.github/agents")
-	file (COPY "${CMAKE_SOURCE_DIR}/.github/agents"
-		DESTINATION "${CMAKE_BINARY_DIR}/.github")
+if (EXISTS "${CMAKE_SOURCE_DIR}/Private/AGENTS.md")
+	if (EXISTS "${CMAKE_BINARY_DIR}/AGENTS.md" OR IS_SYMLINK "${CMAKE_BINARY_DIR}/AGENTS.md")
+		file (REMOVE "${CMAKE_BINARY_DIR}/AGENTS.md")
+	endif ()
+	file (CREATE_LINK "${CMAKE_SOURCE_DIR}/Private/AGENTS.md" "${CMAKE_BINARY_DIR}/AGENTS.md" SYMBOLIC)
 endif ()
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/Public/CMake")

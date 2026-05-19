@@ -26,7 +26,12 @@ namespace AdvViz::SDK {
 		}
 		return guid.substr(0, 8) + guid.substr(9, 4) + guid.substr(14, 4) + guid.substr(19, 4) + guid.substr(24, 4);
 	}
-
+	static std::string toLower(std::string data)
+	{
+		 std::transform(data.begin(), data.end(), data.begin(),
+			[](unsigned char c) { return std::tolower(c); });
+		 return data;
+	}
 
 	namespace SceneAPIDetails
 	{
@@ -721,9 +726,9 @@ namespace AdvViz::SDK {
 				}
 				if (ttype.has_value())
 				{
-					if (*ttype == "iModels")
+					if (toLower(*ttype) == "imodels")
 						linkType = "iModel";
-					else if (*ttype == "RealityData")
+					else if (toLower(*ttype) == "realitydata")
 						linkType = "RealityData";
 				}
 				link->SetType(linkType.empty() ? "iModel" : linkType); // check row class
@@ -1834,12 +1839,12 @@ namespace AdvViz::SDK {
 				
 				if (link->GetType() == "iModel")
 				{
-					Jin.data.repositoryId = "iModels";
+					Jin.data.repositoryId = "imodels";
 					Jin.data.type = "iModels";
 				}
 				else if (link->GetType() == "RealityData")
 				{
-					Jin.data.repositoryId = "RealityData";
+					Jin.data.repositoryId = "realitydata";
 					Jin.data.type = "RealityData";
 				}
 
@@ -1868,12 +1873,12 @@ namespace AdvViz::SDK {
 				Jin.data.iTwinId = itwinid;
 				if (link->GetType() == "iModel")
 				{
-					Jin.data.repositoryId = "iModels";
+					Jin.data.repositoryId = "imodels";
 					Jin.data.type = "iModels";
 				}
 				else if (link->GetType() == "RealityData")
 				{
-					Jin.data.repositoryId = "RealityData";
+					Jin.data.repositoryId = "realitydata";
 					Jin.data.type = "RealityData";
 				}
 				

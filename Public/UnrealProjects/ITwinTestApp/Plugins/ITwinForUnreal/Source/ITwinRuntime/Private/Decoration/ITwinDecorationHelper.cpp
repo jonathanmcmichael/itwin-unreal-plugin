@@ -1899,9 +1899,9 @@ void AITwinDecorationHelper::SetAtmosphereSettings(const AdvViz::SDK::ITwinAtmos
 }
 AdvViz::SDK::ITwinSceneSettings AITwinDecorationHelper::GetSceneSettings() const
 {
-	// [Julot] I add a crash in Editor, when starting PIE *after* having instantiated an iModel manually in
-	// the level (which is not a relevant workflow for Carrot, but could perfectly happen in the plugin, when
-	// decoration is fully supported there.
+	// [Julot] I had a crash in Editor, when starting PIE *after* having instantiated an iModel manually in
+	// the level (which is not a relevant workflow for iTwin Engage, but could perfectly happen in the
+	// plugin, when decoration is fully supported there.
 	if (ensure(Impl->DecorationIO && Impl->DecorationIO->scene))
 	{
 		return Impl->DecorationIO->scene->GetSceneSettings();

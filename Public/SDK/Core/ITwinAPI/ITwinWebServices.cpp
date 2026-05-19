@@ -183,7 +183,7 @@ namespace AdvViz::SDK
 		}
 
 		using ResultCallback =
-			std::function<bool(Http::Response const& response, RequestID const&, std::string& strError)>;
+			std::function<bool(Http::Response& response, RequestID const&, std::string& strError)>;
 
 		inline std::string GetAPIRootURL(EITwinEnvironment env) const
 		{
@@ -233,6 +233,7 @@ namespace AdvViz::SDK
 		void ProcessHttpRequest(ITwinAPIRequestInfo const& requestInfo, ResultCallback&& resultCallback,
 			std::function<void(RequestID const&)> && notifyRequestID = {},
 			FilterErrorFunc&& filterError = {},
+			Http::EAsyncCallbackExecutionMode asyncCBExecMode = Http::EAsyncCallbackExecutionMode::MainThread,
 			std::function<std::pair<float, int>(int attempt, int httpCode)> && shouldRetry =
 				std::bind(&ITwinWebServices::Impl::defaultShouldRetryFunc,
 						  std::placeholders::_1, std::placeholders::_2),
@@ -405,6 +406,7 @@ namespace AdvViz::SDK
 		ResultCallback&& InResultCallback,
 		std::function<void(RequestID const&)> && notifyRequestID/*= {}*/,
 		FilterErrorFunc&& filterError /*= {}*/,
+		Http::EAsyncCallbackExecutionMode asyncCBExecMode,
 		std::function<std::pair<float, int>(int attempt, int httpCode)> && shouldRetry/*= {}*/,
 		int const attempt/*= 0*/)
 	{
@@ -416,7 +418,8 @@ namespace AdvViz::SDK
 				fmt::format("[{}] insufficient parameters to build a valid request.", requestInfo.ShortName),
 				HttpRequest::NO_REQUEST, /*no retry in that case*/0);
 			std::string dummyErr;
-			InResultCallback({}, HttpRequest::NO_REQUEST, dummyErr);
+			Http::Response r;
+			InResultCallback(r, HttpRequest::NO_REQUEST, dummyErr);
 			return;
 		}
 		std::pair<float, int> retryInfo = // in case of failure
@@ -492,8 +495,9 @@ namespace AdvViz::SDK
 			notifyRequestID = std::move(notifyRequestID),
 			filterError = std::move(filterError),
 			shouldRetry = std::move(shouldRetry),
+			asyncCBExecMode,
 			requestDumpPath, attempt, retryInfo/*needs to be mutable*/]
-			(RequestPtr const& request, Response const& response) mutable
+			(RequestPtr const& request, Response& response) mutable
 		{
 			if (!requestDumpPath.empty())
 			{
@@ -546,6 +550,7 @@ namespace AdvViz::SDK
 							retry_notifyRequestID = std::move(notifyRequestID),
 							retry_filterError = std::move(filterError),
 							retry_shouldRetry = std::move(shouldRetry),
+							asyncCBExecMode,
 							attempt]() mutable
 						{
 							if (*isValidRetryLambda)
@@ -555,6 +560,7 @@ namespace AdvViz::SDK
 									std::move(retry_resultCallback),
 									std::move(retry_notifyRequestID),
 									std::move(retry_filterError),
+									asyncCBExecMode,
 									std::move(retry_shouldRetry),
 									attempt + 1);
 							}
@@ -565,7 +571,8 @@ namespace AdvViz::SDK
 					else
 					{
 						std::string dummyErr;
-						resultCallback({}, request->GetRequestID(), dummyErr);
+						Http::Response dummyRes;
+						resultCallback(dummyRes, request->GetRequestID(), dummyErr);
 					}
 				}
 			});
@@ -644,13 +651,247 @@ namespace AdvViz::SDK
 			if (!requestError.empty())
 				return;
 			setErrorGuard.release();
-		});
+		},
+		asyncCBExecMode);
+
 		request->Process(*owner_.GetHttp(), requestInfo.UrlSuffix,
 			{ requestInfo.ContentString.str(), requestInfo.ContentString.GetEncoding() },
 			headers,
 			requestInfo.isFullUrl);
 	}
 
+#if 0
+	void ITwinWebServices::Impl::AsyncProcessHttpRequest(ITwinAPIRequestInfo const& requestInfo,
+		const std::function<void(const AdvViz::expected<Http::Response, std::string>&)>& InResultCallback)
+	{
+		if (requestInfo.badlyFormed)
+		{
+			// Some mandatory information was missing to build a valid url
+			// => do not even try to process any request, but notify the error at once.
+			this->SetLastError(
+				fmt::format("[{}] insufficient parameters to build a valid request.", requestInfo.ShortName),
+				HttpRequest::NO_REQUEST, /*no retry in that case*/0);
+			AdvViz::expected<Http::Response, std::string> errorOutcome = AdvViz::make_unexpected(fmt::format("[{}] insufficient parameters to build a valid request.", requestInfo.ShortName));
+			InResultCallback(errorOutcome);
+			return;
+		}
+
+		std::string const authToken = owner_.GetAuthToken(requestInfo.enforceRegularToken);
+		if (authToken.empty())
+		{
+			return;
+		}
+		const auto request = std::shared_ptr<HttpRequest>(HttpRequest::New());
+		if (!request)
+		{
+			return;
+		}
+
+		request->SetVerb(requestInfo.Verb);
+		if (requestInfo.needRawData)
+		{
+			request->SetNeedRawData(true);
+		}
+
+		Http::Headers headers;
+		headers.reserve(requestInfo.CustomHeaders.size() + 5);
+
+		// Fill headers
+		if (!requestInfo.HasCustomHeader("Prefer"))
+		{
+			headers.emplace_back("Prefer", "return=representation");
+		}
+		headers.emplace_back("Accept", requestInfo.AcceptHeader);
+		if (!requestInfo.ContentType.empty())
+		{
+			// for "POST" requests typically
+			headers.emplace_back("Content-Type", requestInfo.ContentType);
+		}
+
+		headers.emplace_back("Authorization", std::string("Bearer ") + authToken);
+		headers.emplace_back("X-Correlation-ID", request->GetRequestID());
+
+		// add custom headers, if any
+		for (auto const& [key, value] : requestInfo.CustomHeaders) {
+			headers.emplace_back(key, value);
+		}
+
+		if (requestInfo.discardAllHeaders)
+		{
+			// Some very specific requests require no header (download of texture from blob storage...)
+			headers.clear();
+		}
+
+		std::filesystem::path requestDumpPath;
+		if (g_ShouldDumpRequests)
+		{
+			// Dump request to temp folder.
+			requestDumpPath = std::filesystem::temp_directory_path() / "iTwinRequestDump" /
+				RequestDump::GetRequestHash(requestInfo.UrlSuffix, requestInfo.ContentString.str());
+			std::filesystem::remove_all(requestDumpPath);
+			std::filesystem::create_directories(requestDumpPath);
+			std::ofstream(requestDumpPath / "request.json") << rfl::json::write(
+				RequestDump::Request{ requestInfo.UrlSuffix, requestInfo.ContentString.str() }, YYJSON_WRITE_PRETTY);
+		}
+		using RequestPtr = HttpRequest::RequestPtr;
+		using Response = HttpRequest::Response;
+		request->AsyncProcess(
+			[this,
+			isValidLambda = isThisValid_,
+			requestInfoCopy = requestInfo,
+			resultCallback = std::move(InResultCallback),
+			requestDumpPath]
+		(RequestPtr const& request, Response const& response) mutable
+			{
+				if (!requestDumpPath.empty())
+				{
+					// Dump response to temp folder.
+					std::ofstream(requestDumpPath / "response.json") << rfl::json::write(
+						RequestDump::Response{ response.first, response.second }, YYJSON_WRITE_PRETTY);
+					if (!response.second.empty())
+						std::ofstream(requestDumpPath / "response.bin").write(
+							(const char*)response.second.data(), response.second.size());
+				}
+				if (!(*isValidLambda))
+				{
+					// see comments in #ReusableJsonQueries.cpp
+					return;
+				}
+				bool bValidResponse = false;
+				std::string requestError;
+				Be::CleanUpGuard setErrorGuard([&, this]() mutable
+					{
+						// In case of early exit, ensure we store the error and notify the caller
+
+						// Some errors are not really relevant, ie. they can happen in a normal cases, typically for
+						// generic queries, which may trigger errors in case the data we are looking for is missing.
+						// In such case, we would certainly prefer not to retry, and to skip the error completely
+						// from logs.
+						bool bAllowRetry(retryInfo.second > 0);
+						bool bLogError(true);
+						if (!bValidResponse && filterError)
+						{
+							filterError(response.first, requestError, bAllowRetry, bLogError);
+						}
+
+						this->SetLastError(
+							fmt::format("[{}] {}", requestInfoCopy.ShortName, requestError),
+							request->GetRequestID(),
+							bAllowRetry ? retryInfo.second : 0,
+							bLogError);
+						if (!bValidResponse)
+						{
+							if (bAllowRetry)
+							{
+								// Retry after a delay.
+								float const delayInSeconds = std::max(0.1f, retryInfo.first);
+								std::string const delayedCallUniqueID = uniqueName_ + requestInfoCopy.ShortName;
+
+								UniqueDelayedCall(delayedCallUniqueID,
+									[this, isValidRetryLambda = isValidLambda,
+									retry_requestInfo = std::move(requestInfoCopy),
+									retry_resultCallback = std::move(resultCallback),
+									retry_notifyRequestID = std::move(notifyRequestID),
+									retry_filterError = std::move(filterError),
+									retry_shouldRetry = std::move(shouldRetry),
+									attempt]() mutable
+									{
+										if (*isValidRetryLambda)
+										{
+											this->ProcessHttpRequest(
+												retry_requestInfo,
+												std::move(retry_resultCallback),
+												std::move(retry_notifyRequestID),
+												std::move(retry_filterError),
+												std::move(retry_shouldRetry),
+												attempt + 1);
+										}
+										return DelayedCall::EReturnedValue::Done;
+									}, delayInSeconds /* in seconds*/);
+
+							}
+							else
+							{
+								std::string dummyErr;
+								resultCallback({}, request->GetRequestID(), dummyErr);
+							}
+						}
+					});
+
+				if (!request->CheckResponse(response, requestError))
+				{
+					if (!response.second.empty())
+					{
+						// Try to parse iTwin error
+						requestError += GetErrorDescriptionFromJson(response.second,
+							requestError.empty() ? "" : "\t");
+					}
+					// store error and launch retry (through CleanUpGuard above)
+					return;
+				}
+				// 202 = "Accepted but not immediately processed"! ie response is empty... This seems to happen
+				// when querying an iModel (changeset)'s rows for the first time, maybe because of some possibly
+				// lengthy init process? Should we then retry "indefinitely" or have some specific user feedback,
+				// in case it's really long for BIG iModels?
+				if (response.first == 202)
+				{
+					BE_ASSERT((bool)shouldRetry, "HTTP 202 received: you should handle this case by supplying a non-empty 'shouldRetry' functor!");
+					retryInfo = shouldRetry ? shouldRetry(attempt, 202) : std::make_pair(0.f, 0/*no retry on 202!*/);
+					if (retryInfo.second > 0) // caller wants us to retry
+					{
+						requestError += "Received HTTP code 202: request accepted but answer delayed";
+						// store "error" and launch retry (through CleanUpGuard above)
+						return;
+					}
+					// else: handle as a success: resultCallback should handle this case!
+				}
+				ScopedWorkingWebServices WorkingInstanceSetter(&this->owner_);
+				std::string parsingError;
+				bValidResponse = resultCallback(response, request->GetRequestID(), parsingError);
+				if (!parsingError.empty())
+				{
+					requestError += parsingError;
+				}
+				// store error and launch retry (through CleanUpGuard above)
+				if (!requestError.empty())
+					return;
+				setErrorGuard.release();
+			});
+
+			[requestDumpPath, InResultCallback = std::move(InResultCallback)](Http::Response& response)
+			{
+				AdvViz::expected<Http::Response, std::string> result;
+				if (Http::IsSuccessful(response))
+				{
+					if (!requestDumpPath.empty())
+					{
+						// Dump response to temp folder.
+						std::ofstream(requestDumpPath / "response.json") << rfl::json::write(
+							RequestDump::Response{ response.first, response.second }, YYJSON_WRITE_PRETTY);
+						if (!response.second.empty())
+							std::ofstream(requestDumpPath / "response.bin").write(
+								(const char*)response.second.data(), response.second.size());
+					}
+
+					result = std::move(response);
+				}
+				else
+				{
+					std::string errorMsg = fmt::format("HTTP error code: {}", response.first);
+					if (!response.second.empty())
+					{
+						errorMsg += GetErrorDescriptionFromJson(response.second, "\t");
+					}
+					result = AdvViz::make_unexpected(errorMsg);
+				}
+				InResultCallback(result);
+			},
+			*owner_.GetHttp(), requestInfo.UrlSuffix,
+			{ requestInfo.ContentString.str(), requestInfo.ContentString.GetEncoding() },
+			headers,
+			requestInfo.isFullUrl);
+	}
+#endif 
 	namespace Detail
 	{
 		struct SITwinInfo2
@@ -998,7 +1239,7 @@ namespace AdvViz::SDK
 		});
 	}
 
-	void ITwinWebServices::StartExport(std::string const& iModelId, std::string const& changesetId)
+	void ITwinWebServices::StartExport(std::string const& iModelId, std::string const& changesetId, Http::EAsyncCallbackExecutionMode asyncCBExecMode /*= Http::EAsyncCallbackExecutionMode::MainThread*/)
 	{
 		struct ExportParams
 		{
@@ -1049,6 +1290,7 @@ namespace AdvViz::SDK
 		},
 		{}, // notifyRequestID
 		{}, // filterError
+		asyncCBExecMode,
 		[](int attempt, int httpCode)
 		{
 			if (202 == httpCode)
@@ -1104,8 +1346,8 @@ namespace AdvViz::SDK
 		{
 			std::optional<std::string> renderTimeline;
 			std::optional<double> timePoint;
-			//optional below for retro-compatibility with Synchro saved views created inside Carrot,
-			//which only used to contain fields renderTimeline and timePoint.
+			// optional below for retro-compatibility with Synchro saved views created inside iTwin Engage,
+			// which only used to contain fields renderTimeline and timePoint.
 			std::optional<ViewFlags> viewflags;
 			std::optional<Environment> environment;
 		};
@@ -2564,24 +2806,47 @@ namespace AdvViz::SDK
 		};
 	}
 
+	//void ITwinWebServices::AsyncQueryIModel(
+	//	std::string const& iTwinId, std::string const& iModelId, std::string const& changesetId,
+	//	std::string const& ECSQLQuery, int offset, int count,
+	//	const std::function<void(const AdvViz::expected<AdvViz::SDK::Http::Response, std::string>&)>& onFinished,
+	//	ITwinAPIRequestInfo const* requestInfo)
+	//{
+	//	std::optional<ITwinAPIRequestInfo> optRequestInfo;
+	//	if (!requestInfo)
+	//	{
+	//		optRequestInfo.emplace(InfosToQueryIModel(iTwinId, iModelId, changesetId, ECSQLQuery, offset,
+	//												  count));
+	//		requestInfo = &(*optRequestInfo);
+	//	}
+
+	//	impl_->AsyncProcessHttpRequest(
+	//		*requestInfo,
+	//		onFinished
+	//	);
+	//}
+
 	void ITwinWebServices::QueryIModel(
 		std::string const& iTwinId, std::string const& iModelId, std::string const& changesetId,
 		std::string const& ECSQLQuery, int offset, int count,
 		std::function<void(RequestID const&)>&& notifyRequestID,
+		std::function<void(const AdvViz::expected<AdvViz::SDK::Http::Response, std::string>&)>&& onFinished,
 		ITwinAPIRequestInfo const* requestInfo,
-		FilterErrorFunc&& filterError /*= {}*/)
+		FilterErrorFunc&& filterError /*= {}*/,
+		Http::EAsyncCallbackExecutionMode asyncCBExecMode /*= Http::EAsyncCallbackExecutionMode::MainThread*/)
 	{
 		std::optional<ITwinAPIRequestInfo> optRequestInfo;
 		if (!requestInfo)
 		{
 			optRequestInfo.emplace(InfosToQueryIModel(iTwinId, iModelId, changesetId, ECSQLQuery, offset,
-													  count));
+				count));
 			requestInfo = &(*optRequestInfo);
 		}
 
 		impl_->ProcessHttpRequest(
 			*requestInfo,
-			[this](Http::Response const& response, RequestID const& requestId, std::string& strError) -> bool
+			[this, onFinished = std::move(onFinished), filterErrorCopy=filterError]
+			(Http::Response &response, RequestID const& requestId, std::string& strError) -> bool
 			{
 				struct DataHolder { rfl::Generic data; };
 				DataHolder res;
@@ -2592,8 +2857,8 @@ namespace AdvViz::SDK
 				// parse a text not even containing 'data'... Check that the result is really relevant
 				// here (it should not be a basic type).
 				bResult = bResult && (res.data.to_array()
-								|| res.data.to_object()
-								|| res.data.to_string());
+					|| res.data.to_object()
+					|| res.data.to_string());
 
 				// Sometimes, we receive 200 but the response contains an error => instead of logging the
 				// error, try to parse the specific error in such case:
@@ -2609,23 +2874,43 @@ namespace AdvViz::SDK
 					std::string parseError2;
 					if (Json::FromString(queryError, response.second, parseError2))
 					{
-						// This could give a more detailed error.
-						// (even though it's not really useful to us - for example, we can get
-						//	"ECClass 'bis.ExternalSourceAspect' does not exist or could not be loaded.")
+						// This could give a more detailed message, that we can use to filter the error: missing some
+						// table/class can be an error in some cases (eg. bis.ExternalSourceAspect) while not in
+						// others (eg. ConstructionDetailingElementSplitsGeometricElement3d)
 						strError = queryError.error;
+						if (filterErrorCopy)
+						{
+							bool bAllowRetry(true), bLogError(true);
+							filterErrorCopy(response.first, strError, bAllowRetry, bLogError);
+							if (!bLogError) // ie ignore error...
+							{
+								bResult = true;
+								strError = {};
+							}
+						}
 					}
 				}
-				if (impl_->observer_)
+				if (onFinished)
 				{
-					impl_->observer_->OnIModelQueried(bResult, response.second, requestId);
+					expected<Http::Response, std::string> ret(std::move(response));
+					if (!bResult)
+						ret = make_unexpected(strError);
+					onFinished(ret);
+				}
+				else
+				{
+					if (impl_->observer_)
+					{
+						impl_->observer_->OnIModelQueried(bResult, response.second, requestId);
+					}
 				}
 				return bResult;
 			},
 			std::move(notifyRequestID),
-			std::move(filterError)
+			std::move(filterError),
+			asyncCBExecMode
 		);
 	}
-
 
 	namespace
 	{
@@ -2677,7 +2962,7 @@ namespace AdvViz::SDK
 				return EVecParsingState::InProgress;
 			}
 
-			std::optional<ITwinMaterialAttributeValue> MakeVecAttribute(std::stringstream& error)
+			std::optional<ITwinRenderMaterialAttributeValue> MakeVecAttribute(std::stringstream& error)
 			{
 				switch (currentVecSize_)
 				{
@@ -2700,12 +2985,12 @@ namespace AdvViz::SDK
 
 		struct AttributesVisitor
 		{
-			AdvViz::SDK::AttributeMap& outAttributes_;
+			AdvViz::SDK::ITwinRenderMaterialAttributeMap& outAttributes_;
 			mutable MaterialPropParserData helper_;
 			mutable std::stringstream error_;
 
 
-			AttributesVisitor(AdvViz::SDK::AttributeMap& outAttrs)
+			AttributesVisitor(AdvViz::SDK::ITwinRenderMaterialAttributeMap& outAttrs)
 				: outAttributes_(outAttrs)
 			{
 
@@ -2799,10 +3084,10 @@ namespace AdvViz::SDK
 		{
 			using Super = AttributesVisitor;
 
-			AdvViz::SDK::ITwinMaterialProperties& outProps_;
+			AdvViz::SDK::ITwinRenderMaterialProperties& outProps_;
 			mutable bool bIsParsingMap_ = false;
 
-			MaterialPropertiesVisitor(AdvViz::SDK::ITwinMaterialProperties& elementProps)
+			MaterialPropertiesVisitor(AdvViz::SDK::ITwinRenderMaterialProperties& elementProps)
 				: AttributesVisitor(elementProps.attributes)
 				, outProps_(elementProps)
 			{
@@ -2824,7 +3109,7 @@ namespace AdvViz::SDK
 					// ("Bump", "Displacement" or any other channel).
 					for (auto const& data : rflObject)
 					{
-						auto itMap = outProps_.maps.emplace(data.first, AttributeMap());
+						auto itMap = outProps_.maps.emplace(data.first, ITwinRenderMaterialAttributeMap());
 						AttributesVisitor mapParser(itMap.first->second);
 						std::visit(mapParser, data.second.get());
 					}
@@ -2879,7 +3164,7 @@ namespace AdvViz::SDK
 			requestInfo,
 			[this](Http::Response const& response, RequestID const&, std::string& strError) -> bool
 		{
-			ITwinMaterialPropertiesMap itwinMaterials;
+			ITwinRenderMaterialPropertiesMap itwinRenderMaterials;
 
 			struct MaterialAssets
 			{
@@ -2908,8 +3193,8 @@ namespace AdvViz::SDK
 				&& Json::FromString(infos, response.second, strError);
 			for (MaterialInfo const& info : infos)
 			{
-				auto itMatProps = itwinMaterials.data_.emplace(info.id, ITwinMaterialProperties());
-				ITwinMaterialProperties& itwinMaterial = itMatProps.first->second;
+				auto itMatProps = itwinRenderMaterials.data_.emplace(info.id, ITwinRenderMaterialProperties());
+				ITwinRenderMaterialProperties& itwinMaterial = itMatProps.first->second;
 				itwinMaterial.id = info.id;
 				if (info.code.value)
 					itwinMaterial.name = *info.code.value;
@@ -2932,7 +3217,7 @@ namespace AdvViz::SDK
 
 			if (impl_->observer_)
 			{
-				impl_->observer_->OnMaterialPropertiesRetrieved(bResult, itwinMaterials);
+				impl_->observer_->OnMaterialPropertiesRetrieved(bResult, itwinRenderMaterials);
 			}
 
 			return bResult;
@@ -3304,7 +3589,7 @@ Content-Type: application/octet-stream
 			if (continueJob && !matMLPredictionCacheFolder_.empty())
 			{
 				// Save current job info, in order to be able to resume in a future session, in case the
-				// user quits Carrot before the job terminates.
+				// user quits the application before the job terminates.
 				std::ofstream(GetMatMLInfoPath()) << rfl::json::write(
 					*matMLPredictionInfo_, YYJSON_WRITE_PRETTY);
 			}
@@ -3481,60 +3766,60 @@ Content-Type: application/octet-stream
 			BuildMatMLPredictionRequestInfo(eStep),
 			[this, eStep]
 			(Http::Response const& response, RequestID const& requestId, std::string& parsingError) -> bool
-		{
-			MatMLPredictionParseResult parseResult;
-			ParseMatMLPredictionResponse(eStep, response, requestId, parseResult);
-			parsingError = parseResult.parsingError;
-
-			if (parseResult.continueJob)
 			{
-				if (parseResult.retryWithDelay)
-				{
-					// Repeat the same step after a delay.
-					ProcessMatMLPredictionStepWithDelay(eStep);
-					return true;
-				}
+				MatMLPredictionParseResult parseResult;
+				ParseMatMLPredictionResponse(eStep, response, requestId, parseResult);
+				parsingError = parseResult.parsingError;
 
-				EMatMLPredictionStep const nextStep = static_cast<EMatMLPredictionStep>(
-					uint8_t(eStep) + 1);
-				if (nextStep == EMatMLPredictionStep::Done)
+				if (parseResult.continueJob)
 				{
-					// We are done - broadcast the result
-					matMLPredictionInfo_->step_ = EMatMLPredictionStep::Done;
-
-					if (observer_)
+					if (parseResult.retryWithDelay)
 					{
-						observer_->OnMatMLPredictionRetrieved(true, matMLPredictionInfo_->result_);
+						// Repeat the same step after a delay.
+						ProcessMatMLPredictionStepWithDelay(eStep);
+						return true;
 					}
+
+					EMatMLPredictionStep const nextStep = static_cast<EMatMLPredictionStep>(
+						uint8_t(eStep) + 1);
+					if (nextStep == EMatMLPredictionStep::Done)
+					{
+						// We are done - broadcast the result
+						matMLPredictionInfo_->step_ = EMatMLPredictionStep::Done;
+
+						if (observer_)
+						{
+							observer_->OnMatMLPredictionRetrieved(true, matMLPredictionInfo_->result_);
+						}
+					}
+					else
+					{
+						// Launch next request
+						ProcessMatMLPredictionStep(nextStep);
+					}
+				}
+				else if (isResumingMatMLPrediction_)
+				{
+					// Restart from the beginning
+					isResumingMatMLPrediction_ = false;
+					ResetMatMLJobData();
+					RemoveMatMLInfoFile();
+					ProcessMatMLPredictionStep(EMatMLPredictionStep::RunJob);
 				}
 				else
 				{
-					// Launch next request
-					ProcessMatMLPredictionStep(nextStep);
+					// Notify error and abort
+					matMLPredictionInfo_->step_ = EMatMLPredictionStep::Done;
+					if (observer_)
+					{
+						observer_->OnMatMLPredictionRetrieved(false, {}, owner_.GetRequestError(requestId));
+					}
 				}
-			}
-			else if (isResumingMatMLPrediction_)
-			{
-				// Restart from the beginning
-				isResumingMatMLPrediction_ = false;
-				ResetMatMLJobData();
-				RemoveMatMLInfoFile();
-				ProcessMatMLPredictionStep(EMatMLPredictionStep::RunJob);
-			}
-			else
-			{
-				// Notify error and abort
-				matMLPredictionInfo_->step_ = EMatMLPredictionStep::Done;
-				if (observer_)
-				{
-					observer_->OnMatMLPredictionRetrieved(false, {}, owner_.GetRequestError(requestId));
-				}
-			}
-			return parseResult.parsingOK;
-		},
+				return parseResult.parsingOK;
+			},
 			{} /*notifyRequestID*/,
 			{} /*filterError*/,
-
+			Http::EAsyncCallbackExecutionMode::MainThread,
 			std::bind(&ITwinWebServices::Impl::ShouldRetryMaterialMLStep,
 				this, eStep, std::placeholders::_1, std::placeholders::_2));
 	}

@@ -46,6 +46,8 @@ public:
 
 	AITwinRealityData();
 	~AITwinRealityData();
+	virtual void Tick(float DeltaSeconds) override;
+	virtual bool ShouldTickIfViewportsOnly() const override { return true; }
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void Destroyed() override;
 #if WITH_EDITOR
@@ -74,6 +76,15 @@ public:
 
 	UFUNCTION()
 	void OnTilesetLoaded();
+
+	UFUNCTION()
+	bool HasLoadedTileset() const;
+
+	UFUNCTION()
+	void OnTilesetLoadFailure(FCesium3DTilesetLoadFailureDetails const& Details);
+
+	UFUNCTION()
+	bool HasTilesetLoadFailure() const;
 
 	std::optional<FCartographicProps> GetNativeGeoreference() const;
 

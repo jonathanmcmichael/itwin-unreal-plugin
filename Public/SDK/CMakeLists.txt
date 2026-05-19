@@ -10,8 +10,13 @@ endif()
 
 option(SDK_ADDUNITTEST "Generate Unit tests for SDK" ON)
 option(SINGLETONDLL "Use singleton dll if you need to link the static sdk several times." OFF)
-option (BE_CODE_COVERAGE "Measure code coverage when running unit tests" OFF)
+option(BE_CODE_COVERAGE "Measure code coverage when running unit tests" OFF)
 option(WITH_HTTPCPR "Use CPR library" ON)
+
+# The default value of the below option should match that of CESIUM_GLM_STRICT_ENABLED
+# (defined in cesium-native), to maintain a coherency between the different usages of
+# this SDK.
+option(ADVVIZ_GLM_STRICT_ENABLED "Whether to force strict GLM compile definitions." ON)
 
 if("${VIZSDK_BUILD_CONTEXT}" STREQUAL "Unreal")
 	message("Using Unreal build configuration")
@@ -68,6 +73,7 @@ else()
 endif()
 
 include(cmake/External.cmake)
+include(cmake/configure_advviz_library.cmake)
 
 include (be_setup_native_lib_flags)
 include (be_coverage)

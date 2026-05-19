@@ -10,7 +10,6 @@
 #include <CesiumUtility/ExtensibleObject.h>
 
 #include <memory>
-#include <shared_mutex>
 #include <variant>
 #include <vector>
 
@@ -252,9 +251,23 @@ public:
    */
   void replaceWithModifiedModel() noexcept;
 
-  /** Returns the mutex used to synchronize model modifier operations with other
-   * tasks done by worker thread (such as upsampling). */
-  std::shared_mutex& getModelMutex() const noexcept;
+  /**
+   * @brief Returns whether this tile is currently being up-sampled.
+   * It should only be called by the main thread.
+   */
+  bool isBeingUpSampled() const noexcept;
+
+  /**
+   * @brief Increment the current up-sampling task count.
+   * It should only be called by the main thread.
+   */
+  void incrementUpSamplingTaskCount() const noexcept;
+
+  /**
+   * @brief Decrement the current up-sampling task count.
+   * It should only be called by the main thread.
+   */
+  void decrementUpSamplingTaskCount() const noexcept;
 
 private:
   CesiumGltf::Model _model;
@@ -263,10 +276,7 @@ private:
   GltfModifierState _modifierState;
   std::optional<CesiumGltf::Model> _modifiedModel;
   void* _pModifiedRenderResources;
-  /** replaceWithModifiedModel is called by the main thread, while a worker
-   * thread can be upsampling the same tile - this shared mutex is used to
-   * ensure both operations are mutually exclusive. */
-  mutable std::shared_mutex _modelMutex;
+  mutable int32_t _activeUpSamplingTaskCount;
 
   CesiumRasterOverlays::RasterOverlayDetails _rasterOverlayDetails;
   std::vector<CesiumUtility::Credit> _credits;

@@ -159,6 +159,8 @@ public:
 	//! Turn the automatic visibility of the splines on/off.
 	static void SetAutomaticSplineVisibility(bool bAutomatic);
 
+	virtual TSharedPtr<FToolDisabler> MakeToolDisabler() override;
+
 	//! Returns whether the effect of the selected spline (if any) is inverted.
 	bool GetInvertSelectedSplineEffect() const;
 	//! Inverts (or not, depending on bInvertEffect) the effect of the selected spline, if any.
@@ -189,7 +191,7 @@ public:
 	void StartBlendedCameraMovement(FTransform const& NewCameraTransform);
 
 	//! Adds a new spline at specified position, for the given usage.
-	AITwinSplineHelper* AddSpline(FVector const& Position);
+	AITwinSplineHelper* AddSpline(FVector const& Position, TArray<FVector> const& CustomSplinePoints = {});
 
 	//! Adds a spline loaded from the decoration service.
 	bool LoadSpline(const AdvViz::SDK::ISplinePtr& spline,
@@ -237,6 +239,8 @@ protected:
 	virtual bool IsEnabledImpl() const override;
 	virtual void SetUsedOnCutoutPrimitiveImpl(bool bForCutout) override;
 	virtual bool IsUsedOnCutoutPrimitiveImpl() const override;
+	virtual void SetUsedForPathAnimImpl(bool bForPathAnim) override;
+	virtual bool IsUsedForPathAnimImpl() const override;
 	virtual bool DoMouseClickActionImpl() override;
 	virtual bool HasSelectionImpl() const override;
 	virtual FTransform GetSelectionTransformImpl() const override;

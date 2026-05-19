@@ -82,13 +82,24 @@ public:
 	}
 };
 
+// this test CPP uses doubles everywhere whereas the shader has some explicitly float constants...
+// But what precision does it use for calculations? Use floats in this CPP as well? (cf. float4 etc. above)
+namespace workaround
+{
+	template<typename T, typename U>
+	double min(T t, U u) { return std::min((double)t, (double)u); }
+	template<typename T, typename U>
+	double max(T t, U u) { return std::max((double)t, (double)u); }
+}
+
 #pragma warning (push)
 #pragma warning (disable:4701) // potentially uninitialized local variable
 double GetPerFeatureValueWrapped(TextureLoader const& Synchro4D_RGBA_DATA,
 	TextureLoader const& Synchro4D_CutPlanes_DATA, TextureLoader const& Selection_RGBA_DATA,
 	uint const FeatureID, double BlinkingFactor, float4& Combined_RGBA, float4& Synchro4D_CutPlane)
 {
-	using std::min;
+	using workaround::min;
+	using workaround::max;
 	#include "GeneratedShaderTest/GetPerFeatureValues.ush.inl"
 }
 #pragma warning (pop)
@@ -167,10 +178,11 @@ constexpr rgb Selected(.4, .8, .1); // anything with a non-zero sum would do
 constexpr rgb Any4DColor(.6, .2, .8); // anything with a non-zero sum would do
 constexpr double AnyBlink = 0.25; // phase of the blinking cycle: anything not zero or one
 constexpr rgb SelAnd4DBlinkedMix(0.55, 0.35, 0.625); // mix of Any4DColor and Selected by AnyBlink
-constexpr double HiddenButSelectedBlinkedAlpha = 0.375; // current 1,5 x AnyBlink
 constexpr double Opaque = 1.;
 constexpr double Hidden = 0.;
 constexpr double AnyAlpha = 0.8;
+constexpr double UseOriginalAlphaIn = 0.0039; // no need to be exactly 1/255
+constexpr double UseOriginalAlphaOut = 0.0049; // value hardcoded in shader
 constexpr double SelectedAnyAlpha = 0.9; // when selected, translucency is halved
 
 constexpr double tolerance = 1e-8;
@@ -297,7 +309,7 @@ void ShaderMixSpec::Define()
 				CHECK(In.Synchro4D_CutPlane == float4(.1, .2, .3, 1.));
 				CHECK(In.Get(2, 1.) == Detail::ColorOverride);
 				CHECK(In.Synchro4D_CutPlane == float4(.1, .2, .3, 1.));
-				CHECK(In.Get(3, 1.) == Detail::ColorOverride);
+				CHECK(In.Get(3, 1.) == Detail::FullBaseColor);
 				CHECK(In.Synchro4D_CutPlane == float4(.1, .2, .3, 1.));
 				});
 			It("checks we get the right mix of 4D and selection color", [this]() {
@@ -312,32 +324,55 @@ void ShaderMixSpec::Define()
 				// Shader could be optimized by not reading the color in this case, but currently it's not:
 				CHECK(In.Combined_RGBA.xyz == Detail::Any4DColor);
 				CHECK(In.Combined_RGBA.w == Detail::AnyAlpha);
-				CHECK(In.Get(1, Detail::AnyBlink) == Detail::ColorOverride);
+				CHECK(In.Get(1, Detail::AnyBlink) == Detail::FullBaseColor);
 				CHECK(In.Combined_RGBA.xyz == Detail::Any4DColor);
 				CHECK(In.Combined_RGBA.w == Detail::Hidden);
 				CHECK(In.Get(2, Detail::AnyBlink) == Detail::ColorOverride);
 				CHECK(Detail::CheckOutRGBA(In, Detail::SelAnd4DBlinkedMix, Detail::SelectedAnyAlpha));
-				CHECK(In.Get(3, Detail::AnyBlink) == Detail::ColorOverride);
-				CHECK(Detail::CheckOutRGBA(In, Detail::SelAnd4DBlinkedMix, Detail::HiddenButSelectedBlinkedAlpha));
+				CHECK(In.Get(3, Detail::AnyBlink) == Detail::FullBaseColor);
+				// Note: no longer displaying hidden elements when they are selected:
+				CHECK(Detail::CheckOutRGBA(In, Detail::SelAnd4DBlinkedMix, Detail::Hidden));
 				});
 			It("checks the output ratios and 4D alphas with selection (no 4D color)", [this]() {
 				Detail::InputsAggr In(*this, 2, 2, 2); // all 2x2 textures
 				In.FillTexPlanes(.1, .2, .3);
 				In.SetTex4D(2, Detail::No4DColor, Detail::AnyAlpha);
 				In.SetTex4D(3, Detail::No4DColor, Detail::AnyAlpha);
-				In.SetTexSelHide(0, Detail::Selected, Detail::Opaque); // = default
+				In.SetTexSelHide(0, Detail::Selected, Detail::Opaque);
 				In.SetTexSelHide(1, Detail::Selected, Detail::Hidden);
 				In.SetTexSelHide(2, Detail::Selected, Detail::Opaque);
 				In.SetTexSelHide(3, Detail::Selected, Detail::Hidden);
 				CHECK(In.Get(0, Detail::AnyBlink) == Detail::AnyBlink);
 				CHECK(In.Combined_RGBA.xyz == Detail::Selected);
 				CHECK(In.Combined_RGBA.w == Detail::Opaque);
-				CHECK(In.Get(1, Detail::AnyBlink) == Detail::AnyBlink);
-				CHECK(Detail::CheckOutRGBA(In, Detail::Selected, Detail::HiddenButSelectedBlinkedAlpha));
+				CHECK(In.Get(1, Detail::AnyBlink) == Detail::FullBaseColor);
+				// Note: no longer displaying hidden elements when they are selected:
+				CHECK(Detail::CheckOutRGBA(In, Detail::Selected, Detail::Hidden));
 				CHECK(In.Get(2, Detail::AnyBlink) == Detail::AnyBlink);
 				CHECK(Detail::CheckOutRGBA(In, Detail::Selected, Detail::SelectedAnyAlpha));
-				CHECK(In.Get(3, Detail::AnyBlink) == Detail::AnyBlink);
-				CHECK(Detail::CheckOutRGBA(In, Detail::Selected, Detail::HiddenButSelectedBlinkedAlpha));
+				CHECK(In.Get(3, Detail::AnyBlink) == Detail::FullBaseColor);
+				// Note: no longer displaying hidden elements when they are selected:
+				CHECK(Detail::CheckOutRGBA(In, Detail::Selected, Detail::Hidden));
+				});
+			It("checks the 'use original alpha' value is handled", [this]() {
+				Detail::InputsAggr In(*this, 2, 2, 2); // all 2x2 textures
+				In.FillTexPlanes(.1, .2, .3);
+				In.SetTex4D(0, Detail::Any4DColor, Detail::UseOriginalAlphaIn);
+				In.SetTex4D(1, Detail::No4DColor, Detail::UseOriginalAlphaIn);
+				In.SetTex4D(2, Detail::Any4DColor, Detail::UseOriginalAlphaIn);
+				In.SetTex4D(3, Detail::No4DColor, Detail::UseOriginalAlphaIn);
+				In.SetTexSelHide(0, Detail::NoSelColor, Detail::Opaque); // = default
+				In.SetTexSelHide(1, Detail::NoSelColor, Detail::Hidden);
+				In.SetTexSelHide(2, Detail::Selected, Detail::Opaque);
+				In.SetTexSelHide(3, Detail::Selected, Detail::Hidden);
+				CHECK(In.Get(0, Detail::AnyBlink) == Detail::ColorOverride);
+				CHECK(ApproxEqual(In.Combined_RGBA.w, Detail::UseOriginalAlphaOut));
+				CHECK(In.Get(1, Detail::AnyBlink) == Detail::FullBaseColor);
+				CHECK(In.Combined_RGBA.w == Detail::Hidden);
+				CHECK(In.Get(2, Detail::AnyBlink) == Detail::ColorOverride);
+				CHECK(ApproxEqual(In.Combined_RGBA.w, Detail::UseOriginalAlphaOut));
+				CHECK(In.Get(3, Detail::AnyBlink) == Detail::FullBaseColor);
+				CHECK(In.Combined_RGBA.w == Detail::Hidden);
 				});
 		}); // end of Describe call
 } // end of Define method

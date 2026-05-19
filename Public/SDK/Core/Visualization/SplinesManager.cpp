@@ -42,14 +42,18 @@ namespace AdvViz::SDK
 			return "Undefined";
 		case ESplineUsage::MapCutout:
 			return "MapCutout";
-		case ESplineUsage::TrafficPath:
-			return "TrafficPath";
 		case ESplineUsage::PopulationZone:
 			return "PopulationZone";
 		case ESplineUsage::PopulationPath:
 			return "PopulationPath";
+		case ESplineUsage::EdgeDisplayHelper:
+			return "EdgeDisplayHelper";
 		case ESplineUsage::AnimPath:
 			return "AnimPath";
+		case ESplineUsage::AnimPathTraffic:
+			return "TrafficPath";
+		case ESplineUsage::AnimPathCrowd:
+			return "CrowdPath";
 		}
 	}
 
@@ -59,14 +63,18 @@ namespace AdvViz::SDK
 			return ESplineUsage::Undefined;
 		else if (strUsage == "MapCutout")
 			return ESplineUsage::MapCutout;
-		else if (strUsage == "TrafficPath")
-			return ESplineUsage::TrafficPath;
 		else if (strUsage == "PopulationZone")
 			return ESplineUsage::PopulationZone;
 		else if (strUsage == "PopulationPath")
 			return ESplineUsage::PopulationPath;
+		else if (strUsage == "EdgeDisplayHelper")
+			return ESplineUsage::EdgeDisplayHelper;
 		else if (strUsage == "AnimPath")
 			return ESplineUsage::AnimPath;
+		else if (strUsage == "TrafficPath")
+			return ESplineUsage::AnimPathTraffic;
+		else if (strUsage == "CrowdPath")
+			return ESplineUsage::AnimPathCrowd;
 
 		BE_ISSUE("unknown spline usage", strUsage);
 		return ESplineUsage::Undefined;
@@ -158,10 +166,23 @@ namespace AdvViz::SDK
 		std::vector<SJsonSpline> splines;
 	};
 
+	inline bool ShouldExcludeFromSaving(ISpline const& spline)
+	{
+		// Never save splines instantiated for display purpose (they are recreated from other sources).
+		if (spline.GetUsage() == ESplineUsage::EdgeDisplayHelper)
+			return true;
+		return false;
+	}
+
 	template <>
 	struct SavableItemJsonHelper<ISpline>
 	{
 		using JsonVec = SJsonSplineVect;
+
+		inline bool ShouldSkip(ISpline const& spline) const
+		{
+			return ShouldExcludeFromSaving(spline);
+		}
 
 		void AppendItem(JsonVec& jsonVec, ISpline const& spline)
 		{
@@ -486,7 +507,9 @@ namespace AdvViz::SDK
 			// Sort points for requests (addition/update)
 			for (auto const& splinePtr : splines_)
 			{
-				auto spline = splinePtr->GetRAutoLock();	
+				auto spline = splinePtr->GetRAutoLock();
+				if (ShouldExcludeFromSaving(*spline))
+					continue;
 				for (ISplinePointPtr const& pointPtr : spline->GetPoints())
 				{
 					auto point = pointPtr->GetAutoLock();

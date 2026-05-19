@@ -214,6 +214,16 @@ public:
 		Category = "iTwin")
 	bool bSynchro4DFavorNextGenSchedule = false;
 
+	/// Enable material tuning features (the possibility to tweak some material settings such as color or
+	/// textures, based on the original material definitions existing in the iModel).
+	UPROPERTY(
+		Config,
+		EditAnywhere,
+		BlueprintReadOnly,
+		Category = "iTwin",
+		meta = (ConfigRestartRequired = true))
+	bool bEnableMaterialTuning = false;
+
 	/// Enable prediction of materials based on an iTwin Machine Learning api. The api is still under
 	/// development. It requires some specific scopes to be added to your iTwin App.
 	UPROPERTY(

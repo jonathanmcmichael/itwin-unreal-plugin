@@ -21,7 +21,7 @@
 #include <Misc/Paths.h>
 
 #include <ITwinElementID.h>
-#include <ITwinSceneMapping.h>
+
 #include <ITwinIModel.h>
 #include <ITwinIModelInternals.h>
 #include <ITwinSceneMappingBuilder.h>
@@ -36,7 +36,6 @@
 #include <Misc/Paths.h>
 
 #include <Compil/BeforeNonUnrealIncludes.h>
-#	include <BeBuildConfig/MaterialTuning.h>
 #	include <BeHeaders/Compil/AlwaysFalse.h>
 #	include <BeHeaders/Util/CleanUpGuard.h>
 #	include <BeUtils/Gltf/GltfMaterialHelper.h>
@@ -47,8 +46,7 @@
 #	include <SDK/Core/ITwinAPI/ITwinMaterial.inl>
 #	include <SDK/Core/ITwinAPI/ITwinMaterialPrediction.h>
 #	include <SDK/Core/ITwinAPI/ITwinTypes.h>
-#	include <SDK/Core/Tools/Assert.h>
-#	include <SDK/Core/Tools/Log.h>
+#	include <SDK/Core/Tools/Tools.h>
 #	include <SDK/Core/Visualization/MaterialPersistence.h>
 #include <Compil/AfterNonUnrealIncludes.h>
 
@@ -87,7 +85,7 @@ void FITwinIModelMaterialHandler::Initialize(std::shared_ptr<BeUtils::GltfTuner>
 	GltfTuner->SetMaterialHelper(GltfMatHelper);
 	// create a callback to fill our scene mapping when meshes are loaded
 
-	if (ITwin::HasMaterialTuning())
+	if (AITwinIModel::IsMaterialTuningEnabled())
 	{
 		// In case we need to download / customize textures, setup a folder depending on current iModel
 		InitTextureDirectory(OwnerIModel);
@@ -214,13 +212,13 @@ bool FITwinIModelMaterialHandler::SetMaterialName(uint64_t MaterialId, FString c
 }
 
 
-void FITwinIModelMaterialHandler::OnMaterialPropertiesRetrieved(AdvViz::SDK::ITwinMaterialPropertiesMap const& props,
+void FITwinIModelMaterialHandler::OnMaterialPropertiesRetrieved(AdvViz::SDK::ITwinRenderMaterialPropertiesMap const& props,
 	AITwinIModel& IModel)
 {
 	// In case we need to download / customize textures, setup a folder depending on current iModel
 	InitTextureDirectory(&IModel);
 
-	BeUtils::WLock lock(GltfMatHelper->GetMutex());
+	BeUtils::WLock Lock(GltfMatHelper->GetMutex());
 
 	auto& CustomMaterials = ITwinMaterials;
 
@@ -239,9 +237,9 @@ void FITwinIModelMaterialHandler::OnMaterialPropertiesRetrieved(AdvViz::SDK::ITw
 			ensureMsgf(CustomMat != nullptr, TEXT("Material mismatch: ID %s not found in tileset.json (%s)"),
 				*MaterialID, *FString(matProperties.name.c_str()));
 
-			GltfMatHelper->SetITwinMaterialProperties(id64.value(), matProperties,
+			GltfMatHelper->SetIModelRenderMaterialProperties(id64.value(), matProperties,
 				TCHAR_TO_UTF8(*CustomMat->Name),
-				lock);
+				Lock);
 		}
 	}
 
@@ -250,7 +248,7 @@ void FITwinIModelMaterialHandler::OnMaterialPropertiesRetrieved(AdvViz::SDK::ITw
 	if (ensure(WebServices))
 	{
 		std::vector<std::string> textureIds;
-		GltfMatHelper->ListITwinTexturesToDownload(textureIds, lock);
+		GltfMatHelper->ListITwinTexturesToDownload(textureIds, Lock);
 		for (std::string const& texId : textureIds)
 		{
 			WebServices->GetTextureData(IModel.ITwinId, IModel.IModelId, IModel.GetSelectedChangeset(),
@@ -259,14 +257,25 @@ void FITwinIModelMaterialHandler::OnMaterialPropertiesRetrieved(AdvViz::SDK::ITw
 	}
 
 	// Also convert available textures to Cesium format, if they are needed in the tuning.
-	std::unordered_map<AdvViz::SDK::TextureKey, std::string> texturesToResolve;
-	GltfMatHelper->ListITwinTexturesToResolve(texturesToResolve, lock);
-	std::filesystem::path const textureDir = GltfMatHelper->GetTextureDirectory(lock);
+	std::unordered_map<AdvViz::SDK::TextureKey, std::string> TexturesToResolve;
+	std::vector<uint64_t> MatIDsWithTexturesToResolve;
+	GltfMatHelper->ListITwinTexturesToResolve(TexturesToResolve, MatIDsWithTexturesToResolve, Lock);
 
-	lock.unlock();
-	if (!texturesToResolve.empty())
+	if (!TexturesToResolve.empty())
 	{
-		ITwin::ResolveITwinTextures(texturesToResolve, GltfMatHelper, textureDir);
+		BE_ASSERT(!MatIDsWithTexturesToResolve.empty());
+		auto const TextureDir = GltfMatHelper->GetTextureDirectory(Lock);
+		if (ITwin::ResolveITwinTextures(TexturesToResolve, GltfMatHelper, TextureDir, &Lock) > 0)
+		{
+			// Perform some texture conversions for glTF tuning process.
+			BeUtils::ITwinToGltfTextureConverter TexConverter(GltfMatHelper);
+			for (uint64_t MatId : MatIDsWithTexturesToResolve)
+			{
+				TexConverter.ConvertTexturesToGltf(MatId, Lock);
+			}
+			// After that, we should be able to tune materials with the right textures.
+			SplitGltfModelForCustomMaterials(true);
+		}
 	}
 }
 
@@ -331,9 +340,8 @@ void FITwinIModelMaterialHandler::LoadMLPredictionState(bool& bActivateML, BeUti
 		return;
 
 	// Only create the special slot if it exists in loaded decoration.
-	auto const MLSwitcherMatInfo = GltfMatHelper->CreateITwinMaterialSlot(ITwin::NOT_MATERIAL.value(),
+	auto const* MLSwitcherMat = GltfMatHelper->CreateITwinMaterialSlot(ITwin::NOT_MATERIAL.value(),
 		"", Lock, /*bOnlyIfCustomDefinitionExists*/true);
-	auto const* MLSwitcherMat = MLSwitcherMatInfo.second;
 	bActivateML = (MLSwitcherMat
 		&& MLSwitcherMat->kind == AdvViz::SDK::EMaterialKind::Glass);
 }
@@ -533,18 +541,16 @@ void FITwinIModelMaterialHandler::UpdateModelFromMatMLPrediction(bool bSuccess,
 	// Then create the corresponding entries in the material helper (important for edition), and enable
 	// material tuning if we do have a custom definition.
 	{
-//		BeUtils::WLock Lock(GltfMatHelper->GetMutex());
-
 		BeUtils::ITwinToGltfTextureConverter TexConverter(GltfMatHelper);
 
 		for (auto& [MatID, CustomMat] : MLPredMaterials)
 		{
 			// Also create the corresponding entries in the material helper (important for edition), and enable
 			// material tuning if we do have a custom definition.
-			auto const MatInfo = GltfMatHelper->CreateITwinMaterialSlot(MatID,
+			auto const* MatInfo = GltfMatHelper->CreateITwinMaterialSlot(MatID,
 																		TCHAR_TO_UTF8(*CustomMat.Name),
 																		Lock);
-			if (MatInfo.second && AdvViz::SDK::HasCustomSettings(*MatInfo.second))
+			if (MatInfo && AdvViz::SDK::HasCustomSettings(*MatInfo))
 			{
 				CustomMat.bAdvancedConversion = true;
 
@@ -884,9 +890,10 @@ namespace
 			}
 		}
 
-		void ApplyNewValueToScene(uint64_t MaterialId, FITwinSceneMapping& SceneMapping) const
+		void ApplyNewValueToScene(uint64_t MaterialId, TSceneMappingPtr& SceneMapping) const
 		{
-			SceneMapping.SetITwinMaterialChannelIntensity(MaterialId, this->Channel, this->NewValue);
+			auto SceneMappingLock = SceneMapping->GetAutoLock();
+			SceneMappingLock->SetITwinMaterialChannelIntensity(MaterialId, this->Channel, this->NewValue);
 		}
 
 		bool NeedGltfTuning(const double CurrentIntensity) const
@@ -984,7 +991,7 @@ namespace
 			return true;
 		}
 
-		void ApplyNewValueToScene(uint64_t MaterialId, FITwinSceneMapping& SceneMapping) const
+		void ApplyNewValueToScene(uint64_t MaterialId, TSceneMappingPtr& SceneMapping) const
 		{
 			UTexture2D* NewTexture = nullptr;
 			if (NewTexPath.empty() || NewTexPath == AdvViz::SDK::NONE_TEXTURE)
@@ -1005,7 +1012,8 @@ namespace
 			{
 				NewTexture = FImageUtils::ImportFileAsTexture2D(UTF8_TO_TCHAR(NewTexPath.c_str()));
 			}
-			SceneMapping.SetITwinMaterialChannelTexture(MaterialId, this->Channel, NewTexture);
+			auto SceneMappingLock = SceneMapping->GetAutoLock();
+			SceneMappingLock->SetITwinMaterialChannelTexture(MaterialId, this->Channel, NewTexture);
 		}
 
 	protected:
@@ -1098,9 +1106,10 @@ namespace
 			GltfMatHelper.SetChannelColor(MaterialId, this->Channel, this->NewValue, bModifiedValue);
 		}
 
-		void ApplyNewValueToScene(uint64_t MaterialId, FITwinSceneMapping& SceneMapping) const
+		void ApplyNewValueToScene(uint64_t MaterialId, TSceneMappingPtr& SceneMapping) const
 		{
-			SceneMapping.SetITwinMaterialChannelColor(
+			auto SceneMappingLock = SceneMapping->GetAutoLock();
+			SceneMappingLock->SetITwinMaterialChannelColor(
 				MaterialId, this->Channel, this->NewValue);
 		}
 
@@ -1189,9 +1198,10 @@ namespace
 			GltfMatHelper.SetUVTransform(MaterialId, this->NewValue, bModifiedValue);
 		}
 
-		void ApplyNewValueToScene(uint64_t MaterialId, FITwinSceneMapping& SceneMapping) const
+		void ApplyNewValueToScene(uint64_t MaterialId, TSceneMappingPtr& SceneMapping) const
 		{
-			SceneMapping.SetITwinMaterialUVTransform(MaterialId, this->NewValue);
+			auto SceneMappingLock = SceneMapping->GetAutoLock();
+			SceneMappingLock->SetITwinMaterialUVTransform(MaterialId, this->NewValue);
 		}
 
 		bool NeedGltfTuning(ParamType const& /*CurrentMap*/) const
@@ -1244,7 +1254,7 @@ namespace
 			}
 		}
 
-		void ApplyNewValueToScene(uint64_t /*MaterialId*/, FITwinSceneMapping& /*SceneMapping*/) const
+		void ApplyNewValueToScene(uint64_t /*MaterialId*/, TSceneMappingPtr& /*SceneMapping*/) const
 		{
 			ensureMsgf(false, TEXT("changing material kind requires a retuning"));
 		}
@@ -1283,7 +1293,7 @@ namespace
 
 template <typename MaterialParamHelper>
 void FITwinIModelMaterialHandler::TSetMaterialChannelParam(MaterialParamHelper const& Helper, uint64_t MaterialId,
-	FITwinSceneMapping& SceneMapping)
+	TSceneMappingPtr& SceneMapping)
 {
 	using ParameterType = typename MaterialParamHelper::ParamType;
 	FITwinCustomMaterial* CustomMat = GetMutableCustomMaterials().Find(MaterialId);
@@ -1353,13 +1363,12 @@ void FITwinIModelMaterialHandler::TSetMaterialChannelParam(MaterialParamHelper c
 			if (!bIsReplacingColorTex)
 			{
 				std::unordered_map<AdvViz::SDK::TextureKey, std::string> itwinTextures;
-				BeUtils::RLock Lock(GltfMatHelper->GetMutex());
+				BeUtils::WLock Lock(GltfMatHelper->GetMutex());
 				GltfMatHelper->AppendITwinTexturesToResolveFromMaterial(itwinTextures, MaterialId, Lock);
 				if (!itwinTextures.empty())
 				{
 					auto const TexDir = GltfMatHelper->GetTextureDirectory(Lock);
-					Lock.unlock();
-					ITwin::ResolveITwinTextures(itwinTextures, GltfMatHelper, TexDir);
+					ITwin::ResolveITwinTextures(itwinTextures, GltfMatHelper, TexDir, &Lock);
 				}
 			}
 		}
@@ -1374,7 +1383,7 @@ void FITwinIModelMaterialHandler::TSetMaterialChannelParam(MaterialParamHelper c
 }
 
 void FITwinIModelMaterialHandler::SetMaterialChannelIntensity(uint64_t MaterialId, AdvViz::SDK::EChannelType Channel, double Intensity,
-	FITwinSceneMapping& SceneMapping)
+	TSceneMappingPtr& SceneMapping)
 {
 	MaterialIntensityHelper Helper(*GltfMatHelper, Channel, Intensity);
 	TSetMaterialChannelParam(Helper, MaterialId, SceneMapping);
@@ -1388,7 +1397,7 @@ FLinearColor FITwinIModelMaterialHandler::GetMaterialChannelColor(uint64_t Mater
 }
 
 void FITwinIModelMaterialHandler::SetMaterialChannelColor(uint64_t MaterialId, AdvViz::SDK::EChannelType Channel,
-	FLinearColor const& Color, FITwinSceneMapping& SceneMapping)
+	FLinearColor const& Color, TSceneMappingPtr& SceneMapping)
 {
 	MaterialColorHelper Helper(*GltfMatHelper, Channel,
 		AdvViz::SDK::ITwinColor{ Color.R, Color.G, Color.B, Color.A });
@@ -1406,7 +1415,7 @@ FString FITwinIModelMaterialHandler::GetMaterialChannelTextureID(uint64_t Materi
 
 void FITwinIModelMaterialHandler::SetMaterialChannelTextureID(uint64_t MaterialId, AdvViz::SDK::EChannelType Channel,
 	FString const& TextureId, AdvViz::SDK::ETextureSource eSource,
-	FITwinSceneMapping& SceneMapping,
+	TSceneMappingPtr& SceneMapping,
 	UITwinMaterialDefaultTexturesHolder const& DefaultTexturesHolder)
 {
 	AdvViz::SDK::ITwinChannelMap NewMap;
@@ -1434,7 +1443,7 @@ AdvViz::SDK::ITwinUVTransform FITwinIModelMaterialHandler::GetMaterialUVTransfor
 }
 
 void FITwinIModelMaterialHandler::SetMaterialUVTransform(uint64_t MaterialId, AdvViz::SDK::ITwinUVTransform const& UVTransform,
-	FITwinSceneMapping& SceneMapping)
+	TSceneMappingPtr& SceneMapping)
 {
 	MaterialUVTransformHelper Helper(*GltfMatHelper, UVTransform);
 	TSetMaterialChannelParam(Helper, MaterialId, SceneMapping);
@@ -1446,7 +1455,7 @@ AdvViz::SDK::EMaterialKind FITwinIModelMaterialHandler::GetMaterialKind(uint64_t
 }
 
 void FITwinIModelMaterialHandler::SetMaterialKind(uint64_t MaterialId, AdvViz::SDK::EMaterialKind NewKind,
-	FITwinSceneMapping& SceneMapping)
+	TSceneMappingPtr& SceneMapping)
 {
 	MaterialKindHelper Helper(*GltfMatHelper, NewKind);
 	TSetMaterialChannelParam(Helper, MaterialId, SceneMapping);
@@ -1588,7 +1597,7 @@ bool FITwinIModelMaterialHandler::LoadMaterialWithoutRetuning(
 bool FITwinIModelMaterialHandler::LoadMaterialFromAssetFile(uint64_t MaterialId,
 	FMaterialAssetInfo const& MaterialAssetInfo,
 	FString const& IModelId,
-	FITwinSceneMapping& SceneMapping,
+	TSceneMappingPtr& SceneMapping,
 	UITwinMaterialDefaultTexturesHolder const& DefaultTexturesHolder,
 	LoadOptions const& Options /*= {}*/)
 {
@@ -1741,23 +1750,29 @@ bool FITwinIModelMaterialHandler::LoadMaterialFromAssetFile(uint64_t MaterialId,
 	}
 	else
 	{
-		// No need for re-tuning. Just apply each parameter to the existing Unreal material instances.
-		for (size_t i(0); i < newIntensities.size(); ++i)
 		{
-			EITwinChannelType const Channel = static_cast<EITwinChannelType>(i);
-			if (newIntensities[i].bHasChanged ||
-				(Options.bForceRefreshAllParameters && newIntensities[i].bHasNonDefaultValue))
+			auto SceneMappingLocked = SceneMapping->GetAutoLock();
+			// No need for re-tuning. Just apply each parameter to the existing Unreal material instances.
+			for (size_t i(0); i < newIntensities.size(); ++i)
 			{
-				SceneMapping.SetITwinMaterialChannelIntensity(MaterialId, Channel, newIntensities[i].Value);
+				EITwinChannelType const Channel = static_cast<EITwinChannelType>(i);
+				if (newIntensities[i].bHasChanged ||
+					(Options.bForceRefreshAllParameters && newIntensities[i].bHasNonDefaultValue))
+				{
+					SceneMappingLocked->SetITwinMaterialChannelIntensity(MaterialId, Channel, newIntensities[i].Value);
+				}
 			}
 		}
 		for (auto const& MapHelper : MapHelpers)
 		{
 			MapHelper->ApplyNewValueToScene(MaterialId, SceneMapping);
 		}
-		SceneMapping.SetITwinMaterialChannelColor(MaterialId, EITwinChannelType::Color,
-			GltfMatHelper->GetChannelColor(MaterialId, EITwinChannelType::Color));
-		SceneMapping.SetITwinMaterialUVTransform(MaterialId, NewMaterial.uvTransform);
+		{
+			auto SceneMappingLocked = SceneMapping->GetAutoLock();
+			SceneMappingLocked->SetITwinMaterialChannelColor(MaterialId, EITwinChannelType::Color,
+				GltfMatHelper->GetChannelColor(MaterialId, EITwinChannelType::Color));
+			SceneMappingLocked->SetITwinMaterialUVTransform(MaterialId, NewMaterial.uvTransform);
+		}
 	}
 
 	if (!NewMaterial.displayName.empty())
@@ -1950,11 +1965,12 @@ namespace ITwin
 			FName(*(MeshActor.GetActorNameOrLabel() + "_DftTexHolder")));
 		DefaultTexturesHolder->RegisterComponent();
 
-		FITwinSceneMapping SceneMapping(false);
-		UITwinSceneMappingBuilder::BuildFromNonCesiumMesh(SceneMapping, MeshComponent, MaterialId);
+		TSceneMappingPtr SceneMappingPtr;
+		SceneMappingPtr = AdvViz::SDK::Tools::MakeSharedLockableData<FITwinSceneMapping>(false);
+		UITwinSceneMappingBuilder::BuildFromNonCesiumMesh(SceneMappingPtr, MeshComponent, MaterialId);
 
 		return MaterialHandler->LoadMaterialFromAssetFile(MaterialId, MaterialAssetInfo,
-			IModelId, SceneMapping,
+			IModelId, SceneMappingPtr,
 			*DefaultTexturesHolder,
 			FITwinIModelMaterialHandler::LoadOptions
 			{

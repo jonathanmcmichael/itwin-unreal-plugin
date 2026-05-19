@@ -32,13 +32,15 @@ namespace ITwin
 		if (IModel.VisualizeMaterialMLPrediction() && HitResult.Component.IsValid())
 		{
 			FITwinIModelInternals const& IModelInternals = GetInternals(IModel);
-			auto const Found = IModelInternals.SceneMapping.FindOwningTileSLOW(HitResult.Component.Get());
+			auto SceneMappingLock = IModelInternals.SceneMapping->GetAutoLock();
+			auto const Found = SceneMappingLock->FindOwningTileSLOW(HitResult.Component.Get());
 			if (auto* pMeshWrapper = Found.second)
 			{
 				return pMeshWrapper->GetITwinMaterialIDOpt();
 			}
 		}
-		// General case: test meta-data produced by the Mesh Export Service.
+		// General case: test meta-data produced by the Mesh Export Service. In this case, we will get
+		// the iModel's RenderMaterial ID.
 		TMap<FString, FCesiumMetadataValue> const Table1 =
 			UCesiumMetadataPickingBlueprintLibrary::GetPropertyTableValuesFromHit(
 				HitResult, ITwinCesium::Metada::MATERIAL_FEATURE_ID_SLOT);
@@ -75,6 +77,20 @@ void AITwinPickingActor::PickUnderCursorWithOptions(FPickingResult& OutPickingRe
 		CustomMousePosition.emplace(*Options.CustomMousePosition);
 	}
 
+	// For additive selection, constrain picking to the iModel that already owns the selection
+	static FString LastPickedIModelId = FString("");
+	if (Options.bAdditiveSelection && !LastPickedIModelId.IsEmpty() && !PickedIModel)
+	{
+		for (TActorIterator<AITwinIModel> Iter(GetWorld()); Iter; ++Iter)
+		{
+			if ((*Iter)->IModelId == LastPickedIModelId)
+			{
+				PickedIModel = *Iter;
+				break;
+			}
+		}
+	}
+
 	FITwinTracingHelper TracingHelper;
 	if (Options.ActorsToIgnore.Num() > 0)
 		TracingHelper.AddIgnoredActors(Options.ActorsToIgnore);
@@ -101,7 +117,8 @@ void AITwinPickingActor::PickUnderCursorWithOptions(FPickingResult& OutPickingRe
 		{
 			ITwinElementID EltID = ITwin::NOT_ELEMENT;
 			// TODO: invisible hits have been filtered out already so...
-			if (TracingHelper.PickVisibleElement(HitResult, *iModel, EltID, Options.bSelectElement))
+			if (TracingHelper.PickVisibleElement(HitResult, *iModel, EltID,
+												 Options.bSelectElement, Options.bAdditiveSelection))
 			{
 				DejaVu.insert(EltID);
 				PickedEltID = EltID;
@@ -134,17 +151,19 @@ void AITwinPickingActor::PickUnderCursorWithOptions(FPickingResult& OutPickingRe
 		}
 
 	}, MaxUniqueElementsHit, CustomTraceExtentInMeters, CustomMousePosition);
-	
-	static FString LastPickedIModelId = FString("");
+
 	if (!PickedIModel && VisibleHit.HasValidHitObjectHandle())
 		PickedIModel = Cast<AITwinIModel>(VisibleHit.GetActor()->GetOwner());
 	if (Options.bSelectElement)
 	{
-		// remove highlights from all iModels except the one (possibly) selected
-		for (TActorIterator<AITwinIModel> Iter(GetWorld()); Iter; ++Iter)
+		if (!Options.bAdditiveSelection)
 		{
-			if ((*Iter) != PickedIModel)
-				DeSelect(*Iter);
+			// remove highlights from all iModels except the one (possibly) selected
+			for (TActorIterator<AITwinIModel> Iter(GetWorld()); Iter; ++Iter)
+			{
+				if ((*Iter) != PickedIModel)
+					DeSelect(*Iter);
+			}
 		}
 		if (PickedEltID != ITwin::NOT_ELEMENT)
 		{
@@ -155,9 +174,12 @@ void AITwinPickingActor::PickUnderCursorWithOptions(FPickingResult& OutPickingRe
 		}
 		else
 		{
-			if (PickedIModel)
-				DeSelect(PickedIModel);
-			OnElemPicked.Broadcast("", LastPickedIModelId);
+			if (!Options.bAdditiveSelection)
+			{
+				if (PickedIModel)
+					DeSelect(PickedIModel);
+				OnElemPicked.Broadcast("", LastPickedIModelId);
+			}
 		}
 	}
 

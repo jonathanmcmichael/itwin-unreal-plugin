@@ -72,6 +72,17 @@ include (jsonUtils)
 include (be_utils)
 # Add all the targets for the cesium dependencies before changing the global include directories & co.
 add_subdirectory (Public/CesiumDependencies)
+
+# Compare GLM options between our SDK and cesium-native (they should match to avoid discrepancies when
+# the SDK is used in another context...
+get_advviz_glm_compile_definitions(advviz_glm_defs)
+get_cesium_glm_compile_definitions(cesium_glm_defs)
+list (SORT advviz_glm_defs)
+list (SORT cesium_glm_defs)
+if (NOT "${advviz_glm_defs}" STREQUAL "${cesium_glm_defs}")
+	message(FATAL_ERROR "GLM options differ between cesium-native and AdvViz SDK (${cesium_glm_defs} vs ${advviz_glm_defs}): please update get_advviz_glm_compile_definitions or the value of ADVVIZ_GLM_STRICT_ENABLED")
+endif ()
+
 # Mute warnings in tidy-static
 if (MSVC AND TARGET tidy-static)
 	target_compile_options(tidy-static PRIVATE /wd4389 /wd4456 /wd4702)
