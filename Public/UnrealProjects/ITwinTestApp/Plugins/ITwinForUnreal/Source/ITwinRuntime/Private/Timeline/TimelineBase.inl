@@ -12,16 +12,11 @@
 #include "Interpolators.h"
 #include "TimeInSeconds.h"
 
-#include <Dom/JsonObject.h>
-#include <Dom/JsonValue.h>
-
 #include <Compil/BeforeNonUnrealIncludes.h>
 	#include <boost/fusion/include/for_each.hpp>
 	#include <boost/fusion/include/zip.hpp>
 	#include <BeHeaders/Compil/EnumSwitchCoverage.h>
 #include <Compil/AfterNonUnrealIncludes.h>
-
-#include <type_traits>
 
 namespace ITwin::Timeline
 {
@@ -151,57 +146,6 @@ FDateRange ObjectTimeline<_Metadata>::GetDateRange() const
 {
 	auto const TimeRange = GetTimeRange();
 	return (TimeRange.first < TimeRange.second) ? ITwin::Time::ToDateRange(TimeRange) : FDateRange();
-}
-
-template<class _Metadata>
-void ObjectTimeline<_Metadata>::ToJson(TSharedRef<FJsonObject>& JsonObj) const
-{
-	FInternationalization& I18N = FInternationalization::Get();
-	FDateRange const TimeRange = GetDateRange();
-	if (TimeRange.HasLowerBound())
-		JsonObj->SetStringField(TEXT("startTime"),
-			ITwin::Time::UTCDateTimeToString(TimeRange.GetLowerBound().GetValue()));
-	else
-		JsonObj->SetStringField(TEXT("startTime"), TEXT("<wrong startTime?!>"));
-	if (TimeRange.HasUpperBound())
-		JsonObj->SetStringField(TEXT("endTime"),
-			ITwin::Time::UTCDateTimeToString(TimeRange.GetUpperBound().GetValue()));
-	else
-		JsonObj->SetStringField(TEXT("endTime"), TEXT("<wrong endTime?!>"));
-	static const std::vector<FString> HardcodedNames(
-		{ TEXT("Visiblity"), TEXT("Color"), TEXT("Transform"), TEXT("CuttingPlane") });
-	int HardcodedIndex = -1;
-	boost::fusion::for_each(*this, [&HardcodedIndex, &JsonObj](const auto& propertyTimeline)
-		{
-			++HardcodedIndex;
-			if (propertyTimeline.HasNoEffect())
-				return;
-			TArray<TSharedPtr<FJsonValue>> Keys, Values;
-			for (auto&& Keyframe : propertyTimeline.Values)
-			{
-				Keys.Add(MakeShared<FJsonValueString>(
-					ITwin::Time::UTCDateTimeToString(ITwin::Time::ToDateTime(Keyframe.Time))));
-			}
-			Values.Reserve(Keys.Num());
-			for (auto&& Keyframe : propertyTimeline.Values)
-			{
-				auto&& Val = ToJsonValue(Keyframe);
-				Values.Add(std::move(Val));
-			}
-			//using TimelineType =
-			//	std::remove_reference_t<std::remove_const_t<decltype(propertyTimeline)>>;
-			JsonObj->SetArrayField(
-				// Can't make that work because of unhelpful compile errors... maybe with std::decay_t above?
-				//ITwin::Timeline::_iTwinTimelineGetPropertyName<TimelineType::PropertyValues>()
-				HardcodedNames[HardcodedIndex]
-					+ TEXT("Times"),
-				Keys);
-			JsonObj->SetArrayField(
-				//ITwin::Timeline::_iTwinTimelineGetPropertyName<TimelineType::PropertyValues>()
-				HardcodedNames[HardcodedIndex]
-					+ TEXT("Values"),
-				Values);
-		});
 }
 
 template<class _ObjectTimeline>

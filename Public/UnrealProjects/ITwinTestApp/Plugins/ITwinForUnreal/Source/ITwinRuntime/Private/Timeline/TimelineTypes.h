@@ -37,6 +37,20 @@ inline bool operator ==(FIModelElementsKey const& A, FIModelElementsKey const& B
 	return A.Key == B.Key;
 }
 
+inline bool operator<(FIModelElementsKey const& A, FIModelElementsKey const& B)
+{
+	if (A.Key.index() == B.Key.index())
+	{
+		return std::visit([&B](auto&& Key)
+			{
+				using T = std::decay_t<decltype(Key)>;
+				return (Key < std::get<T>(B.Key));
+			},
+			A.Key);
+	}
+	else return (A.Key.index() < B.Key.index());
+}
+
 template <>
 struct std::hash<FIModelElementsKey>
 {

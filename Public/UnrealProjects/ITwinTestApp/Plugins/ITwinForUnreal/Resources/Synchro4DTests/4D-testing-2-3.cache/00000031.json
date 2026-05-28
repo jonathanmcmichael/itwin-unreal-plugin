@@ -1,0 +1,9 @@
+﻿{
+	"url": "https://api.bentley.com/schedules/d9712811-5a10-407e-b517-fbc23fcf4dc3/animation-3d-transforms?$top=2&$continuationToken=eyJQcmltYXJ5U2tpcFRva2VuIjoiOTM4MzU3YmEtMjc0My00YzYxLWExNzItNGMwNDM2MTQxYWFmIiwiU2Vjb25kYXJ5U2tpcFRva2VuIjpudWxsLCJNZXRhRGF0YSI6bnVsbCwiVHlwZSI6MH0=",
+	"verb": "GET",
+	"connectedSuccessfully": true,
+	"responseCode": 200
+,
+	"reply": 
+{"nextPageToken":"eyJQcmltYXJ5U2tpcFRva2VuIjoiYjBmNmFjZTAtNWQ1Zi00ZWUyLWFlNjYtNWM4ZDY1MjgyOGFlIiwiU2Vjb25kYXJ5U2tpcFRva2VuIjpudWxsLCJNZXRhRGF0YSI6bnVsbCwiVHlwZSI6MH0=","animation3dTransforms":[{"deleted":false,"id":"a349e266-e497-4121-b2f8-1e045f9c00a8","transform":[0.9421502351760864,0.33518877625465393,0.0,-8689.7978515625,-0.33518877625465393,0.9421502351760864,0.0,12912.1875,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0]},{"deleted":false,"id":"b0f6ace0-5d5f-4ee2-ae66-5c8d652828ae","transform":[0.8017144799232483,-0.3085581362247467,0.5118951201438904,16117.5634765625,0.5975719690322876,0.43138447403907776,-0.6758723258972168,-1265.9549560546875,-0.012275973334908485,0.8477559685707092,0.5302343964576721,-26368.501953125,0.0,0.0,0.0,1.0]}],"_links":{"self":{"href":"https://api.bentley.com/schedules/d9712811-5a10-407e-b517-fbc23fcf4dc3/animation-3d-transforms?$top=2&$continuationToken=eyJQcmltYXJ5U2tpcFRva2VuIjoiOTM4MzU3YmEtMjc0My00YzYxLWExNzItNGMwNDM2MTQxYWFmIiwiU2Vjb25kYXJ5U2tpcFRva2VuIjpudWxsLCJNZXRhRGF0YSI6bnVsbCwiVHlwZSI6MH0="},"next":{"href":"https://api.bentley.com/schedules/d9712811-5a10-407e-b517-fbc23fcf4dc3/animation-3d-transforms?$top=2&$continuationToken=eyJQcmltYXJ5U2tpcFRva2VuIjoiYjBmNmFjZTAtNWQ1Zi00ZWUyLWFlNjYtNWM4ZDY1MjgyOGFlIiwiU2Vjb25kYXJ5U2tpcFRva2VuIjpudWxsLCJNZXRhRGF0YSI6bnVsbCwiVHlwZSI6MH0%3d"}}}
+}

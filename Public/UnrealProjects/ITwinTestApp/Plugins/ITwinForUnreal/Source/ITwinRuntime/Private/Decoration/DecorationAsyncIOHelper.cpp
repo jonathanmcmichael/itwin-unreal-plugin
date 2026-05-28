@@ -39,7 +39,6 @@
 #	include <SDK/Core/Visualization/MaterialPersistence.h>
 #	include "SDK/Core/Visualization/Timeline.h"
 #	include "SDK/Core/Visualization/ScenePersistenceAPI.h"
-#	include "SDK/Core/Visualization/ScenePersistenceDS.h"
 #	include <SDK/Core/Visualization/SplinesManager.h>
 #	include <SDK/Core/Visualization/KeyframeAnimation.h>
 #	include <SDK/Core/Visualization/PathAnimation.h>
@@ -196,7 +195,7 @@ void FDecorationAsyncIOHelper::RequestStop()
 
 bool FDecorationAsyncIOHelper::IsInitialized() const
 {
-	return (decoration && instancesManager_ && materialPersistenceMngr && splinesManager && annotationsManager && pathAnimator);
+	return (decoration && instancesManager_ && materialPersistenceMngr && splinesManager && annotationsManager && pathAnimManager);
 }
 
 void FDecorationAsyncIOHelper::InitDecorationServiceConnection(const UWorld* WorldContextObject)
@@ -274,31 +273,6 @@ void FDecorationAsyncIOHelper::InitDecorationServiceConnection(const UWorld* Wor
 			GetDefaultHttp()->SetAccessToken(ServerConnection->GetAccessTokenPtr());
 		}
 		ScenePersistenceAPI::SetDefaultHttp(GetDefaultHttp());
-		if( InitConnexionService != EITwinSceneService::Invalid)
-		{
-			bUseDecorationService = ServerConnection->SceneService == EITwinSceneService::DecorationService;
-		}
-		else if (ServerConnection && ServerConnection->SceneService != EITwinSceneService::Invalid)
-		{
-			bUseDecorationService = ServerConnection->SceneService == EITwinSceneService::DecorationService;
-		}
-		else
-		{
-			bUseDecorationService = false;
-		}
-
-		// We may customize the activation of the Decoration Service for scene persistence from the
-		// configuration file:
-		if (!DecoSettings->CustomEnvsWithScenePersistenceDS.IsEmpty())
-		{
-			FString EnvStr = UEnum::GetValueAsString(Env);
-			int32 Index(0);
-			if (EnvStr.FindLastChar(TEXT(':'), Index) && ensure(Index != EnvStr.Len() - 1))
-			{
-				EnvStr.RightChopInline(Index + 1);
-			}
-			bUseDecorationService = DecoSettings->CustomEnvsWithScenePersistenceDS.Contains(*EnvStr);
-		}
 
 		// Connect the retrieval of cesium textures for Unreal packaged assets or decoration service.
 		ITwin::ConnectLoadTexture();
@@ -328,7 +302,7 @@ void FDecorationAsyncIOHelper::InitDefaultInstancesGroup(AdvViz::SDK::IInstances
 void FDecorationAsyncIOHelper::InitDecorationService(UWorld* WorldContextObject)
 {
 	using namespace AdvViz::SDK;
-	if (decoration && instancesManager_ && materialPersistenceMngr && splinesManager && annotationsManager && pathAnimator)
+	if (decoration && instancesManager_ && materialPersistenceMngr && splinesManager && annotationsManager && pathAnimManager)
 	{
 		// Already done.
 		return;
@@ -350,26 +324,20 @@ void FDecorationAsyncIOHelper::InitDecorationService(UWorld* WorldContextObject)
 	materialPersistenceMngr->SetMaterialLibraryDirectory(TCHAR_TO_UTF8(*MaterialLibraryPath));
 	AITwinIModel::SetMaterialPersistenceManager(materialPersistenceMngr);
 
-	if (bUseDecorationService)
-	{
-		scene.reset(ScenePersistenceDS::New());
-	}
-	else
-	{
-		scene.reset(ScenePersistenceAPI::New());
-	}
+
+	scene.reset(ScenePersistenceAPI::New());
 	splinesManager.reset(ISplinesManager::New());
 	annotationsManager.reset(IAnnotationsManager::New());
 
-	pathAnimator.reset(AdvViz::SDK::IPathAnimator::New());
-	pathAnimator->SetInstanceManager(instancesManager_);
-	pathAnimator->SetSplinesManager(splinesManager);
+	pathAnimManager.reset(AdvViz::SDK::IPathAnimManager::New());
+	pathAnimManager->SetInstanceManager(instancesManager_);
+	pathAnimManager->SetSplinesManager(splinesManager);
 
 	// Connect the instance manager to the spline manager, in order to be able to reload instances groups
 	// linked to splines correctly.
 	instancesManager_->SetSplineManager(splinesManager);
 	// Connect the instance manager to the animation path manager, in order to be able to save/reload animation paths associated with instances.
-	instancesManager_->SetAnimPathManager(pathAnimator);
+	instancesManager_->SetAnimPathManager(pathAnimManager);
 }
 
 void FDecorationAsyncIOHelper::SetDecoGeoreference(const FVector& latLongHeightDeg)
@@ -1187,7 +1155,7 @@ FDecorationAsyncIOHelper::GetDecorationPartsToSave() const
 		.bSaveMaterials = materialPersistenceMngr && materialPersistenceMngr->NeedUpdateDB(),
 		.bSaveSplines = splinesManager && splinesManager->HasSplinesToSave(),
 		.bSaveAnnotations = annotationsManager && annotationsManager->HasAnnotationToSave(),
-		.bSaveAnimPaths = pathAnimator && pathAnimator->HasAnimPathsToSave()
+		.bSaveAnimPaths = pathAnimManager && pathAnimManager->HasAnimPathsToSave()
 	};
 }
 
@@ -1284,7 +1252,7 @@ bool FDecorationAsyncIOHelper::DoAsyncSaveDecorationToServer(
 		[=, this, ptrStop = this->shouldStop](bool bSuccess) {
 		if (*ptrStop)
 			return;
-		TAsyncSaveDecorationPartThen(pathAnimator, WhatToSave.bSaveAnimPaths, DecorationId, CallbackPtr,
+		TAsyncSaveDecorationPartThen(pathAnimManager, WhatToSave.bSaveAnimPaths, DecorationId, CallbackPtr,
 			[=, this, ptrStop = this->shouldStop](bool bSuccess) {
 			if (*ptrStop)
 				return;
@@ -1445,49 +1413,6 @@ void FDecorationAsyncIOHelper::AsyncLoadScene(CallbackWithBool onFinishcallback)
 				}
 				SThis->PostLoadSceneFromServer();
 
-				if (SThis->bUseDecorationService)
-				{
-					std::string sceneId = SThis->scene->GetId();
-					// Load or create timeline
-					auto tmInfo = GetSceneTimelines(sceneId);
-					if (tmInfo && !(*tmInfo).empty())
-					{
-						auto timeline = std::shared_ptr<AdvViz::SDK::ITimeline>(AdvViz::SDK::ITimeline::New());
-						auto timelineId = (*tmInfo)[0].id;
-						auto ret = timeline->Load(sceneId, timelineId);
-						if (!ret)
-						{
-							BE_LOGE("Timeline", "Load failed, id:" << (std::string&)timelineId << " error:" << ret.error());
-						}
-						else
-						{
-							SThis->scene->SetTimeline(timeline);
-						}
-					}
-					if (!SThis->scene->GetTimeline())
-					{
-						std::string sceneName = "myscene";
-						auto ret = AdvViz::SDK::AddSceneTimeline(sceneId, sceneName);
-						if (!ret)
-						{
-							BE_LOGE("Timeline", "AddSceneTimeline failed, error:" << ret.error());
-						}
-						else
-						{
-							auto timeline = std::shared_ptr<AdvViz::SDK::ITimeline>(AdvViz::SDK::ITimeline::New());
-							auto timelineId = *ret;
-							auto ret2 = timeline->Load(sceneId, timelineId);
-							if (!ret2)
-							{
-								BE_LOGE("Timeline", "Load failed, id:" << (std::string&)timelineId << "error:" << ret2.error());
-							}
-							else
-							{
-								SThis->scene->SetTimeline(timeline);
-							}
-						}
-					}
-				}
 				if (!SThis->scene->GetTimeline())
 					SThis->scene->SetTimeline(std::shared_ptr<AdvViz::SDK::ITimeline>(AdvViz::SDK::ITimeline::New()));
 
@@ -1629,7 +1554,7 @@ void FDecorationAsyncIOHelper::AsyncLoadSplines(LoadCallback Callback)
 
 void FDecorationAsyncIOHelper::AsyncLoadPathAnimations(LoadCallback Callback)
 {
-	if (!pathAnimator)
+	if (!pathAnimManager)
 	{
 		ensureMsgf(false, TEXT("InitDecorationService must be called before, in game thread"));
 		Callback(AdvViz::make_unexpected("Missing initialization (no path animator)"));
@@ -1639,7 +1564,7 @@ void FDecorationAsyncIOHelper::AsyncLoadPathAnimations(LoadCallback Callback)
 	{
 		return;
 	}
-	pathAnimator->AsyncLoadDataFromServer(decoration->GetId(),
+	pathAnimManager->AsyncLoadDataFromServer(decoration->GetId(),
 		[](AdvViz::SDK::IAnimationPathInfoPtr&) {},
 		Callback);
 }
@@ -1686,22 +1611,15 @@ std::shared_ptr<AdvViz::SDK::ISplinesManager> const& FDecorationAsyncIOHelper::G
 	return splinesManager;
 }
 
-std::shared_ptr<AdvViz::SDK::IPathAnimator> const& FDecorationAsyncIOHelper::GetPathAnimator()
+std::shared_ptr<AdvViz::SDK::IPathAnimManager> const& FDecorationAsyncIOHelper::GetPathAnimManager()
 {
-	return pathAnimator;
+	return pathAnimManager;
 }
 
 AdvViz::expected<AdvViz::SDK::ScenePtrVector, AdvViz::SDK::HttpError> FDecorationAsyncIOHelper::GetITwinScenes(const FString& iTwinid)
 {
 	std::string itwinid = TCHAR_TO_UTF8(*(iTwinid));
-	if (bUseDecorationService)
-	{
-		return AdvViz::SDK::GetITwinScenesDS(itwinid);
-	}
-	else
-	{
-		return AdvViz::SDK::GetITwinScenesAPI(itwinid);
-	}
+	return AdvViz::SDK::GetITwinScenesAPI(itwinid);
 }
 
 void FDecorationAsyncIOHelper::AsyncGetITwinSceneInfos(const FString& ITwinid,
@@ -1709,32 +1627,11 @@ void FDecorationAsyncIOHelper::AsyncGetITwinSceneInfos(const FString& ITwinid,
 	bool bExecuteCallbackInGameThread)
 {
 	const std::string itwinid = TCHAR_TO_UTF8(*ITwinid);
-	if (bUseDecorationService)
-	{
-		AdvViz::SDK::AsyncGetITwinSceneInfosDS(itwinid,
-			[bExecuteCallbackInGameThread, Callback = std::move(InCallback)](AdvViz::expected<SceneInfoVec, AdvViz::SDK::HttpError> const& ret)
-		{
-			if (bExecuteCallbackInGameThread && !IsInGameThread())
-			{
-				AsyncTask(ENamedThreads::GameThread,
-					[CallbackGT = std::move(Callback), ret]()
-				{
-					CallbackGT(ret);
-				});
-			}
-			else
-			{
-				Callback(ret);
-			}
-		});
-	}
-	else
-	{
-		AdvViz::SDK::Http::EAsyncCallbackExecutionMode AsyncCBExecMode =
-			bExecuteCallbackInGameThread ? AdvViz::SDK::Http::EAsyncCallbackExecutionMode::GameThread
-			: AdvViz::SDK::Http::EAsyncCallbackExecutionMode::Default;
-		AdvViz::SDK::AsyncGetITwinSceneInfosAPI(itwinid, std::move(InCallback), AsyncCBExecMode);
-	}
+
+	AdvViz::SDK::Http::EAsyncCallbackExecutionMode AsyncCBExecMode =
+		bExecuteCallbackInGameThread ? AdvViz::SDK::Http::EAsyncCallbackExecutionMode::GameThread
+		: AdvViz::SDK::Http::EAsyncCallbackExecutionMode::Default;
+	AdvViz::SDK::AsyncGetITwinSceneInfosAPI(itwinid, std::move(InCallback), AsyncCBExecMode);
 }
 
 

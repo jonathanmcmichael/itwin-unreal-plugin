@@ -111,8 +111,6 @@ namespace AdvViz::SDK
 		virtual size_t GetKeyframeCount() const = 0;
 		virtual expected<std::shared_ptr<ITimelineKeyframe>, std::string> AddKeyframe(const ITimelineKeyframe::KeyframeData& data) = 0;
 		virtual expected<void, std::string> RemoveKeyframe(std::shared_ptr<ITimelineKeyframe>& k) = 0;
-		virtual expected<void, std::string> Load(const std::string& sceneId, const std::string& clipId) = 0;
-		virtual void AsyncSave(const std::string& sceneId, std::shared_ptr<AsyncRequestGroupCallback> callbackPtr) = 0;
 		virtual bool HasSomethingToSave() const = 0;
 		virtual void OnStartSaveKeyframes() = 0;
 		virtual void OnKeyframesSaved() = 0;
@@ -138,8 +136,6 @@ namespace AdvViz::SDK
 		size_t GetKeyframeCount() const override;
 		expected<std::shared_ptr<ITimelineKeyframe>, std::string> AddKeyframe(const ITimelineKeyframe::KeyframeData& data) override;
 		expected<void, std::string> RemoveKeyframe(std::shared_ptr<ITimelineKeyframe>& k) override;
-		expected<void, std::string> Load(const std::string& sceneId, const std::string& clipId) override;
-		void AsyncSave(const std::string& sceneId, std::shared_ptr<AsyncRequestGroupCallback> callbackPtr) override;
 		bool HasSomethingToSave() const override;
 		void OnStartSaveKeyframes() override;
 		void OnKeyframesSaved() override;
@@ -181,10 +177,7 @@ namespace AdvViz::SDK
 		virtual expected<void, std::string> RemoveClip(size_t index) = 0;
 		virtual void MoveClip(size_t indexSrc, size_t indexDst) = 0;
 		virtual size_t GetClipCount() const = 0;
-		virtual expected<void, std::string> Load(const std::string& sceneId, const std::string& timelineId) = 0;
 		virtual bool HasSomethingToSave() const = 0;
-		virtual void AsyncSave(const std::string& sceneId,
-			std::function<void(bool)>&& onDataSavedFunc = {}) = 0;
 
 		//sceneAPI functions
 		virtual std::vector<std::shared_ptr<ITimelineClip>> GetObsoleteClips() const = 0;
@@ -215,9 +208,7 @@ namespace AdvViz::SDK
 
 
 		//decoration service function
-		expected<void, std::string> Load(const std::string& sceneId, const std::string& timelineId) override;
 		bool HasSomethingToSave() const override;
-		void AsyncSave(const std::string& sceneId, std::function<void(bool)>&& onDataSavedFunc = {}) override;
 
 
 		//sceneAPI functions

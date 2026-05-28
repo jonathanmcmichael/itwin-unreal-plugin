@@ -21,11 +21,9 @@
 
 namespace ITwin
 {
-	extern bool FindHeight(UWorld* World, const FVector& InPos, float& OutHeight, FVector& OutNormal);
+	extern bool FindHeight(UWorld* World, const FVector& InPos, float& OutHeight, FVector& OutNormal, float maxHeight);
 }
 
-
-#pragma optimize("", off)
 
 void UBakedAnimKeyFrames::MarkForUpdate()
 {
@@ -91,8 +89,8 @@ void UBakedAnimKeyFrames::BakeSpline(UWorld* World, const AdvViz::SDK::RefID& Sp
 		float GroundZ = 0.0f;
 		FVector GroundNormal = FVector::UpVector;
 
-		FVector TracePosition = SplineLocation + FVector(0, 0, 500); // trace from above
-		if (ITwin::FindHeight(World, TracePosition, GroundZ, GroundNormal))
+		//FVector TracePosition = SplineLocation + FVector(0, 0, 500); // trace from above
+		if (ITwin::FindHeight(World, SplineLocation/*TracePosition*/, GroundZ, GroundNormal, 200)) // limit to 2m to avoid snapping to bridges
 		{
 			SplineLocation.Z = GroundZ;
 		}
@@ -148,4 +146,3 @@ FTransform UBakedAnimKeyFrames::GetTransform(float Time, bool bReverse/* = false
 	return outTransform;
 }
 
-#pragma optimize("", on)

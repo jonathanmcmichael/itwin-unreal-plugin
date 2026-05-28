@@ -277,9 +277,9 @@ namespace AdvViz::SDK {
 	namespace
 	{
 		static dmat4x3 Identity34 = { 1., 0., 0.,
-									  0., 1., 0.,
 									  0., 0., 1.,
-									  0., 0., 0. };
+									  0., 0., 0.,
+									  0., 1., 0. };
 	}
 
 

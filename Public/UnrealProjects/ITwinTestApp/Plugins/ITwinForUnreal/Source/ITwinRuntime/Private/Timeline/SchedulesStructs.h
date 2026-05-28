@@ -109,9 +109,9 @@ public:
 	/// a FTransfoAssignment pointing at a FAnimation3DPath, to name it).
 	/// Upon completion of all queries needed to fully define the property, the list will be used to notify
 	/// the animation bindings that they, in turn, might also now be fully defined. Then the list is emptied.
-	/// At creation, it is immediately non-empty because it contains the first AnimIdx that asked for this
-	/// property, so an empty collection here really means that the property is fully defined (it has been
-	/// queried and the query has completed).
+	/// An empty list can only mean that the property is fully defined: if it was just created from the reply
+	/// of a batched request and it is not yet known which animation binding will need it, then the list contains
+	/// a single entry equal to INVALID_IDX.
 	std::vector<size_t> Bindings;
 };
 

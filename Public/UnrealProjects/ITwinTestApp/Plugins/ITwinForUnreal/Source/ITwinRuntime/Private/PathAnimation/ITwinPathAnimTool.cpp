@@ -8,7 +8,6 @@
 
 
 #include <PathAnimation/ITwinPathAnimTool.h>
-#include <PathAnimation/ITwinAnimPathInfo.h>
 #include <PathAnimation/BakedAnimKeyFrames.h>
 #include <Helpers/ITwinConsoleCommandUtils.inl>
 #include <Helpers/ITwinMathUtils.h>
@@ -20,6 +19,7 @@
 #include <ITwinRealityData.h>
 #include <ITwinTilesetAccess.h>
 #include <ITwinUtilityLibrary.h>
+#include <Decoration/ITwinDecorationHelper.h>
 #include <Math/UEMathConversion.h>
 #include <Population/ITwinPopulation.h>
 #include <Population/ITwinPopulationTool.h>
@@ -52,7 +52,6 @@
 #	include <SDK/Core/Tools/Extension.h>
 #include <Compil/AfterNonUnrealIncludes.h>
 
-#pragma optimize("", off) // Disable optimization for easier debugging (TODO: remove)
 
 namespace
 {
@@ -174,20 +173,26 @@ class AITwinPathAnimTool::FImpl
 public:
 	AITwinPathAnimTool& Owner;
 
-	TArray<TStrongObjectPtr<UITwinObjectAnimPathInfo> > ObjectAnimPathInfos;
-	TArray<TStrongObjectPtr<UITwinTrafficAnimPathInfo> > TrafficAnimPathInfos;
-	TArray<TStrongObjectPtr<UITwinCrowdAnimPathInfo> > CrowdAnimPathInfos;
+	TArray<TStrongObjectPtr<UITwinObjectAnimPathHelper> > ObjectAnimPaths;
+	TArray<TStrongObjectPtr<UITwinTrafficAnimPathHelper> > TrafficAnimPaths;
+	TArray<TStrongObjectPtr<UITwinCrowdAnimPathHelper> > CrowdAnimPaths;
+
+	std::shared_ptr<AdvViz::SDK::IPathAnimManager> PathAnimManager;
 
 	TWeakObjectPtr<AITwinPopulationTool> PopulationTool;
 	TWeakObjectPtr<AITwinSplineTool> SplineTool;
+
+	TWeakObjectPtr<AITwinDecorationHelper> DecorationHelper;
 
 	FImpl(AITwinPathAnimTool& InOwner) : Owner(InOwner)
 	{}
 
 	inline int32 NumPaths(EITwinAnimPathType PathType) const;
 
-	inline UITwinAnimPathInfo* GetMutableAnimPathInfo(FAnimPathIdentifier PathHandle);
-	inline const UITwinAnimPathInfo* GetAnimPathInfo(FAnimPathIdentifier PathHandle) const;
+	inline UITwinAnimPathHelper* GetMutableAnimPathHelper(FAnimPathIdentifier PathHandle);
+	inline const UITwinAnimPathHelper* GetAnimPathHelper(FAnimPathIdentifier PathHandle) const;
+
+	void LoadAnimationPaths();
 
 	bool RegisterAnimPathSpline(AITwinSplineHelper* SplineHelper);
 	bool UnregisterAnimPathSpline(AITwinSplineHelper* SplineBeingRemoved);
@@ -205,7 +210,9 @@ public:
 	void ResetAnimation(FAnimPathIdentifier PathHandle);
 	void PlayAnimation(FAnimPathIdentifier PathHandle, bool bPlay);
 
-	bool Add3DObject(FAnimPathIdentifier PathHandle, bool bClearPrevious = false);
+	bool PopulatePathObjects(UITwinAnimPathHelper* PathHelper, bool bClearPrevious = false);
+	bool PopulatePathObjects(FAnimPathIdentifier PathHandle, bool bClearPrevious = false);
+	void RemovePathObjects(UITwinAnimPathHelper* PathHelper);
 	void RemovePathObjects(FAnimPathIdentifier PathHandle);
 
 	// Make the Spline Tool the active tool, with usage restricted to the creation of the given type of animation path
@@ -256,6 +263,10 @@ public:
 
 	void UpdateAnimatedObjects(FAnimPathIdentifier PathHandle, float DeltaTime);
 	void Tick(float DeltaTime);
+
+private:
+	FAnimPathIdentifier GetPathIdentifierFromSpline(AdvViz::SDK::RefID const& RefID) const;
+	UITwinAnimPathHelper* CreatePath(EITwinAnimPathType PathType);
 };
 
 /*
@@ -389,74 +400,132 @@ void AITwinPathAnimTool::ConnectSplineTool(AITwinSplineTool* SplineTool)
 	}
 }
 
+void AITwinPathAnimTool::SetDecorationHelper(AITwinDecorationHelper* InDecoHelper)
+{
+	Impl->DecorationHelper = InDecoHelper;
+}
+
+void AITwinPathAnimTool::SetPathAnimManager(const std::shared_ptr<AdvViz::SDK::IPathAnimManager>& InPathAnimManager)
+{
+	Impl->PathAnimManager = InPathAnimManager;
+}
+
+void AITwinPathAnimTool::FImpl::LoadAnimationPaths()
+{
+	if (!ensure(PathAnimManager))
+		return;
+
+	std::set<AdvViz::SDK::RefID> AnimPathIds;
+	PathAnimManager->GetAnimationPathIds(AnimPathIds);
+	std::unordered_map<AdvViz::SDK::RefID, AITwinSplineHelper*> SplineRefIdToSplineMap;
+	for (TActorIterator<AITwinSplineHelper> SplineIter(Owner.GetWorld()); SplineIter; ++SplineIter)
+		SplineRefIdToSplineMap[SplineIter->GetAVizSplineId()] = *SplineIter;
+	for (auto id : AnimPathIds)
+	{
+		if (auto PathPropPtr = PathAnimManager->GetAnimationPathInfo(id))
+		{
+			auto PathProp = PathPropPtr->GetRAutoLock();
+			auto SplineRefID = PathProp->GetSplineId();
+			if (!ensure(SplineRefID.IsValid() && SplineRefIdToSplineMap.contains(SplineRefID)))
+				continue;
+			auto SplineHelper = SplineRefIdToSplineMap[SplineRefID];
+			EITwinAnimPathType PathType = GetAnimPathTypeFromSplineUsage(SplineHelper->GetUsage());
+			if (auto PathHelper = CreatePath(PathType))
+			{
+				PathHelper->Init(SplineHelper, PathPropPtr);
+				std::vector<std::string> assets;
+				PathProp->GetObjects(assets);
+				if (assets.size() > 0)
+				{
+					PathHelper->Set3DObjectsFromProps();
+					PopulatePathObjects(PathHelper, false);
+				}
+			}
+		}
+	}
+}
+
+void AITwinPathAnimTool::LoadAnimationPaths()
+{
+	Impl->LoadAnimationPaths();
+}
+
 void AITwinPathAnimTool::FImpl::BakeAnimation(FAnimPathIdentifier PathHandle)
 {
-	if (auto PathInfo = GetMutableAnimPathInfo(PathHandle))
-		PathInfo->BakeAnimationIfNeeded();
+	if (auto PathHelper = GetMutableAnimPathHelper(PathHandle))
+		PathHelper->BakeAnimationIfNeeded();
 }
 
 void AITwinPathAnimTool::FImpl::BakeAnimation()
 {
-	for (EITwinAnimPathType Type : {
+	for (EITwinAnimPathType PathType : {
 		EITwinAnimPathType::Object,
 		EITwinAnimPathType::Traffic,
 		EITwinAnimPathType::Crowd })
 	{
-		for (int32 Index(0); Index < NumPaths(Type); ++Index)
+		for (int32 Index(0); Index < NumPaths(PathType); ++Index)
 		{
-			BakeAnimation(FAnimPathIdentifier(Type, Index));
+			BakeAnimation(FAnimPathIdentifier(PathType, Index));
 		}
 	}
+}
+
+void AITwinPathAnimTool::FImpl::RemovePathObjects(UITwinAnimPathHelper* PathHelper)
+{
+	if (!PopulationTool.IsValid() || !PathHelper)
+		return;
+
+	for (auto Population : PathHelper->Populations)
+	{
+		if (Population.IsValid())
+			Population->RemoveAllInstances();
+	}
+	PathHelper->Populations.Empty();
 }
 
 void AITwinPathAnimTool::FImpl::RemovePathObjects(FAnimPathIdentifier PathHandle)
 {
-	if (!PopulationTool.IsValid())
-		return;
-
-	if (auto PathInfo = GetMutableAnimPathInfo(PathHandle))
-	{
-		for (auto Population : PathInfo->Populations)
-		{
-			if (Population.IsValid())
-				Population->RemoveAllInstances();
-		}
-	}
+	RemovePathObjects(GetMutableAnimPathHelper(PathHandle));
 }
 
-bool AITwinPathAnimTool::FImpl::Add3DObject(FAnimPathIdentifier PathHandle, bool bClearPrevious/* = false*/)
+bool AITwinPathAnimTool::FImpl::PopulatePathObjects(UITwinAnimPathHelper* PathHelper, bool bClearPrevious/* = false*/)
 {
-	if (!PathHandle.IsValid(NumPaths(PathHandle.PathType)))
+	if (!PathHelper || !PathHelper->SplineHelper.IsValid())
+		return false;
+	if (!ensure(PopulationTool.IsValid() && DecorationHelper.IsValid()))
 		return false;
 
-	auto PathInfo = GetMutableAnimPathInfo(PathHandle);
-	if (!PathInfo->SplineHelper.IsValid())
-		return false;
-
-	FVector Pos = PathInfo->SplineHelper->GetSplineComponent()->GetLocationAtDistanceAlongSpline(0.0, ESplineCoordinateSpace::World);
-
-	if (PathInfo->Objects.Num() > 0 && PopulationTool.IsValid())
+	if (bClearPrevious && PathHelper->Populations.Num() > 0)
 	{
-		if (bClearPrevious && PathInfo->Populations.Num() > 0)// && PathInfo->PopulationHelper->GetNumberOfInstances() > 0)
-		{
-			RemovePathObjects(PathHandle);
-		}
-		AITwinPopulation* Population = PopulationTool->PreLoadPopulation(PathInfo->Objects[0]);
+		RemovePathObjects(PathHelper);
+	}
+
+	// TODO: create multiple instances for crowd and traffic depending on density and asset dimensions (for traffic only)
+	FVector Pos = PathHelper->SplineHelper->GetSplineComponent()->GetLocationAtDistanceAlongSpline(0.0, ESplineCoordinateSpace::World);
+	auto InstGroupId = DecorationHelper->GetInstancesGroupIdForSpline(*(PathHelper->SplineHelper));
+	auto Assets = PathHelper->Get3DObjectPaths();
+	if (Assets.Num() > 0) // TODO: adapt to multiple objects (traffic and crowd)
+	{
+		PathHelper->BakeAnimationIfNeeded();
+
+		AITwinPopulation* Population = DecorationHelper->GetOrCreatePopulation(Assets[0], InstGroupId);
+		//AITwinPopulation* Population = PopulationTool->PreLoadPopulation(Assets[0]);
 		if (Population)
 		{
-			PathInfo->Populations.Add(Population);
-			int32 instIdx = Population->AddInstance(FTransform(Pos));
+			PathHelper->Populations.Add(Population);
+			int32 instIdx(0);
+			if (Population->GetNumberOfInstances() == 0)
+				instIdx = Population->AddInstance(FTransform(Pos));
 			if (instIdx >= 0)
 			{
-				PathInfo->BakeAnimationIfNeeded();
 				std::shared_ptr<InstanceWithAnimPathExt> animPathExt = std::make_shared<InstanceWithAnimPathExt>(FTransform(Pos));
-				if (PathInfo->BakedFramesPerLane.Num() > 0)
-					animPathExt->SetKeyFrames(PathInfo->BakedFramesPerLane[0].Get());
+				animPathExt->SetKeyFrames(PathHelper->GetBakedFrames());
 
 				if (auto InstancePtr = Population->GetAVizInstance(instIdx))
 				{
-					auto inst = InstancePtr->GetAutoLock();
-					inst->AddExtension(animPathExt); //if (inst->GetAnimPathId()) TODO: add anim path RefId to rebuild connection upon loading?
+					auto Instance = InstancePtr->GetAutoLock();
+					Instance->SetAnimPathId(PathHelper->GetPathRefID());
+					Instance->AddExtension(animPathExt);
 				}
 			}
 			return true;
@@ -466,184 +535,186 @@ bool AITwinPathAnimTool::FImpl::Add3DObject(FAnimPathIdentifier PathHandle, bool
 	return false;
 }
 
+bool AITwinPathAnimTool::FImpl::PopulatePathObjects(FAnimPathIdentifier PathHandle, bool bClearPrevious/* = false*/)
+{
+	return PopulatePathObjects(GetMutableAnimPathHelper(PathHandle), bClearPrevious);
+}
+
 //FString AITwinPathAnimTool::GetName(FAnimPathIdentifier PathHandle) const
 //{
-//	if (auto PathInfo = Impl->GetAnimPathInfo(PathHandle))
-//		return PathInfo->GetName();
+//	if (auto PathHelper = Impl->GetAnimPathHelper(PathHandle))
+//		return PathHelper->GetName();
 //	return FString();
 //}
 //
 //void AITwinPathAnimTool::SetName(FAnimPathIdentifier PathHandle, const FString& Name)
 //{
-//	Impl->GetMutableAnimPathInfo(PathHandle)->SetName(Name);
+//	Impl->GetMutableAnimPathHelper(PathHandle)->SetName(Name);
 //}
 
-void AITwinPathAnimTool::Get3DObjects(FAnimPathIdentifier PathHandle, TArray<FString>& AssetPaths) const
+void AITwinPathAnimTool::Get3DObjects(FAnimPathIdentifier PathHandle, TArray<FString>& Assets) const
 {
-	if (auto PathInfo = Impl->GetAnimPathInfo(PathHandle))
-		AssetPaths = PathInfo->Get3DObjects();
+	if (auto PathHelper = Impl->GetAnimPathHelper(PathHandle))
+		PathHelper->Get3DObjects(Assets);
 	else
-		AssetPaths.Empty();
+		Assets.Empty();
 }
 
-void AITwinPathAnimTool::Set3DObjects(FAnimPathIdentifier PathHandle, const TArray<FString>& AssetPaths)
+void AITwinPathAnimTool::Set3DObjects(FAnimPathIdentifier PathHandle, const TArray<FString>& Assets)
 {
-	ensure(PathHandle.PathType != EITwinAnimPathType::Object || AssetPaths.Num() == 1);
-	auto PathInfo = Impl->GetMutableAnimPathInfo(PathHandle);
-	if (!PathInfo)
+	ensure(PathHandle.PathType != EITwinAnimPathType::Object || Assets.Num() == 1);
+	auto PathHelper = Impl->GetMutableAnimPathHelper(PathHandle);
+	if (!PathHelper)
 		return;
-	Impl->GetMutableAnimPathInfo(PathHandle)->Set3DObjects(AssetPaths);
-	if (PathHandle.PathType == EITwinAnimPathType::Object) // TODO: refactor
-	{
-		Impl->Add3DObject(PathHandle, true); // add new object and clear previous one if any
-	}
+	PathHelper->Set3DObjects(Assets);
+	Impl->PopulatePathObjects(PathHelper, true); // add new objects and clear previous one if any (TODO: refactor)
 }
 
 bool AITwinPathAnimTool::HasInvDirection(FAnimPathIdentifier PathHandle) const
 {
-	if (auto PathInfo = Impl->GetAnimPathInfo(PathHandle))
-		return PathInfo->HasInvDirection();
+	if (auto PathHelper = Impl->GetAnimPathHelper(PathHandle))
+		return PathHelper->HasInvDirection();
 	return false;
 }
 
 void AITwinPathAnimTool::SetInvDirection(FAnimPathIdentifier PathHandle, bool bInvDirection)
 {
-	if (auto PathInfo = Impl->GetMutableAnimPathInfo(PathHandle))
-		PathInfo->SetInvDirection(bInvDirection);
+	if (auto PathHelper = Impl->GetMutableAnimPathHelper(PathHandle))
+		PathHelper->SetInvDirection(bInvDirection);
 }
 
 bool AITwinPathAnimTool::IsLoop(FAnimPathIdentifier PathHandle) const
 {
-	if (auto PathInfo = Impl->GetAnimPathInfo(PathHandle))
-		return PathInfo->IsLoop();
+	if (auto PathHelper = Impl->GetAnimPathHelper(PathHandle))
+		return PathHelper->IsLoop();
 	return false;
 }
 
 void AITwinPathAnimTool::SetIsLoop(FAnimPathIdentifier PathHandle, bool isLoop)
 {
-	if (auto PathInfo = Impl->GetMutableAnimPathInfo(PathHandle))
+	if (auto PathHelper = Impl->GetMutableAnimPathHelper(PathHandle))
 	{
-		PathInfo->SetIsLoop(isLoop);
-		if (PathInfo->SplineHelper.IsValid())
-			PathInfo->SplineHelper->SetClosedLoop(isLoop);
+		PathHelper->SetIsLoop(isLoop);
+		if (PathHelper->SplineHelper.IsValid())
+			PathHelper->SplineHelper->SetClosedLoop(isLoop);
 	}
 }
 
 float AITwinPathAnimTool::GetSpeed(FAnimPathIdentifier PathHandle) const
 {
 	ensure(PathHandle.PathType == EITwinAnimPathType::Object);
-	if (auto PathInfo = Impl->GetAnimPathInfo(PathHandle))
-		return PathInfo->GetSpeed();
+	if (auto PathHelper = Impl->GetAnimPathHelper(PathHandle))
+		return PathHelper->GetSpeed();
 	return 0.f;
 }
 
 void AITwinPathAnimTool::SetSpeed(FAnimPathIdentifier PathHandle, float Speed)
 {
 	//ensure(PathHandle.PathType == EITwinAnimPathType::Object);
-	if (auto PathInfo = Impl->GetMutableAnimPathInfo(PathHandle))
-		PathInfo->SetSpeed(Speed);
+	if (auto PathHelper = Impl->GetMutableAnimPathHelper(PathHandle))
+		PathHelper->SetSpeed(Speed);
 }
 
 float AITwinPathAnimTool::GetDelay(FAnimPathIdentifier PathHandle) const
 {
 	ensure(PathHandle.PathType == EITwinAnimPathType::Object);
-	if (auto PathInfo = Impl->GetAnimPathInfo(PathHandle))
-		return PathInfo->GetDelay();
+	if (auto PathHelper = Impl->GetAnimPathHelper(PathHandle))
+		return PathHelper->GetDelay();
 	return 0.f;
 }
 
 void AITwinPathAnimTool::SetDelay(FAnimPathIdentifier PathHandle, float Delay)
 {
 	ensure(PathHandle.PathType == EITwinAnimPathType::Object);
-	if (auto PathInfo = Impl->GetMutableAnimPathInfo(PathHandle))
-		PathInfo->SetDelay(Delay);
+	if (auto PathHelper = Impl->GetMutableAnimPathHelper(PathHandle))
+		PathHelper->SetDelay(Delay);
 	Impl->ResetAnimation(PathHandle);
 }
 
 EITwinAnimPathRepeatMode AITwinPathAnimTool::GetRepeatMode(FAnimPathIdentifier PathHandle) const
 {
 	ensure(PathHandle.PathType == EITwinAnimPathType::Object);
-	if (auto PathInfo = Impl->GetAnimPathInfo(PathHandle))
-		return PathInfo->GetRepeatMode();
+	if (auto PathHelper = Impl->GetAnimPathHelper(PathHandle))
+		return PathHelper->GetRepeatMode();
 	return EITwinAnimPathRepeatMode::Count;
 }
 
 void AITwinPathAnimTool::SetRepeatMode(FAnimPathIdentifier PathHandle, EITwinAnimPathRepeatMode RepeatMode)
 {
 	ensure(PathHandle.PathType == EITwinAnimPathType::Object);
-	if (auto PathInfo = Impl->GetMutableAnimPathInfo(PathHandle))
-		PathInfo->SetRepeatMode(RepeatMode);
+	if (auto PathHelper = Impl->GetMutableAnimPathHelper(PathHandle))
+		PathHelper->SetRepeatMode(RepeatMode);
 	Impl->ResetAnimation(PathHandle);
 }
 
 bool AITwinPathAnimTool::IsOneWay(FAnimPathIdentifier PathHandle) const
 {
 	ensure(PathHandle.PathType != EITwinAnimPathType::Object);
-	if (auto PathInfo = Impl->GetAnimPathInfo(PathHandle))
-		return PathInfo->IsOneWay();
+	if (auto PathHelper = Impl->GetAnimPathHelper(PathHandle))
+		return PathHelper->IsOneWay();
 	return true;
 }
 
 void AITwinPathAnimTool::SetOneWay(FAnimPathIdentifier PathHandle, bool bOneWay)
 {
 	ensure(PathHandle.PathType != EITwinAnimPathType::Object);
-	if (auto PathInfo = Impl->GetMutableAnimPathInfo(PathHandle))
+	if (auto PathHelper = Impl->GetMutableAnimPathHelper(PathHandle))
 	{
-		PathInfo->SetOneWay(bOneWay);
-		PathInfo->UpdateSpline();
+		PathHelper->SetOneWay(bOneWay);
+		PathHelper->UpdateSpline();
 	}
 }
 
 int AITwinPathAnimTool::GetLaneCount(FAnimPathIdentifier PathHandle) const
 {
 	ensure(PathHandle.PathType != EITwinAnimPathType::Object);
-	if (auto PathInfo = Impl->GetAnimPathInfo(PathHandle))
-		return PathInfo->GetLaneCount();
+	if (auto PathHelper = Impl->GetAnimPathHelper(PathHandle))
+		return PathHelper->GetLaneCount();
 	return 0;
 }
 
 void AITwinPathAnimTool::SetLaneCount(FAnimPathIdentifier PathHandle, int LaneCount)
 {
 	ensure(PathHandle.PathType != EITwinAnimPathType::Object);
-	if (auto PathInfo = Impl->GetMutableAnimPathInfo(PathHandle))
+	if (auto PathHelper = Impl->GetMutableAnimPathHelper(PathHandle))
 	{
-		PathInfo->SetLaneCount(LaneCount);
-		PathInfo->UpdateSpline();
+		PathHelper->SetLaneCount(LaneCount);
+		PathHelper->UpdateSpline();
 	}
 }
 
 float AITwinPathAnimTool::GetLaneWidth(FAnimPathIdentifier PathHandle) const
 {
 	ensure(PathHandle.PathType != EITwinAnimPathType::Object);
-	if (auto PathInfo = Impl->GetAnimPathInfo(PathHandle))
-		return PathInfo->GetLaneWidth();
+	if (auto PathHelper = Impl->GetAnimPathHelper(PathHandle))
+		return PathHelper->GetLaneWidth();
 	return 0;
 }
 
 void AITwinPathAnimTool::SetLaneWidth(FAnimPathIdentifier PathHandle, float LaneWidth)
 {
 	ensure(PathHandle.PathType != EITwinAnimPathType::Object);
-	if (auto PathInfo = Impl->GetMutableAnimPathInfo(PathHandle))
+	if (auto PathHelper = Impl->GetMutableAnimPathHelper(PathHandle))
 	{
-		PathInfo->SetLaneWidth(LaneWidth);
-		PathInfo->UpdateSpline();
+		PathHelper->SetLaneWidth(LaneWidth);
+		PathHelper->UpdateSpline();
 	}
 }
 
 float AITwinPathAnimTool::GetDensity(FAnimPathIdentifier PathHandle) const
 {
 	ensure(PathHandle.PathType != EITwinAnimPathType::Object);
-	if (auto PathInfo = Impl->GetAnimPathInfo(PathHandle))
-		return PathInfo->GetDensity();
+	if (auto PathHelper = Impl->GetAnimPathHelper(PathHandle))
+		return PathHelper->GetDensity();
 	return 0.f;
 }
 
 void AITwinPathAnimTool::SetDensity(FAnimPathIdentifier PathHandle, float Density)
 {
 	ensure(PathHandle.PathType != EITwinAnimPathType::Object);
-	if (auto PathInfo = Impl->GetMutableAnimPathInfo(PathHandle))
+	if (auto PathHelper = Impl->GetMutableAnimPathHelper(PathHandle))
 	{
-		PathInfo->SetDensity(Density);
+		PathHelper->SetDensity(Density);
 		// TODO: repopulate
 	}
 }
@@ -651,49 +722,49 @@ void AITwinPathAnimTool::SetDensity(FAnimPathIdentifier PathHandle, float Densit
 float AITwinPathAnimTool::GetSeparatorWidth(FAnimPathIdentifier PathHandle) const
 {
 	ensure(PathHandle.PathType == EITwinAnimPathType::Traffic);
-	if (auto PathInfo = Impl->GetAnimPathInfo(PathHandle))
-		return PathInfo->GetSeparatorWidth();
+	if (auto PathHelper = Impl->GetAnimPathHelper(PathHandle))
+		return PathHelper->GetSeparatorWidth();
 	return 0.f;
 }
 
 void AITwinPathAnimTool::SetSeparatorWidth(FAnimPathIdentifier PathHandle, float SeparatorWidth)
 {
 	ensure(PathHandle.PathType == EITwinAnimPathType::Traffic);
-	if (auto PathInfo = Impl->GetMutableAnimPathInfo(PathHandle))
+	if (auto PathHelper = Impl->GetMutableAnimPathHelper(PathHandle))
 	{
-		PathInfo->SetSeparatorWidth(SeparatorWidth);
-		PathInfo->UpdateSpline();
+		PathHelper->SetSeparatorWidth(SeparatorWidth);
+		PathHelper->UpdateSpline();
 	}
 }
 
 float AITwinPathAnimTool::GetMinSpeed(FAnimPathIdentifier PathHandle) const
 {
 	ensure(PathHandle.PathType == EITwinAnimPathType::Traffic);
-	if (auto PathInfo = Impl->GetAnimPathInfo(PathHandle))
-		return PathInfo->GetMinSpeed();
+	if (auto PathHelper = Impl->GetAnimPathHelper(PathHandle))
+		return PathHelper->GetMinSpeed();
 	return 0.f;
 }
 
 void AITwinPathAnimTool::SetMinSpeed(FAnimPathIdentifier PathHandle, float MinSpeed)
 {
 	ensure(PathHandle.PathType == EITwinAnimPathType::Traffic);
-	if (auto PathInfo = Impl->GetMutableAnimPathInfo(PathHandle))
-		PathInfo->SetMinSpeed(MinSpeed);
+	if (auto PathHelper = Impl->GetMutableAnimPathHelper(PathHandle))
+		PathHelper->SetMinSpeed(MinSpeed);
 }
 
 float AITwinPathAnimTool::GetMaxSpeed(FAnimPathIdentifier PathHandle) const
 {
 	ensure(PathHandle.PathType == EITwinAnimPathType::Traffic);
-	if (auto PathInfo = Impl->GetAnimPathInfo(PathHandle))
-		return PathInfo->GetMaxSpeed();
+	if (auto PathHelper = Impl->GetAnimPathHelper(PathHandle))
+		return PathHelper->GetMaxSpeed();
 	return 0.f;
 }
 
 void AITwinPathAnimTool::SetMaxSpeed(FAnimPathIdentifier PathHandle, float MaxSpeed)
 {
 	ensure(PathHandle.PathType == EITwinAnimPathType::Traffic);
-	if (auto PathInfo = Impl->GetMutableAnimPathInfo(PathHandle))
-		PathInfo->SetMaxSpeed(MaxSpeed);
+	if (auto PathHelper = Impl->GetMutableAnimPathHelper(PathHandle))
+		PathHelper->SetMaxSpeed(MaxSpeed);
 }
 
 bool AITwinPathAnimTool::StartInteractiveCreation(EITwinAnimPathType PathType)
@@ -708,51 +779,81 @@ bool AITwinPathAnimTool::StartInteractiveCreation(EITwinAnimPathType PathType)
 	TWeakObjectPtr<AITwinSplineTool> SplineTool = Impl->ActivateSplineTool(GetWorld(), PathType);
 	if (SplineTool.IsValid())
 	{
-		//Impl->PathTypeBeingCreated = PathType;
 		// Activate overview camera (top view)
-		SplineTool->OnOverviewCamera();
+		//SplineTool->OnOverviewCamera(); // no need for path animation for now
 		SplineTool->StartInteractiveCreation();
 		return true;
 	}
 	return false;
 }
 
-bool AITwinPathAnimTool::FImpl::RegisterAnimPathSpline(AITwinSplineHelper* SplineHelper)
+UITwinAnimPathHelper* AITwinPathAnimTool::FImpl::CreatePath(EITwinAnimPathType PathType)
 {
-	FAnimPathIdentifier PathHandle;
-	PathHandle.PathType = GetAnimPathTypeFromSplineUsage(SplineHelper->GetUsage());
-	PathHandle.PathIndex = NumPaths(PathHandle.PathType);
-	//auto spline = SplineHelper->GetAVizSpline()->GetRAutoLock();
-	//auto splineId = spline->GetId();
-
-	switch (PathHandle.PathType)
-	{	
+	switch (PathType)
+	{
 	case EITwinAnimPathType::Object:
 	{
-		//UITwinObjectAnimPathInfo& PathInfo = ObjectAnimPathInfos.AddDefaulted_GetRef();
-		TStrongObjectPtr<UITwinObjectAnimPathInfo> PathInfo(NewObject<UITwinObjectAnimPathInfo>(&Owner));
-		ObjectAnimPathInfos.Add(PathInfo);
-		PathInfo->Init(SplineHelper);
-		break;
+		TStrongObjectPtr<UITwinObjectAnimPathHelper> ObjectPathHelper(NewObject<UITwinObjectAnimPathHelper>(&Owner));
+		ObjectAnimPaths.Add(ObjectPathHelper);
+		return ObjectPathHelper.Get();
 	}
 	case EITwinAnimPathType::Traffic:
 	{
-		//UITwinTrafficAnimPathInfo& PathInfo = TrafficAnimPathInfos.AddDefaulted_GetRef();
-		TStrongObjectPtr<UITwinTrafficAnimPathInfo> PathInfo(NewObject<UITwinTrafficAnimPathInfo>(&Owner));
-		TrafficAnimPathInfos.Add(PathInfo);
-		PathInfo->Init(SplineHelper);
-		break;
+		TStrongObjectPtr<UITwinTrafficAnimPathHelper> TrafficPathHelper(NewObject<UITwinTrafficAnimPathHelper>(&Owner));
+		TrafficAnimPaths.Add(TrafficPathHelper);
+		return TrafficPathHelper.Get();
 	}
 	case EITwinAnimPathType::Crowd:
 	{
-		//UITwinCrowdAnimPathInfo& PathInfo = CrowdAnimPathInfos.AddDefaulted_GetRef();
-		TStrongObjectPtr<UITwinCrowdAnimPathInfo> PathInfo(NewObject<UITwinCrowdAnimPathInfo>(&Owner));
-		CrowdAnimPathInfos.Add(PathInfo);
-		PathInfo->Init(SplineHelper);
-		break;
+		TStrongObjectPtr<UITwinCrowdAnimPathHelper> CrowdPathHelper(NewObject<UITwinCrowdAnimPathHelper>(&Owner));
+		CrowdAnimPaths.Add(CrowdPathHelper);
+		return CrowdPathHelper.Get();
 	}
-	BE_UNCOVERED_ENUM_ASSERT_AND_RETURN(case EITwinAnimPathType::Count:, false);
+	BE_UNCOVERED_ENUM_ASSERT_AND_RETURN(case EITwinAnimPathType::Count:, nullptr);
 	}
+}
+
+bool AITwinPathAnimTool::FImpl::RegisterAnimPathSpline(AITwinSplineHelper* SplineHelper)
+{
+	// This function is called when a new spline is created with the Spline Tool, and also when an existing spline
+	// is loaded from the server. If we are loading an existing path animation spline from server, we should wait until
+	// all the animation paths are loaded before registering them here
+	if (SplineHelper->GetAVizSplineId().HasDBIdentifier())
+		return false;
+
+	FAnimPathIdentifier PathHandle;
+	PathHandle.PathType = GetAnimPathTypeFromSplineUsage(SplineHelper->GetUsage());
+	PathHandle.PathIndex = NumPaths(PathHandle.PathType);
+
+	UITwinAnimPathHelper* PathHelper = CreatePath(PathHandle.PathType);
+	if (!PathHelper)
+		return false;
+
+	//std::vector<std::string> assets;
+	//auto PathPropPtr = PathAnimManager->FindAnimationPathInfoBySplineRefId(SplineHelper->GetAVizSplineId());
+	//if (!PathPropPtr)
+	//{
+	// Creating new spline
+	auto PathPropPtr = PathAnimManager->AddAnimationPathInfo();
+	auto PathProp = PathPropPtr->GetAutoLock();
+	PathProp->SetSplineId(SplineHelper->GetAVizSplineId());
+	//if (DecorationHelper.IsValid())
+	//	PathProp->SetInstGroupId(DecorationHelper->GetInstancesGroupIdForSpline(*SplineHelper));
+	//}
+	//else
+	//{
+	//	// Loading existing spline
+	//	auto PathProp = PathPropPtr->GetAutoLock();
+	//	PathProp->GetObjects(assets);
+	//}
+	PathHelper->Init(SplineHelper, PathPropPtr);
+	//if (assets.size() > 0)
+	//{
+	//	TArray<FString> AssetPaths;
+	//	for (const auto& asset : assets)
+	//		AssetPaths.Add(FString(asset.c_str()));
+	//	PathHelper->Set3DObjects(AssetPaths);
+	//}
 
 	Owner.AnimPathListModifiedEvent.Broadcast();
 	Owner.AnimPathAddedEvent.Broadcast(PathHandle);
@@ -771,19 +872,20 @@ bool AITwinPathAnimTool::FImpl::UnregisterAnimPathSpline(AITwinSplineHelper* Spl
 {
 	auto const SelectedBefore = GetSelectedPath();
 
-	auto PathHandle = GetPathIdentifier(SplineBeingRemoved->GetAVizSplineId());
+	auto PathHandle = GetPathIdentifierFromSpline(SplineBeingRemoved->GetAVizSplineId());
 	if (ensure(PathHandle.IsValid(NumPaths(PathHandle.PathType))))
 	{
+		PathAnimManager->RemoveAnimationPathInfo(GetAnimPathHelper(PathHandle)->GetPathRefID());
 		switch (PathHandle.PathType)
 		{
 		case EITwinAnimPathType::Object:
-			ObjectAnimPathInfos.RemoveAt(PathHandle.PathIndex);
+			ObjectAnimPaths.RemoveAt(PathHandle.PathIndex);
 			break;
 		case EITwinAnimPathType::Traffic:
-			TrafficAnimPathInfos.RemoveAt(PathHandle.PathIndex);
+			TrafficAnimPaths.RemoveAt(PathHandle.PathIndex);
 			break;
 		case EITwinAnimPathType::Crowd:
-			CrowdAnimPathInfos.RemoveAt(PathHandle.PathIndex);
+			CrowdAnimPaths.RemoveAt(PathHandle.PathIndex);
 			break;
 		default:
 			break;
@@ -822,10 +924,10 @@ void AITwinPathAnimTool::FImpl::OnSplineEditedInTool()
 {
 	if (!SplineTool.IsValid() || !SplineTool->IsUsedForPathAnim() || !SplineTool->GetSelectedSpline())
 		return;
-	auto PathHandle = GetPathIdentifier(SplineTool->GetSelectedSpline()->GetAVizSplineId());
-	if (auto PathInfo = GetMutableAnimPathInfo(PathHandle))
+	auto PathHandle = GetPathIdentifierFromSpline(SplineTool->GetSelectedSpline()->GetAVizSplineId());
+	if (auto PathHelper = GetMutableAnimPathHelper(PathHandle))
 	{
-		PathInfo->InvalidateBakedAnimation();
+		PathHelper->InvalidateBakedAnimation();
 	}
 }
 
@@ -838,9 +940,9 @@ inline int32 AITwinPathAnimTool::FImpl::NumPaths(EITwinAnimPathType PathType) co
 {
 	switch (PathType)
 	{
-	case EITwinAnimPathType::Object:	return ObjectAnimPathInfos.Num();
-	case EITwinAnimPathType::Traffic:	return TrafficAnimPathInfos.Num();
-	case EITwinAnimPathType::Crowd:		return CrowdAnimPathInfos.Num();
+	case EITwinAnimPathType::Object:	return ObjectAnimPaths.Num();
+	case EITwinAnimPathType::Traffic:	return TrafficAnimPaths.Num();
+	case EITwinAnimPathType::Crowd:		return CrowdAnimPaths.Num();
 	BE_UNCOVERED_ENUM_ASSERT_AND_RETURN(case EITwinAnimPathType::Count: , 0);
 	}
 }
@@ -850,29 +952,29 @@ int32 AITwinPathAnimTool::NumPaths(EITwinAnimPathType PathType) const
 	return Impl->NumPaths(PathType);
 }
 
-inline UITwinAnimPathInfo* AITwinPathAnimTool::FImpl::GetMutableAnimPathInfo(FAnimPathIdentifier PathHandle)
+inline UITwinAnimPathHelper* AITwinPathAnimTool::FImpl::GetMutableAnimPathHelper(FAnimPathIdentifier PathHandle)
 {
 	if (!PathHandle.IsValid(NumPaths(PathHandle.PathType)))
 		return nullptr;
 	switch (PathHandle.PathType)
 	{
 	BE_UNCOVERED_ENUM_ASSERT_AND_FALLTHROUGH(case EITwinAnimPathType::Count: )
-	case EITwinAnimPathType::Object:	return ObjectAnimPathInfos[PathHandle.PathIndex].Get();
-	case EITwinAnimPathType::Traffic:	return TrafficAnimPathInfos[PathHandle.PathIndex].Get();
-	case EITwinAnimPathType::Crowd:		return CrowdAnimPathInfos[PathHandle.PathIndex].Get();
+	case EITwinAnimPathType::Object:	return ObjectAnimPaths[PathHandle.PathIndex].Get();
+	case EITwinAnimPathType::Traffic:	return TrafficAnimPaths[PathHandle.PathIndex].Get();
+	case EITwinAnimPathType::Crowd:		return CrowdAnimPaths[PathHandle.PathIndex].Get();
 	}
 }
 
-inline const UITwinAnimPathInfo* AITwinPathAnimTool::FImpl::GetAnimPathInfo(FAnimPathIdentifier PathHandle) const
+inline const UITwinAnimPathHelper* AITwinPathAnimTool::FImpl::GetAnimPathHelper(FAnimPathIdentifier PathHandle) const
 {
 	if (!PathHandle.IsValid(NumPaths(PathHandle.PathType)))
 		return nullptr;
 	switch (PathHandle.PathType)
 	{
 	BE_UNCOVERED_ENUM_ASSERT_AND_FALLTHROUGH(case EITwinAnimPathType::Count:)
-	case EITwinAnimPathType::Object:	return ObjectAnimPathInfos[PathHandle.PathIndex].Get();
-	case EITwinAnimPathType::Traffic:	return TrafficAnimPathInfos[PathHandle.PathIndex].Get();
-	case EITwinAnimPathType::Crowd:		return CrowdAnimPathInfos[PathHandle.PathIndex].Get();
+	case EITwinAnimPathType::Object:	return ObjectAnimPaths[PathHandle.PathIndex].Get();
+	case EITwinAnimPathType::Traffic:	return TrafficAnimPaths[PathHandle.PathIndex].Get();
+	case EITwinAnimPathType::Crowd:		return CrowdAnimPaths[PathHandle.PathIndex].Get();
 	}
 }
 
@@ -898,13 +1000,13 @@ bool AITwinPathAnimTool::FImpl::RemovePath(FAnimPathIdentifier PathHandle, bool 
 
 	const int32 NumPathsOld = NumPaths(PathHandle.PathType);
 	PlayAnimation(PathHandle, false);
-	if (auto PathInfo = GetAnimPathInfo(PathHandle))
+	if (auto PathHelper = GetAnimPathHelper(PathHandle))
 	{
 		// Remove associated objects from the population tool, if any
 		RemovePathObjects(PathHandle);
 		// Remove spline and path animation info
-		if (PathInfo->SplineHelper.IsValid() && ensure(SplineTool.IsValid()))
-			SplineTool->DeleteSpline(PathInfo->SplineHelper.Get());
+		if (PathHelper->SplineHelper.IsValid() && ensure(SplineTool.IsValid()))
+			SplineTool->DeleteSpline(PathHelper->SplineHelper.Get());
 	}
 
 	const bool bRemoved = (NumPaths(PathHandle.PathType) == NumPathsOld - 1);
@@ -927,12 +1029,12 @@ bool AITwinPathAnimTool::FImpl::SelectPath(FAnimPathIdentifier PathHandle, bool 
 		return false;
 
 	bool bHasSetSelection = false;
-	auto PathInfo = GetAnimPathInfo(PathHandle);
-	if (PathInfo && PathInfo->SplineHelper.IsValid())
+	auto PathHelper = GetAnimPathHelper(PathHandle);
+	if (PathHelper && PathHelper->SplineHelper.IsValid())
 	{
-		SelectSpline(PathInfo->SplineHelper.Get(), Owner.GetWorld());
+		SelectSpline(PathHelper->SplineHelper.Get(), Owner.GetWorld());
 
-		bHasSetSelection = PathInfo->SplineHelper->IsSelected();
+		bHasSetSelection = PathHelper->SplineHelper->IsSelected();
 	}
 	if (bEnterIsolationMode && bHasSetSelection)
 	{
@@ -955,7 +1057,7 @@ std::optional<FAnimPathIdentifier> AITwinPathAnimTool::FImpl::GetSelectedPath() 
 	}
 	if (SelectedSpline)
 	{
-		return GetPathIdentifier(SelectedSpline->GetAVizSplineId());
+		return GetPathIdentifierFromSpline(SelectedSpline->GetAVizSplineId());
 	}
 	return std::nullopt;
 }
@@ -983,15 +1085,15 @@ void AITwinPathAnimTool::DeSelectAll(bool bExitIsolationMode)
 
 void AITwinPathAnimTool::FImpl::UpdateAnimatedObjects(FAnimPathIdentifier PathHandle, float DeltaTime)
 {
-	if (auto PathInfo = GetMutableAnimPathInfo(PathHandle))
+	if (auto PathHelper = GetMutableAnimPathHelper(PathHandle))
 	{
-		if (!PathInfo->HasBakedAnimation())
+		if (!PathHelper->HasBakedAnimation())
 		{
-			PathInfo->BakeAnimationIfNeeded();
+			PathHelper->BakeAnimationIfNeeded();
 			return;
 		}
 
-		for (auto Population : PathInfo->Populations)
+		for (auto Population : PathHelper->Populations)
 		{
 			if (!Population.IsValid())
 				continue;
@@ -1002,7 +1104,7 @@ void AITwinPathAnimTool::FImpl::UpdateAnimatedObjects(FAnimPathIdentifier PathHa
 					auto inst = InstancePtr->GetRAutoLock();
 					if (auto animPathExt = inst->GetExtension<InstanceWithAnimPathExt>())
 					{
-						auto transform = animPathExt->GetTransform(DeltaTime, PathInfo->GetRepeatMode(), PathInfo->HasInvDirection());
+						auto transform = animPathExt->GetTransform(DeltaTime, PathHelper->GetRepeatMode(), PathHelper->HasInvDirection());
 						Population->SetInstanceTransformUEOnly(instIdx, transform);
 					}
 				}
@@ -1013,25 +1115,25 @@ void AITwinPathAnimTool::FImpl::UpdateAnimatedObjects(FAnimPathIdentifier PathHa
 
 void AITwinPathAnimTool::FImpl::Tick(float DeltaTime)
 {
-	for (EITwinAnimPathType Type : {
+	for (EITwinAnimPathType PathType : {
 		EITwinAnimPathType::Object,
 		EITwinAnimPathType::Traffic,
 		EITwinAnimPathType::Crowd })
 	{
-		for (int32 Index(0); Index < NumPaths(Type); ++Index)
+		for (int32 Index(0); Index < NumPaths(PathType); ++Index)
 		{
-			UpdateAnimatedObjects(FAnimPathIdentifier(Type, Index), DeltaTime);
+			UpdateAnimatedObjects(FAnimPathIdentifier(PathType, Index), DeltaTime);
 		}
 	}
 }
 
 void AITwinPathAnimTool::FImpl::ZoomOnPath(FAnimPathIdentifier PathHandle)
 {
-	auto PathInfo = GetAnimPathInfo(PathHandle);
-	if (PathInfo && PathInfo->SplineHelper.IsValid())
+	auto PathHelper = GetAnimPathHelper(PathHandle);
+	if (PathHelper && PathHelper->SplineHelper.IsValid())
 	{
 		// use overview camera for zoom
-		Owner.OnOverviewCamera(PathInfo->SplineHelper.Get());
+		Owner.OnOverviewCamera(PathHelper->SplineHelper.Get());
 	}
 }
 
@@ -1045,10 +1147,10 @@ void AITwinPathAnimTool::FImpl::ResetAnimation(FAnimPathIdentifier PathHandle)
 	if (!ensure(PathHandle.IsValid(NumPaths(PathHandle.PathType))))
 		return;
 
-	auto PathInfo = GetAnimPathInfo(PathHandle);
-	if (!PathInfo)
+	auto PathHelper = GetAnimPathHelper(PathHandle);
+	if (!PathHelper)
 		return;
-	for (auto Population : PathInfo->Populations)
+	for (auto Population : PathHelper->Populations)
 	{
 		if (!Population.IsValid())
 			continue;
@@ -1060,7 +1162,7 @@ void AITwinPathAnimTool::FImpl::ResetAnimation(FAnimPathIdentifier PathHandle)
 				auto inst = InstancePtr->GetRAutoLock();
 				if (auto animPathExt = inst->GetExtension<InstanceWithAnimPathExt>())
 				{
-					animPathExt->ResetAnimation(PathInfo->GetDelay());
+					animPathExt->ResetAnimation(PathHelper->GetDelay());
 				}
 			}
 		}
@@ -1077,10 +1179,10 @@ void AITwinPathAnimTool::FImpl::PlayAnimation(FAnimPathIdentifier PathHandle, bo
 	if (!ensure(PathHandle.IsValid(NumPaths(PathHandle.PathType))))
 		return;
 
-	auto PathInfo = GetAnimPathInfo(PathHandle);
-	if (!PathInfo)
+	auto PathHelper = GetAnimPathHelper(PathHandle);
+	if (!PathHelper)
 		return;
-	for (auto Population : PathInfo->Populations)
+	for (auto Population : PathHelper->Populations)
 	{
 		if (!Population.IsValid())
 			continue;
@@ -1108,12 +1210,12 @@ void AITwinPathAnimTool::FImpl::SetAnimPathProxyVisibility(EITwinAnimPathType Pa
 {
 	for (int32 i(0); i < NumPaths(PathType); i++)
 	{
-		auto PathInfo = GetAnimPathInfo(FAnimPathIdentifier(PathType, i));
-		if (PathInfo && PathInfo->SplineHelper.IsValid())
+		auto PathHelper = GetAnimPathHelper(FAnimPathIdentifier(PathType, i));
+		if (PathHelper && PathHelper->SplineHelper.IsValid())
 		{
 			const bool bShowSpline = bVisibleInGame
-				&& (!bIsolationMode || PathInfo->SplineHelper->IsSelected());
-			PathInfo->SplineHelper->SetActorHiddenInGame(!bShowSpline);
+				&& (!bIsolationMode || PathHelper->SplineHelper->IsSelected());
+			PathHelper->SplineHelper->SetActorHiddenInGame(!bShowSpline);
 		}
 	}
 }
@@ -1122,10 +1224,10 @@ bool AITwinPathAnimTool::FImpl::IsAnimPathProxyVisible(EITwinAnimPathType PathTy
 {
 	for (int32 i(0); i < NumPaths(PathType); i++)
 	{
-		auto PathInfo = GetAnimPathInfo(FAnimPathIdentifier(PathType, i));
-		if (PathInfo && PathInfo->SplineHelper.IsValid())
+		auto PathHelper = GetAnimPathHelper(FAnimPathIdentifier(PathType, i));
+		if (PathHelper && PathHelper->SplineHelper.IsValid())
 		{
-			return !PathInfo->SplineHelper->IsHidden();
+			return !PathHelper->SplineHelper->IsHidden();
 		}
 	}
 
@@ -1184,7 +1286,7 @@ bool AITwinPathAnimTool::DoMouseClickPicking(bool& bOutSelectionGizmoNeeded)
 
 	auto const OldSelection = GetSelectedPath();
 
-	if (Impl->ObjectAnimPathInfos.Num() > 0) // TODO: add support for other path types
+	if (Impl->ObjectAnimPaths.Num() > 0) // TODO: add support for other path types
 	{
 		auto SplineTool = Impl->ActivateSplineTool(World, EITwinAnimPathType::Object);
 		if (SplineTool.IsValid())
@@ -1195,9 +1297,9 @@ bool AITwinPathAnimTool::DoMouseClickPicking(bool& bOutSelectionGizmoNeeded)
 			if (OldSelection
 				&& OldSelection->PathType == EITwinAnimPathType::Object
 				&& OldSelection->PathIndex >= 0
-				&& OldSelection->PathIndex < Impl->ObjectAnimPathInfos.Num())
+				&& OldSelection->PathIndex < Impl->ObjectAnimPaths.Num())
 			{
-				SplineTool->SetSelectedSpline(Impl->ObjectAnimPathInfos[OldSelection->PathIndex]->SplineHelper.Get());
+				SplineTool->SetSelectedSpline(Impl->ObjectAnimPaths[OldSelection->PathIndex]->SplineHelper.Get());
 			}
 			bRelevantAction = SplineTool->DoMouseClickAction();
 			if (bRelevantAction)
@@ -1258,23 +1360,23 @@ void AITwinPathAnimTool::OnOverviewCamera(AITwinSplineHelper const* SpecificSpli
 //	switch (PathType)
 //	{
 //	case EITwinAnimPathType::Object:
-//		for (auto PathInfo : ObjectAnimPathInfos)
+//		for (auto PathHelper : ObjectAnimPaths)
 //		{
-//			Fn(BoxInfo);
+//			Fn(PathHelper);
 //		}
 //		break;
 //
 //	case EITwinAnimPathType::Crowd:
-//		for (auto PathInfo : CrowdAnimPathInfos)
+//		for (auto PathHelper : CrowdAnimPaths)
 //		{
-//			Fn(PlaneInfo);
+//			Fn(PathHelper);
 //		}
 //		break;
 //
 //	case EITwinAnimPathType::Traffic:
-//		for (auto PathInfo : TrafficAnimPathInfos)
+//		for (auto PathHelper : TrafficAnimPaths)
 //		{
-//			Fn(PathInfo);
+//			Fn(PathHelper);
 //		}
 //		break;
 //
@@ -1282,10 +1384,39 @@ void AITwinPathAnimTool::OnOverviewCamera(AITwinSplineHelper const* SpecificSpli
 //	}
 //}
 
+FAnimPathIdentifier AITwinPathAnimTool::FImpl::GetPathIdentifierFromSpline(AdvViz::SDK::RefID const& RefID) const
+{
+	int32 Index = ObjectAnimPaths.IndexOfByPredicate(
+		[&RefID](TStrongObjectPtr<UITwinObjectAnimPathHelper> const InItem)
+		{
+			return InItem->SplineHelper.IsValid() && InItem->SplineHelper->GetAVizSplineId() == RefID;
+		});
+	if (Index != INDEX_NONE)
+		return FAnimPathIdentifier(EITwinAnimPathType::Object, Index);
+
+	Index = TrafficAnimPaths.IndexOfByPredicate(
+		[&RefID](TStrongObjectPtr<UITwinTrafficAnimPathHelper> const InItem)
+		{
+			return InItem->SplineHelper.IsValid() && InItem->SplineHelper->GetAVizSplineId() == RefID;
+		});
+	if (Index != INDEX_NONE)
+		return FAnimPathIdentifier(EITwinAnimPathType::Traffic, Index);
+
+	Index = CrowdAnimPaths.IndexOfByPredicate(
+		[&RefID](TStrongObjectPtr<UITwinCrowdAnimPathHelper> const InItem)
+		{
+			return InItem->SplineHelper.IsValid() && InItem->SplineHelper->GetAVizSplineId() == RefID;
+		});
+	if (Index != INDEX_NONE)
+		return FAnimPathIdentifier(EITwinAnimPathType::Crowd, Index);
+
+	return FAnimPathIdentifier(EITwinAnimPathType::Count, INDEX_NONE);
+}
+
 AdvViz::SDK::RefID AITwinPathAnimTool::FImpl::GetPathRefId(FAnimPathIdentifier PathHandle) const
 {
-	auto PathInfo = GetAnimPathInfo(PathHandle);
-	return PathInfo && PathInfo->SplineHelper.IsValid() ? PathInfo->SplineHelper->GetAVizSplineId() : AdvViz::SDK::RefID::Invalid();
+	auto PathHelper = GetAnimPathHelper(PathHandle);
+	return PathHelper ? PathHelper->GetPathRefID() : AdvViz::SDK::RefID::Invalid();
 }
 
 AdvViz::SDK::RefID AITwinPathAnimTool::GetPathRefId(FAnimPathIdentifier PathHandle) const
@@ -1295,29 +1426,26 @@ AdvViz::SDK::RefID AITwinPathAnimTool::GetPathRefId(FAnimPathIdentifier PathHand
 
 FAnimPathIdentifier AITwinPathAnimTool::FImpl::GetPathIdentifier(AdvViz::SDK::RefID const& RefID) const
 {
-	int32 Index = ObjectAnimPathInfos.IndexOfByPredicate(
-		[&RefID](TStrongObjectPtr<UITwinObjectAnimPathInfo> const InItem)
+	int32 Index = ObjectAnimPaths.IndexOfByPredicate(
+		[&RefID](TStrongObjectPtr<UITwinObjectAnimPathHelper> const InItem)
 		{
-			return InItem->SplineHelper.IsValid()
-				&& InItem->SplineHelper->GetAVizSplineId() == RefID;
+			return InItem->GetPathRefID() == RefID;
 		});
 	if (Index != INDEX_NONE)
 		return FAnimPathIdentifier(EITwinAnimPathType::Object, Index);
 
-	Index = TrafficAnimPathInfos.IndexOfByPredicate(
-		[&RefID](TStrongObjectPtr<UITwinTrafficAnimPathInfo> const InItem)
+	Index = TrafficAnimPaths.IndexOfByPredicate(
+		[&RefID](TStrongObjectPtr<UITwinTrafficAnimPathHelper> const InItem)
 		{
-			return InItem->SplineHelper.IsValid()
-				&& InItem->SplineHelper->GetAVizSplineId() == RefID;
+			return InItem->GetPathRefID() == RefID;
 		});
 	if (Index != INDEX_NONE)
 		return FAnimPathIdentifier(EITwinAnimPathType::Traffic, Index);
 
-	Index = CrowdAnimPathInfos.IndexOfByPredicate(
-		[&RefID](TStrongObjectPtr<UITwinCrowdAnimPathInfo> const InItem)
+	Index = CrowdAnimPaths.IndexOfByPredicate(
+		[&RefID](TStrongObjectPtr<UITwinCrowdAnimPathHelper> const InItem)
 		{
-			return InItem->SplineHelper.IsValid()
-				&& InItem->SplineHelper->GetAVizSplineId() == RefID;
+			return InItem->GetPathRefID() == RefID;
 		});
 	if (Index != INDEX_NONE)
 		return FAnimPathIdentifier(EITwinAnimPathType::Crowd, Index);
@@ -1356,5 +1484,3 @@ void AITwinPathAnimTool::Deactivate()
 
 	Impl->HideAllAnimPathProxies();
 }
-
-#pragma optimize("", on)

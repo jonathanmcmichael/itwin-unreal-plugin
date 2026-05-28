@@ -37,10 +37,10 @@
 
 namespace ITwin
 {
-	bool FindHeight(UWorld* World, const FVector& InPos, float& OutHeight, FVector& OutNormal)
+	bool FindHeight(UWorld* World, const FVector& InPos, float& OutHeight, FVector& OutNormal, float maxHeight = 1000)
 	{
 		// Raycast from above to below the point
-		FVector Start = InPos + FVector(0, 0, 1000); // start high above
+		FVector Start = InPos + FVector(0, 0, maxHeight); // start high above
 		FVector End = InPos - FVector(0, 0, 10000); // cast far below
 
 		FHitResult HitResult;
@@ -306,7 +306,7 @@ class AITwinAnimPathManager::FImpl
 public:
 	AITwinAnimPathManager& Owner;
 	//std::vector<std::shared_ptr<ITwin::AnimPath>> AnimPaths; // old
-	AdvViz::SDK::IPathAnimatorPtr PathAnimatorPtr;
+	AdvViz::SDK::IPathAnimManagerPtr PathAnimManagerPtr;
 	std::unordered_map<AdvViz::SDK::RefID, std::shared_ptr<BakedKeyFrames>> TransformCacheMap; // spline Ref ID to FTransform (add xmY offsets for traffic path)
 	float fDeltaTime = 1/60.f;
 
@@ -323,7 +323,7 @@ public:
 				if (auto animPathExt = inst->GetExtension<InstanceWithSplinePathExt>())
 				{
 					return animPathExt->pathInfo_;
-					//return PathAnimatorPtr->GetAnimationPathInfo(animPathExt->pathInfo_->GetId());
+					//return PathAnimManagerPtr->GetAnimationPathInfo(animPathExt->pathInfo_->GetId());
 				}
 			}
 		}
@@ -340,7 +340,7 @@ public:
 				if (auto animPathExt = inst->GetExtension<InstanceWithSplinePathExt>())
 				{
 					auto pathInfo = animPathExt->pathInfo_->GetRAutoLock();
-					PathAnimatorPtr->RemoveAnimationPathInfo(pathInfo->GetId());
+					PathAnimManagerPtr->RemoveAnimationPathInfo(pathInfo->GetId());
 					inst->RemoveAnimPathId();
 				}
 			}
@@ -360,7 +360,7 @@ public:
 				}
 				auto spline = AnimSpline->GetAVizSpline()->GetRAutoLock();
 				auto inst = InstancePtr->GetAutoLock();
-				auto NewPathInfoPtr = PathAnimatorPtr->AddAnimationPathInfo();
+				auto NewPathInfoPtr = PathAnimManagerPtr->AddAnimationPathInfo();
 				auto NewPathInfo = NewPathInfoPtr->GetAutoLock();
 				NewPathInfo->SetSplineId(spline->GetId());
 				NewPathInfo->SetIsEnabled(true);
@@ -412,10 +412,10 @@ public:
 	{
 		std::set<AdvViz::SDK::RefID> AnimPathIds;
 		std::set<AdvViz::SDK::RefID> SplineIds;
-		PathAnimatorPtr->GetAnimationPathIds(AnimPathIds);
+		PathAnimManagerPtr->GetAnimationPathIds(AnimPathIds);
 		for (auto id : AnimPathIds)
 		{
-			if (auto AnimPathInfoPtr = PathAnimatorPtr->GetAnimationPathInfo(id))
+			if (auto AnimPathInfoPtr = PathAnimManagerPtr->GetAnimationPathInfo(id))
 			{
 				auto AnimPathInfo = AnimPathInfoPtr->GetRAutoLock();
 				if (auto AnimPathExt = AnimPathInfo->GetExtension<InstanceWithSplinePathExt>())
@@ -444,10 +444,10 @@ public:
 	void UpdateAll(float DeltaTime)
 	{
 		std::set<AdvViz::SDK::RefID> AnimPathIds;
-		PathAnimatorPtr->GetAnimationPathIds(AnimPathIds);
+		PathAnimManagerPtr->GetAnimationPathIds(AnimPathIds);
 		for (auto id : AnimPathIds)
 		{
-			if (auto AnimPathInfoPtr = PathAnimatorPtr->GetAnimationPathInfo(id))
+			if (auto AnimPathInfoPtr = PathAnimManagerPtr->GetAnimationPathInfo(id))
 			{
 				auto AnimPathInfo = AnimPathInfoPtr->GetRAutoLock();
 				if (auto animPathExt = AnimPathInfo->GetExtension<InstanceWithSplinePathExt>())
@@ -556,9 +556,9 @@ void AITwinAnimPathManager::PlayAnimation(bool bPLay)
 	SetActorTickEnabled(bPLay);
 }
 
-void AITwinAnimPathManager::SetPathAnimator(const AdvViz::SDK::IPathAnimatorPtr& InPathAnimator)
+void AITwinAnimPathManager::SetPathAnimManager(const AdvViz::SDK::IPathAnimManagerPtr& InPathAnimManager)
 {
-	Impl->PathAnimatorPtr = InPathAnimator;
+	Impl->PathAnimManagerPtr = InPathAnimManager;
 }
 
 void AITwinAnimPathManager::SetSpeed(AITwinPopulation* Population, int32 InstanceIdx, float InSpeed)

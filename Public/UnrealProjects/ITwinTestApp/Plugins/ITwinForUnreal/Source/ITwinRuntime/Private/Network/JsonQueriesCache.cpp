@@ -345,7 +345,11 @@ bool FJsonQueriesCache::Initialize(FString CacheFolder, EITwinEnvironment const 
 	Impl->bIsUnitTesting = bUnitTesting;
 	FPaths::NormalizeDirectoryName(CacheFolder);
 	FPaths::RemoveDuplicateSlashes(CacheFolder);
-	if (!FPaths::CollapseRelativeDirectories(CacheFolder))
+	// Absolute paths are required for safety against multiple cache initializations on the same folder through
+	// different relative paths, but we use IPluginManager::Get().FindPlugin(TEXT("ITwinForUnreal"))->GetBaseDir()
+	// for the custom path passed by unit tests, and for some reason "now" it is relative :/ Just skip the test
+	// and be careful with the cache folders used by unit tests (which can run concurrently!)
+	if (!Impl->bIsUnitTesting && !FPaths::CollapseRelativeDirectories(CacheFolder))
 	{
 		BE_LOGE("ITwinQuery", "Cache folder path should be absolute: " << TCHAR_TO_UTF8(*CacheFolder));
 		return false;

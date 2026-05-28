@@ -864,10 +864,24 @@ bool AITwinDigitalTwinManager::HasLoadingPending(bool bLogState /*= false*/) con
 		if (!PendingLoadIds.IsEmpty())
 		{
 			BE_LOGI("ITwinAdvViz", "iTwin components still pending: " << PendingLoadIds.Num());
+			for(const auto& PendingId : PendingLoadIds)
+			{
+				BE_LOGI("ITwinAdvViz", " - " << TCHAR_TO_UTF8(*PendingId.Key));
+			}
 		}
 		if (LoadedObjects.Num() != CompletedLoadIds.Num())
 		{
 			BE_LOGI("ITwinAdvViz", "Models loaded: " << CompletedLoadIds.Num() << "/" << LoadedObjects.Num());
+			BE_LOGI("ITwinAdvViz", "Loaded :");
+			for (const auto& PendingId : LoadedObjects)
+			{
+				BE_LOGI("ITwinAdvViz", " - " << TCHAR_TO_UTF8(*PendingId.Key));
+			}
+			BE_LOGI("ITwinAdvViz", "Completed :");
+			for (const auto& PendingId : CompletedLoadIds)
+			{
+				BE_LOGI("ITwinAdvViz", " - " << TCHAR_TO_UTF8(*PendingId));
+			}
 		}
 	}
 

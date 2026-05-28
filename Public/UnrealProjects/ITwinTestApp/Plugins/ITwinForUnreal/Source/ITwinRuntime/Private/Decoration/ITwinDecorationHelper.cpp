@@ -38,6 +38,7 @@
 #include <Population/ITwinAnimPathManager.h>
 #include <Spline/ITwinSplineHelper.h>
 #include <Spline/ITwinSplineTool.h>
+#include <PathAnimation/ITwinPathAnimTool.h>
 
 #include <Misc/MessageDialog.h>
 #include <Materials/MaterialInstanceDynamic.h>
@@ -315,7 +316,15 @@ namespace ITwin
 			dstPos.X = ColRow3x4(srcMat, 0, 3);
 			dstPos.Y = ColRow3x4(srcMat, 1, 3);
 			dstPos.Z = ColRow3x4(srcMat, 2, 3);
-			s.Offset->SetFromMatrix(dstMat);
+			auto scale = dstMat.ExtractScaling(0);
+			if (scale.X != 0 && scale.Y != 0 && scale.Z != 0)
+			{
+				s.Offset->SetFromMatrix(dstMat);
+			}
+			else
+			{
+				BE_LOGE("ITwinDecoration","Invalid transformation loaded, ignoring rotation");
+			}
 			s.Offset->SetTranslation(dstPos);
 		}
 		return s;
@@ -406,6 +415,7 @@ public:
 
 	bool IsPopulationEnabled() const { return bPopulationEnabled; }
 	bool IsMaterialEditionEnabled() const { return bMaterialEditionEnabled; }
+	bool IsVREnabled() const;
 
 	bool IsLoadingScene() const { return RemainingLoadingSceneTasks > 0; }
 	bool IsSavingScene() const { return bIsSavingScene; }
@@ -1250,8 +1260,8 @@ void AITwinDecorationHelper::FImpl::CreateOrRefreshPopulationInGame(
 		}
 	}
 
-	auto& pathAnimator(DecorationIO->pathAnimator);
-	if (pathAnimator)
+	auto& pathAnimManager(DecorationIO->pathAnimManager);
+	if (pathAnimManager)
 	{
 		const AdvViz::SDK::SharedInstVect& instances =
 			instancesManager->GetInstancesByObjectRef(ITwin::ConvertToStdString(assetPath), groupId);
@@ -1261,7 +1271,7 @@ void AITwinDecorationHelper::FImpl::CreateOrRefreshPopulationInGame(
 			auto inst = instPtr->GetAutoLock();
 			if (inst->GetAnimPathId())
 			{
-				auto AnimPathInfoPtr = pathAnimator->GetAnimationPathInfo(inst->GetAnimPathId().value());
+				auto AnimPathInfoPtr = pathAnimManager->GetAnimationPathInfo(inst->GetAnimPathId().value());
 				if (!AnimPathInfoPtr)
 					continue;
 				auto AnimPathInfo = AnimPathInfoPtr->GetAutoLock();
@@ -1390,6 +1400,31 @@ void AITwinDecorationHelper::FImpl::LoadAnnotationsInGame(bool bHasLoadedAnnoati
 
 void AITwinDecorationHelper::FImpl::LoadPathAnimationsInGame(bool bHasLoadePathAnimations)
 {
+	checkSlow(IsInGameThread());
+	auto& pathAnimManager(DecorationIO->pathAnimManager);
+	if (!pathAnimManager)
+		return;
+
+	if (!(GEngine && GEngine->GameViewport))
+	{
+		BE_LOGW("ITwinDecoration", "Path animations cannot be loaded in Editor");
+		return;
+	}
+
+	const UWorld* World = Owner.GetWorld();
+
+	AITwinPathAnimTool* pathAnimTool =
+		(AITwinPathAnimTool*)UGameplayStatics::GetActorOfClass(World, AITwinPathAnimTool::StaticClass());
+
+	if (!pathAnimTool)
+	{
+		BE_LOGW("ITwinDecoration", "Path animations can't be loaded because there is no PathAnimTool actor.");
+		return;
+	}
+
+	pathAnimTool->LoadAnimationPaths();
+
+	Owner.OnPathAnimationsLoaded.Broadcast(true);
 }
 
 
@@ -2091,6 +2126,11 @@ void AITwinDecorationHelper::FImpl::PreSaveCameras()
 	}
 }
 
+bool AITwinDecorationHelper::FImpl::IsVREnabled() const
+{
+	return GEngine && GEngine->XRSystem.IsValid();
+}
+
 void AITwinDecorationHelper::FImpl::LoadCameras()
 {
 	bool homeC = false;
@@ -2111,16 +2151,20 @@ void AITwinDecorationHelper::FImpl::LoadCameras()
 			auto si = ITwin::LinkToSceneInfo(*link);
 			if (si.Offset.has_value())
 			{
-				ScreenUtils::SetCurrentView(Owner.GetWorld(),*si.Offset);
+				ScreenUtils::SetCurrentView(Owner.GetWorld(),*si.Offset, IsVREnabled());
 				mainC = true;
 			}
 		}
 	}
 	if (homeC && !mainC)
 	{
-		ScreenUtils::SetCurrentView(Owner.GetWorld(), Owner.GetHomeCamera());
+		ScreenUtils::SetCurrentView(Owner.GetWorld(), Owner.GetHomeCamera(), IsVREnabled());
 	}
+}
 
+bool AITwinDecorationHelper::IsVREnabled()
+{
+	return Impl->IsVREnabled();
 }
 
 void AITwinDecorationHelper::DeleteAllCustomMaterials()
@@ -2364,10 +2408,15 @@ void AITwinDecorationHelper::ConnectSplineToolToSplinesManager(AITwinSplineTool*
 	splineTool->SetSplinesManager(Impl->DecorationIO->GetSplinesManager());
 }
 
-void AITwinDecorationHelper::ConnectPathAnimator(AITwinAnimPathManager* manager)
+void AITwinDecorationHelper::ConnectPathAnimToolToPathManager(AITwinPathAnimTool* pathAnimTool)
 {
-	manager->SetPathAnimator(Impl->DecorationIO->GetPathAnimator());
+	pathAnimTool->SetPathAnimManager(Impl->DecorationIO->GetPathAnimManager());
 }
+
+//void AITwinDecorationHelper::ConnectPathAnimManager(AITwinAnimPathManager* manager)
+//{
+//	manager->SetPathAnimManager(Impl->DecorationIO->GetPathAnimManager());
+//}
 
 void AITwinDecorationHelper::SetDecoGeoreference(const FVector& latLongHeight)
 {

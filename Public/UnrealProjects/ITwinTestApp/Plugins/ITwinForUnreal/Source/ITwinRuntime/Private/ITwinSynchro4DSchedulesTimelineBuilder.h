@@ -24,6 +24,7 @@ struct FITwinCoordConversions;
 class FITwinSchedule;
 class FITwinScheduleStats;
 using FSchedLock = std::lock_guard<std::recursive_mutex>;
+class TSceneMappingPtr;
 
 class FITwinScheduleTimelineBuilder
 {
@@ -34,7 +35,7 @@ public:
 	FITwinScheduleTimelineBuilder& operator=(FITwinScheduleTimelineBuilder&& Other);
 	~FITwinScheduleTimelineBuilder();
 	void FinalizeTimeline(FITwinSchedule& Schedule);
-	static FITwinScheduleTimelineBuilder CreateForUnitTesting(FITwinCoordConversions const&);
+	static FITwinScheduleTimelineBuilder CreateForUnitTesting(TSceneMappingPtr&, FITwinCoordConversions const&);
 	void Initialize(FOnElementsTimelineModified&& InOnElementsTimelineModified);
 	/// We need to uninitialize manually before the destructor is called: this is because the data we access
 	/// belongs to the iModel SceneMapping and, counter-intuitively, the iModel is destroyed _before_ its

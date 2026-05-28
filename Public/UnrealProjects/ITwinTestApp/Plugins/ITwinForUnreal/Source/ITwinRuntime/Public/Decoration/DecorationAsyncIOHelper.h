@@ -87,7 +87,7 @@ public:
 	bool AsyncSave(std::function<void(bool)>&& OnDataSavedFunc = {});
 
 	std::shared_ptr<AdvViz::SDK::ISplinesManager> const& GetSplinesManager();
-	std::shared_ptr<AdvViz::SDK::IPathAnimator> const& GetPathAnimator();
+	std::shared_ptr<AdvViz::SDK::IPathAnimManager> const& GetPathAnimManager();
 
 	using ScenePtrVector = AdvViz::SDK::ScenePtrVector;
 	AdvViz::expected<ScenePtrVector, AdvViz::SDK::HttpError> GetITwinScenes(const FString& itwinid);
@@ -140,12 +140,11 @@ private:
 	std::shared_ptr<AdvViz::SDK::IScenePersistence> scene;
 	std::shared_ptr<AdvViz::SDK::ISplinesManager> splinesManager;
 	std::shared_ptr<AdvViz::SDK::IAnnotationsManager> annotationsManager;
-	std::shared_ptr<AdvViz::SDK::IPathAnimator> pathAnimator;
+	std::shared_ptr<AdvViz::SDK::IPathAnimManager> pathAnimManager;
 
 	std::shared_ptr<std::atomic_bool> shouldStop = std::make_shared<std::atomic_bool>(false);
 	std::shared_ptr<std::atomic_bool> isThisValid = std::make_shared<std::atomic_bool>(true);
 	bool decorationIsLinked = false;
-	bool bUseDecorationService = false;
 	typedef AdvViz::SDK::Tools::TLockableRWData<std::map<ModelIdentifier, LinkSharedPtr>> TLinksMap;
 	TLinksMap links;
 

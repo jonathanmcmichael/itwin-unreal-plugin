@@ -35,7 +35,7 @@ enum class EInterpolation : int32_t
 {
 	Step, //!< Use value of the "previous" entry - TODO_GCO: rename 'Previous'? (see 'Next')
 	Linear, //!< Linear interpolation between previous and next entries.
-	//! Use value of the "next" entry: useful in theory (and in CreateTestingTimeline), because the Step
+	//! Use value of the "next" entry: useful in theory (and formerly in CreateTestingTimeline), because the Step
 	//! interpolation means only the "previous" keyframe is considered. The way the schedule timeline
 	//! is built around tasks, there is an ambiguity as to what happens in case of successive tasks. At the
 	//! moment, StartAppearance instructions would be arbitrarily overridden by a previous task's
@@ -120,6 +120,8 @@ struct ObjectTimelineMetadata
 template<class _Metadata>
 class ObjectTimeline : public _Metadata::Base
 {
+	mutable bool bHumanReadableTimes = true;
+	mutable int NumberOfDecimals = -1/*unlimited*/;
 public:
 	virtual ~ObjectTimeline();
 
@@ -134,6 +136,9 @@ public:
 	[[nodiscard]] FDateRange GetDateRange() const;
 
 	virtual void ToJson(TSharedRef<FJsonObject>& JsonObj) const;
+	bool FromJson(TSharedPtr<FJsonObject> const& JsonObj);
+	void SetJsonPrintingWithHumanReadableTimes(bool NewVal) const { bHumanReadableTimes = NewVal; }
+	void SetJsonPrintingNumberOfDecimals(int NewVal) const { NumberOfDecimals = NewVal; }
 };
 
 //! A MainTimelineBase is a group of ObjectTimeline's.
@@ -153,6 +158,8 @@ public:
 	void IncludeTimeRange(const _ObjectTimeline& Object);
 	void IncludeTimeRange(const FTimeRangeInSeconds& CustomRange);
 	ObjectTimelinePtr const& AddTimeline(const ObjectTimelinePtr& object);
+	void SetJsonPrintingWithHumanReadableTimes(bool bHumanReadableTimes) const;
+	void SetJsonPrintingNumberOfDecimals(int NumberOfDecimals) const;
 
 protected:
 	TimelineObjectContainer Container;
@@ -164,3 +171,4 @@ private:
 } // namespace ITwin::Timeline
 
 #include "TimelineBase.inl"
+#include "TimelineBaseJson.inl"

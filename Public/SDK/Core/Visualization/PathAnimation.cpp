@@ -32,7 +32,8 @@ namespace AdvViz::SDK
 	{
 	public:
 		SPathAnimationInfo serverSideData_;
-		RefID splineId_; // identifies the associated spline (and may hold id defined by the server)
+		RefID splineId_ = RefID::Invalid(); // identifies the associated spline (and may hold id defined by the server)
+		//RefID instGroupId_; // identifies the associated population group (and may hold id defined by the server)
 
 		void SetId(const RefID& id) override
 		{
@@ -69,8 +70,26 @@ namespace AdvViz::SDK
 	{
 		GetImpl().splineId_ = id;
 		if (id.HasDBIdentifier())
+		{
 			GetImpl().serverSideData_.splineId = id.GetDBIdentifier();
+			GetImpl().InvalidateDB();
+		}
 	}
+
+	//const RefID& AnimationPathInfo::GetInstGroupId() const
+	//{
+	//	return GetImpl().instGroupId_;
+	//}
+
+	//void AnimationPathInfo::SetInstGroupId(const RefID& id)
+	//{
+	//	GetImpl().instGroupId_ = id;
+	//	if (id.HasDBIdentifier())
+	//	{
+	//		GetImpl().serverSideData_.instGroupId = id.GetDBIdentifier();
+	//		GetImpl().InvalidateDB();
+	//	}
+	//}
 
 	void AnimationPathInfo::SetSpeed(double v)
 	{
@@ -80,7 +99,7 @@ namespace AdvViz::SDK
 
 	double AnimationPathInfo::GetSpeed() const
 	{
-		return GetImpl().serverSideData_.speed.value_or(0.0);
+		return GetImpl().serverSideData_.speed.value_or(700.0); // in m/s
 	}
 
 	void AnimationPathInfo::SetOffsetX(double v)
@@ -126,6 +145,7 @@ namespace AdvViz::SDK
 	{
 		return GetImpl().serverSideData_.hasLoop.value_or(false);
 	}
+
 	void AnimationPathInfo::SetIsEnabled(bool b)
 	{
 		GetImpl().serverSideData_.isEnabled = b;
@@ -134,7 +154,119 @@ namespace AdvViz::SDK
 
 	bool AnimationPathInfo::IsEnabled() const
 	{
-		return GetImpl().serverSideData_.isEnabled.value_or(false);
+		return GetImpl().serverSideData_.isEnabled.value_or(true);
+	}
+
+	void AnimationPathInfo::SetInvDir(bool b)
+	{
+		GetImpl().serverSideData_.invDir = b;
+		GetImpl().InvalidateDB();
+	}
+
+	bool AnimationPathInfo::HasInvDir() const
+	{
+		return GetImpl().serverSideData_.invDir.value_or(false);
+	}
+
+	void AnimationPathInfo::SetRepeatMode(int b)
+	{
+		GetImpl().serverSideData_.repeatMode = b;
+		GetImpl().InvalidateDB();
+	}
+
+	int AnimationPathInfo::GetRepeatMode() const
+	{
+		return GetImpl().serverSideData_.repeatMode.value_or(1);
+	}
+
+	void AnimationPathInfo::SetOneWay(bool b)
+	{
+		GetImpl().serverSideData_.oneWay = b;
+		GetImpl().InvalidateDB();
+	}
+
+	bool AnimationPathInfo::IsOneWay() const
+	{
+		return GetImpl().serverSideData_.oneWay.value_or(true);
+	}
+
+	void AnimationPathInfo::SetLaneCount(int b)
+	{
+		GetImpl().serverSideData_.laneCount = b;
+		GetImpl().InvalidateDB();
+	}
+
+	int AnimationPathInfo::GetLaneCount() const
+	{
+		return GetImpl().serverSideData_.laneCount.value_or(1);
+	}
+
+	void AnimationPathInfo::SetLaneWidth(double v)
+	{
+		GetImpl().serverSideData_.laneWidth = v;
+		GetImpl().InvalidateDB();
+	}
+
+	double AnimationPathInfo::GetLaneWidth() const
+	{
+		return GetImpl().serverSideData_.laneWidth.value_or(300.0);
+	}
+
+	void AnimationPathInfo::SetDensity(double v)
+	{
+		GetImpl().serverSideData_.density = v;
+		GetImpl().InvalidateDB();
+	}
+
+	double AnimationPathInfo::GetDensity() const
+	{
+		return GetImpl().serverSideData_.density.value_or(0.3);
+	}
+
+	void AnimationPathInfo::SetSepWidth(double v)
+	{
+		GetImpl().serverSideData_.sepWidth = v;
+		GetImpl().InvalidateDB();
+	}
+
+	double AnimationPathInfo::GetSepWidth() const
+	{
+		return GetImpl().serverSideData_.sepWidth.value_or(200.0);
+	}
+
+	void AnimationPathInfo::SetMinSpeed(double v)
+	{
+		GetImpl().serverSideData_.minSpeed = v;
+		GetImpl().InvalidateDB();
+	}
+
+	double AnimationPathInfo::GetMinSpeed() const
+	{
+		return GetImpl().serverSideData_.minSpeed.value_or(1389.0);
+	}
+
+	void AnimationPathInfo::SetMaxSpeed(double v)
+	{
+		GetImpl().serverSideData_.maxSpeed = v;
+		GetImpl().InvalidateDB();
+	}
+
+	double AnimationPathInfo::GetMaxSpeed() const
+	{
+		return GetImpl().serverSideData_.maxSpeed.value_or(1389.0);
+	}
+
+	void AnimationPathInfo::SetObjects(const std::vector<std::string> &objs)
+	{
+		GetImpl().serverSideData_.objects = std::move(objs);
+		GetImpl().InvalidateDB();
+	}
+
+	void AnimationPathInfo::GetObjects(std::vector<std::string>& objs) const
+	{
+		objs.clear();
+		if (GetImpl().serverSideData_.objects.has_value())
+			objs = std::move(GetImpl().serverSideData_.objects.value());
 	}
 
 	ESaveStatus AnimationPathInfo::GetSaveStatus() const
@@ -167,7 +299,7 @@ namespace AdvViz::SDK
 	}
 
 
-	class PathAnimator::Impl : public std::enable_shared_from_this<PathAnimator::Impl>
+	class PathAnimManager::Impl : public std::enable_shared_from_this<PathAnimManager::Impl>
 	{
 	public:
 		std::shared_ptr<Http> http_;
@@ -214,6 +346,19 @@ namespace AdvViz::SDK
 			}
 			return IAnimationPathInfoPtr();
 		}
+	
+		IAnimationPathInfoPtr FindAnimationPathInfoBySplineRefId(const RefID& id) const
+		{
+			auto thdata = thdata_.GetRAutoLock();
+			auto infosMap_ = thdata->infosMap_;
+			for (const auto& [_, animpathinfoPtr] : infosMap_)
+			{
+				auto animpathinfo = animpathinfoPtr->GetRAutoLock();
+				if (animpathinfo->GetSplineId() == id)
+					return animpathinfoPtr;
+			}
+			return IAnimationPathInfoPtr();
+		}
 
 		IAnimationPathInfoPtr AddAnimationPathInfo()
 		{
@@ -256,7 +401,7 @@ namespace AdvViz::SDK
 		void AsyncSaveDataOnServer(const std::string& decorationId, std::function<void(bool)>&& onDataSavedFunc);
 	};
 
-	void PathAnimator::Impl::LoadDataFromServer(const std::string& decorationId)
+	void PathAnimManager::Impl::LoadDataFromServer(const std::string& decorationId)
 	{
 		auto ret = HttpGetWithLink<IAnimationPathInfo::SPathAnimationInfo>(GetHttp(),
 			"decorations/" + decorationId + "/animationpaths",
@@ -283,9 +428,18 @@ namespace AdvViz::SDK
 			pathInfo->SetDBIdentifier(row.id.value());
 			// init spline RefId
 			auto splinesManager(splinesManager_.lock());
-			auto splinePtr = splinesManager->GetSplineByDBId(row.splineId.value());
-			auto spline = splinePtr->GetRAutoLock();
-			pathInfo->SetSplineId(spline->GetId());
+			if (auto splinePtr = splinesManager->GetSplineByDBId(row.splineId.value()))
+			{
+				auto spline = splinePtr->GetRAutoLock();
+				pathInfo->SetSplineId(spline->GetId());
+			}
+			// init population group RefId
+			//auto instanceManager(instanceManager_.lock());
+			//if (auto instGroupPtr = instanceManager->GetInstancesGroupBySplineID(pathInfo->GetSplineId()))
+			//{
+			//	auto instGroup = instGroupPtr->GetRAutoLock();
+			//	pathInfo->SetInstGroupId(instGroup->GetId());
+			//}
 			pathInfo->SetShouldSave(false);
 			return {};
 		});
@@ -296,7 +450,7 @@ namespace AdvViz::SDK
 		}
 	}
 
-	void PathAnimator::Impl::AsyncLoadDataFromServer(const std::string& decorationId,
+	void PathAnimManager::Impl::AsyncLoadDataFromServer(const std::string& decorationId,
 		const std::function<void(IAnimationPathInfoPtr&)>& onPathLoaded,
 		const std::function<void(expected<void, std::string> const&)>& onComplete)
 	{
@@ -331,9 +485,12 @@ namespace AdvViz::SDK
 			if (!splinesManager)
 				return make_unexpected("Splines manager is not set.");
 			auto splinePtr = splinesManager->GetSplineByDBId(row.splineId.value());
-			auto spline = splinePtr->GetRAutoLock();
-			pathInfo->SetSplineId(spline->GetId());
-			pathInfo->SetShouldSave(false);
+			if(splinePtr)
+			{ 
+				auto spline = splinePtr->GetRAutoLock();
+				pathInfo->SetSplineId(spline->GetId());
+				pathInfo->SetShouldSave(false);
+			}
 			if (onPathLoaded)
 				onPathLoaded(pathInfoPtr);
 			return {};
@@ -342,7 +499,7 @@ namespace AdvViz::SDK
 		);
 	}
 
-	void PathAnimator::Impl::AsyncSaveDataOnServer(const std::string& decorationId, std::function<void(bool)>&& onDataSavedFunc)
+	void PathAnimManager::Impl::AsyncSaveDataOnServer(const std::string& decorationId, std::function<void(bool)>&& onDataSavedFunc)
 	{
 		std::shared_ptr<AsyncRequestGroupCallback> callbackPtr =
 			std::make_shared<AsyncRequestGroupCallback>(
@@ -502,82 +659,87 @@ namespace AdvViz::SDK
 	}
 
 
-	PathAnimator::PathAnimator() : impl_(new Impl)
+	PathAnimManager::PathAnimManager() : impl_(new Impl)
 	{
 	}
 
-	void PathAnimator::SetInstanceManager(const std::shared_ptr<IInstancesManager>& instanceManager)
+	void PathAnimManager::SetInstanceManager(const std::shared_ptr<IInstancesManager>& instanceManager)
 	{
 		GetImpl().instanceManager_ = instanceManager;
 	}
 
-	void PathAnimator::SetSplinesManager(const std::shared_ptr<ISplinesManager>& splinesManager)
+	void PathAnimManager::SetSplinesManager(const std::shared_ptr<ISplinesManager>& splinesManager)
 	{
 		GetImpl().splinesManager_ = splinesManager;
 	}
 
-	size_t PathAnimator::GetNumberOfPaths() const
+	size_t PathAnimManager::GetNumberOfPaths() const
 	{
 		auto thdata = GetImpl().thdata_.GetRAutoLock();
 		return thdata->infosMap_.size();
 	}
 
-	IAnimationPathInfoPtr PathAnimator::FindAnimationPathInfoByDBId(const std::string& id) const
+	IAnimationPathInfoPtr PathAnimManager::FindAnimationPathInfoByDBId(const std::string& id) const
 	{
 		return GetImpl().FindAnimationPathInfoByDBId(id);
 	}
 
-	IAnimationPathInfoPtr PathAnimator::AddAnimationPathInfo()
+	IAnimationPathInfoPtr PathAnimManager::FindAnimationPathInfoBySplineRefId(const RefID& id) const
+	{
+		return GetImpl().FindAnimationPathInfoBySplineRefId(id);
+	}
+
+	IAnimationPathInfoPtr PathAnimManager::AddAnimationPathInfo()
 	{
 		return GetImpl().AddAnimationPathInfo();
 	}
 
-	void PathAnimator::RemoveAnimationPathInfo(const RefID& id)
+	void PathAnimManager::RemoveAnimationPathInfo(const RefID& id)
 	{
 		GetImpl().RemoveAnimationPathInfo(id);
 	}
 
-	IAnimationPathInfoPtr PathAnimator::GetAnimationPathInfo(const RefID& id) const
+	IAnimationPathInfoPtr PathAnimManager::GetAnimationPathInfo(const RefID& id) const
 	{
 		return GetImpl().GetAnimationPathInfo(id);
 	}
 
-	void PathAnimator::GetAnimationPathIds(std::set<AdvViz::SDK::RefID>& ids) const
+	void PathAnimManager::GetAnimationPathIds(std::set<AdvViz::SDK::RefID>& ids) const
 	{
 		GetImpl().GetAnimationPathIds(ids);
 	}
 
-	void PathAnimator::LoadDataFromServer(const std::string& decorationId)
+	void PathAnimManager::LoadDataFromServer(const std::string& decorationId)
 	{
 		GetImpl().LoadDataFromServer(decorationId);
 	}
 
-	void PathAnimator::AsyncLoadDataFromServer(const std::string& decorationId,
+	void PathAnimManager::AsyncLoadDataFromServer(const std::string& decorationId,
 		const std::function<void(IAnimationPathInfoPtr&)>& onPathLoaded,
 		const std::function<void(expected<void, std::string> const&)>& onComplete)
 	{
 		GetImpl().AsyncLoadDataFromServer(decorationId, onPathLoaded, onComplete);
 	}
 
-	void PathAnimator::AsyncSaveDataOnServer(const std::string& decorationId, std::function<void(bool)>&& onDataSavedFunc)
+	void PathAnimManager::AsyncSaveDataOnServer(const std::string& decorationId, std::function<void(bool)>&& onDataSavedFunc)
 	{
 		GetImpl().AsyncSaveDataOnServer(decorationId, std::move(onDataSavedFunc));
 	}
 
-	bool PathAnimator::HasAnimPathsToSave() const
+	bool PathAnimManager::HasAnimPathsToSave() const
 	{
-		return true; // TODO@DK
+		return GetNumberOfPaths() > 0; // TODO@DK
 	}
 
-	PathAnimator::Impl& PathAnimator::GetImpl()
-	{
-		return *impl_;
-	}
-
-	const PathAnimator::Impl& PathAnimator::GetImpl() const
+	PathAnimManager::Impl& PathAnimManager::GetImpl()
 	{
 		return *impl_;
 	}
 
-	DEFINEFACTORYGLOBALS(PathAnimator);
+	const PathAnimManager::Impl& PathAnimManager::GetImpl() const
+	{
+		return *impl_;
+	}
+
+	DEFINEFACTORYGLOBALS(PathAnimManager);
  }

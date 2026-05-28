@@ -881,7 +881,7 @@ namespace AdvViz::SDK
 			for (const auto& splinePtr : thdata->splines_)
 			{
 				auto spline = splinePtr->GetRAutoLock();
-				if (spline->ShouldSave())
+				if (spline->ShouldSave() && !ShouldExcludeFromSaving(spline))
 					return true;
 			}
 			for (auto const& splinePtr : thdata->removedSplines_)

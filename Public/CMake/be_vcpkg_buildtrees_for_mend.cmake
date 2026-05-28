@@ -10,8 +10,11 @@ if (BE_REBUILD_ALL_VCPKG_FOR_MEND)
 	# cwrsync needs relative paths...
 	cmake_path(RELATIVE_PATH "${CMAKE_SOURCE_DIR}/${BE_REBUILD_ALL_VCPKG_FOR_MEND}" BASE_DIRECTORY "${VCPKG_ROOT}/buildtrees" OUTPUT_VARIABLE _relPath)
 	message("Will do a filtered copy of vcpkg buildtrees to \"${VCPKG_ROOT}/buildtrees/${_relPath}\" ")
+	# Added "--no-links" to skip all links, because of issues with dir links like grpc/src/(...)/spm-core-include/grpc,
+	# which rsync changes into a different kind of link ("ls -l" in bash still sees it as a directory link, but no longer the Explorer),
+	# preventing ADO's CopyFiles from working. Also file links like ktx/src/.../NOTICE.md were an issue as well (maybe same problem).
 	execute_process(
-		COMMAND "${RSYNC_COMMAND}" --progress -z -rltD --chmod=777 --delete --delete-excluded
+		COMMAND "${RSYNC_COMMAND}" --progress -z -rltD --chmod=777 --no-links --delete --delete-excluded
 			# Include only 'src' folders, but remove a lot of useless and bulky stuff from them
 			--exclude=Debug --exclude=debug --exclude=Release --exclude=release --exclude=Deploy --exclude=Perforce --exclude=bin --exclude=Bin --exclude=examples --exclude=Examples --exclude=ios --exclude=IOS --exclude=TVOS --exclude=tvos --exclude='*.srcjar' --exclude='*.a' --exclude='*.log' --exclude='*.lib' --exclude='*.dylib' --exclude='*.so' --exclude='*.pdb' --exclude='*.dll' --exclude='*.exe' --exclude='*.hdr' --exclude='*.obj' --exclude='*.jpg' --exclude='*.png' --exclude='*.chm' --exclude='*.glb' --exclude='*.bz' --exclude='*.pdf' --exclude='*.bin' --exclude='*.wasm' --exclude='*.html' --exclude='*.basis' --exclude='*.ico' --exclude=configure --exclude='ChangeLog*' --exclude="vcpkg-*" --exclude='CHANGELOG*' --exclude='README*' --exclude='CONTRIB*' --exclude='LICENSE*' --exclude='SECURITY*' --exclude='.*' --exclude='test*/' --exclude='Test*/' --exclude='doc*/' --exclude='Doc*/'
 			--include="/" --include="/*/" --include="/*/src/***" --exclude="*"

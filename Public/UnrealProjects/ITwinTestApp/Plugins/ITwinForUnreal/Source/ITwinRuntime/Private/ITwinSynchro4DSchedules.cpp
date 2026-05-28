@@ -132,7 +132,7 @@ void UITwinSynchro4DSchedules::FImpl::UpdateGltfTunerRules()
 	if (EITwin4DGlTFTranslucencyRule::PerElement == Owner.GlTFTranslucencyRule)
 		AnimRules.anim4DGroups_.reserve(static_cast<size_t>(std::ceil(0.1 * SceneMapping.NumElements())));
 	//! Removes useless transformation-disabling keyframes added at the end of
-	//! FITwinScheduleTimelineBuilder::AddAnimationBindingToTimeline but only necessary
+	//! FITwinScheduleTimelineBuilder::FImpl::CreateAnimationBindingKeyframes but only necessary
 	//! when other bindings for the same resources have non-null transfos (static or 3D path).
 	//! If we don't simplify the timelines, the transformation-disabling keyframe triggers retuning
 	//! of all the Elements, which led to explosion of the loading times :-(
@@ -352,8 +352,12 @@ FString FITwinSynchro4DSchedulesInternals::ElementTimelineAsString(ITwinElementI
 {
 	auto const& MainTimeline = GetTimeline();
 	FString Result;
-	ForEachElementTimeline(ElementID, [&Result](FITwinElementTimeline const& Timeline)
-		{ Result.Append(Timeline.ToPrettyJsonString()); });
+	ForEachElementTimeline(ElementID, [this, &Result](FITwinElementTimeline const& Timeline)
+		{
+			Timeline.SetJsonPrintingWithHumanReadableTimes(Owner.bDebugDumpUseHumanReadableTimes);
+			Timeline.SetJsonPrintingNumberOfDecimals(Owner.DebugDumpLimitDecimals);
+			Result.Append(Timeline.ToPrettyJsonString());
+		});
 	return Result;
 }
 
@@ -434,8 +438,7 @@ void FITwinSynchro4DSchedulesInternals::UnloadKnownTile(const TITwinSceneTilePtr
 
 bool FITwinSynchro4DSchedulesInternals::PrefetchWholeSchedule() const
 {
-	return Owner.bPrefetchAllElementAnimationBindings
-		&& !Owner.bDebugWithDummyTimelines;
+	return Owner.bPrefetchAllElementAnimationBindings;
 }
 
 bool FITwinSynchro4DSchedulesInternals::IsPrefetchedAvailableAndApplied() const
@@ -644,58 +647,32 @@ void FITwinSynchro4DSchedulesInternals::HandleReceivedElements(bool& bNew4DAnimT
 				Setup4DAnimationSingleTile(SceneTilePtr, TileRank, &TileElems);
 		}
 	}
-	else if (IsReadyToQuery() || Owner.bDebugWithDummyTimelines)
+	else if (IsReadyToQuery())
 	{
 		for (auto const& TileMeshElements : ElementsReceived)
 		{
 			bNew4DAnimTexToUpdate |= SceneMapping.ReplicateAnimElemTextureSetupInTile(TileMeshElements);
 		}
-		if (Owner.bDebugWithDummyTimelines)
+		// ElementIDs are already mapped in the SchedulesApi structures to avoid redundant requests, so it
+		// was redundant to merge the sets here, until we needed to add the parent Elements as well:
+		std::set<ITwinElementID> MergedSet;
+		for (auto SetsIt = ElementsReceived.begin(); SetsIt != ElementsReceived.end(); ++SetsIt)
 		{
-			std::lock_guard<std::recursive_mutex> Lock(Mutex);
-			if (!Schedule)
-				Schedule.emplace(TEXT("DummySchedId"), TEXT("DummySchedule"));
-			for (auto&& TileElements : ElementsReceived)
+			for (auto const& ElemID : SetsIt->second)
 			{
-				size_t const BindingIdx = Schedule->AnimationBindings.size();
-				size_t const GroupIdx = Schedule->NumGroups();
-				Schedule->AnimationBindings.emplace_back();
-				FElementsGroup Group;
-				for (auto&& Elem : TileElements.second)
-					Group.insert(SceneMapping.GetElement(Elem).ElementID);
-				Schedule->CreateNextGroup(std::move(Group));
-				// Set just enough stuff to use AddAnimationBindingToTimeline
-				auto& Binding = Schedule->AnimationBindings[BindingIdx];
-				Binding.AnimatedEntities = FString::Printf(TEXT("DummyGroup%llu"), GroupIdx);
-				Binding.GroupInVec = GroupIdx;
-				Binding.NotifiedVersion = VersionToken::None;
-				Builder.AddAnimationBindingToTimeline(*Schedule, BindingIdx, Lock);
-				Binding.NotifiedVersion = VersionToken::InitialVersion;
-			}
-		}
-		else
-		{
-			// ElementIDs are already mapped in the SchedulesApi structures to avoid redundant requests, so it
-			// was redundant to merge the sets here, until we needed to add the parent Elements as well:
-			std::set<ITwinElementID> MergedSet;
-			for (auto SetsIt = ElementsReceived.begin(); SetsIt != ElementsReceived.end(); ++SetsIt)
-			{
-				for (auto const& ElemID : SetsIt->second)
+				FITwinElement const* pElem = &SceneMapping.GetElement(ElemID);
+				while (true)
 				{
-					FITwinElement const* pElem = &SceneMapping.GetElement(ElemID);
-					while (true)
-					{
-						if (!MergedSet.insert(pElem->ElementID).second)
-							break; // if already present, all its parents are, too
-						if (ITwinScene::NOT_ELEM == pElem->ParentInVec)
-							break;
-						pElem = &SceneMapping.GetElement(pElem->ParentInVec);
-					}
+					if (!MergedSet.insert(pElem->ElementID).second)
+						break; // if already present, all its parents are, too
+					if (ITwinScene::NOT_ELEM == pElem->ParentInVec)
+						break;
+					pElem = &SceneMapping.GetElement(pElem->ParentInVec);
 				}
-				SetsIt->second.clear();
 			}
-			SchedulesApi.QueryElementsTasks(MergedSet);
+			SetsIt->second.clear();
 		}
+		SchedulesApi.QueryElementsTasks(MergedSet);
 	}
 	ElementsReceived.clear();
 }
@@ -1166,7 +1143,12 @@ void UITwinSynchro4DSchedules::TickSchedules(float DeltaTime)
 				Impl->Internals.Builder.FinalizeTimeline(*Impl->Schedule);
 				Impl->UpdateGltfTunerRules();
 				if (!DebugDumpAsJsonAfterQueryAll.IsEmpty())
+				{
+					Impl->Internals.GetTimeline()
+						.SetJsonPrintingWithHumanReadableTimes(bDebugDumpUseHumanReadableTimes);
+					Impl->Internals.GetTimeline().SetJsonPrintingNumberOfDecimals(DebugDumpLimitDecimals);
 					Impl->Internals.Builder.DebugDumpFullTimelinesAsJson(DebugDumpAsJsonAfterQueryAll);
+				}
 			}
 			bool dummy = false;
 			// HandleReceivedElements (and TickAnimation) seem useless since UpdateGltfTunerRules above probably
@@ -1379,7 +1361,12 @@ void UITwinSynchro4DSchedules::QueryAll()
 		[This=this](bool bSuccess)
 		{
 			if (bSuccess && IsValid(This) && !This->DebugDumpAsJsonAfterQueryAll.IsEmpty())
-				GetInternals(*This).Builder.DebugDumpFullTimelinesAsJson(This->DebugDumpAsJsonAfterQueryAll);
+			{
+				auto&& Internals = GetInternals(*This);
+				Internals.GetTimeline().SetJsonPrintingWithHumanReadableTimes(This->bDebugDumpUseHumanReadableTimes);
+				Internals.GetTimeline().SetJsonPrintingNumberOfDecimals(This->DebugDumpLimitDecimals);
+				Internals.Builder.DebugDumpFullTimelinesAsJson(This->DebugDumpAsJsonAfterQueryAll);
+			}
 		});
 }
 

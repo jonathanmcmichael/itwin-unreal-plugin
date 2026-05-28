@@ -60,7 +60,7 @@ public:
 	EITwinEnvironment Environment = EITwinEnvironment::Invalid;
 
 	UPROPERTY(Category = "iTwin",
-		EditAnywhere)
+		EditAnywhere, meta = (DeprecatedProperty))
 	EITwinSceneService SceneService = EITwinSceneService::Invalid;
 
 	UPROPERTY(Category = "iTwin",

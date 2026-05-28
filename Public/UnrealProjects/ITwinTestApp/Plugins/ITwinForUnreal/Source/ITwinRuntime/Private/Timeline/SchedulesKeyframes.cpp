@@ -9,6 +9,7 @@
 #include "SchedulesKeyframes.h"
 #include "SchedulesConstants.h"
 #include "SchedulesStructs.h"
+#include "GrowthStatus.h"
 
 #include <ITwinUtilityLibrary.h>
 #include <Math/UEMathExts.h> // for RandomFloatColorFromIndex
@@ -497,15 +498,15 @@ bool Add3DPathTransformToTimeline(FITwinElementTimeline* ElementTimeline,
 	{
 		auto&& KFData = prepKF(Key.Transform, false/*ignored*/);
 		bool const bIsLastKF = (Key.RelativeTime == LastKFRelativeTime);
-		// Note: SetTransformationAt will order keyframes by their time point, whatever their ordering in
-		// the input vector
+		// Note: SetTransformationAt will order keyframes by date, whatever their ordering in the input vector
 		double const ActualRelativeTime =
-			(PathAssignment.b3DPathReverseDirection ? (1. - Key.RelativeTime) : Key.RelativeTime)
-			// Prevent one KF overwriting another one when a resource is assigned to successive 3D paths
-			// on exactly adjacent tasks (time-wise)
-			// (noticed while investigating https://github.com/iTwin/itwin-unreal-plugin/issues/89)
-			-(bIsLastKF ? KF_END_3_EPSILON : 0.);
-		ElementTimeline->SetTransformationAt(TaskTimes.first + ActualRelativeTime * TaskDuration,
+			(PathAssignment.b3DPathReverseDirection ? (1. - Key.RelativeTime) : Key.RelativeTime);
+		ElementTimeline->SetTransformationAt(
+			TaskTimes.first + ActualRelativeTime * TaskDuration
+				// Prevent one KF overwriting another one when a resource is assigned to successive 3D paths
+				// on exactly adjacent tasks (time-wise)
+				// (noticed while investigating https://github.com/iTwin/itwin-unreal-plugin/issues/89)
+				- (bIsLastKF ? KF_END_3_EPSILON : 0.),
 			KFData.ConvertedPosition, KFData.NormalizedRotation, BaseAnchor,
 			// "Step": ie. do not interpolate linearly between successive paths!
 			// (ADO#1979908 = https://github.com/iTwin/itwin-unreal-plugin/issues/89)
@@ -515,126 +516,7 @@ bool Add3DPathTransformToTimeline(FITwinElementTimeline* ElementTimeline,
 	return false;
 }
 
-void CreateTestingTimeline(FITwinElementTimeline& Timeline, FITwinCoordConversions const& CoordConv)
-{
-	constexpr double delta = 1000. * KEYFRAME_TIME_EPSILON;
-
-	// Initial conditions, to not depend on the first keyframe of each feature, which can be much farther
-	// along the timeline
-	Timeline.SetColorAt(0., std::nullopt/*ie. bUseOriginalColor*/, EInterpolation::Step);
-	Timeline.SetVisibilityAt(0., 1.f, EInterpolation::Step);
-	Timeline.SetCuttingPlaneAt(0., {}, EGrowthStatus::FullyGrown, EInterpolation::Step);
-
-	// tests occur every 4 deltas: one before task, one for task duration, one after task, one for blink
-	constexpr int cycle = 4;
-	FTimeRangeInSeconds TimeRange = { -(cycle - 1) * delta, 0. };
-	size_t Idx = 0;
-	auto const incrTimes = [&TimeRange, &cycle, &delta]() -> FTimeRangeInSeconds const&
-		{
-			TimeRange.first += cycle * delta;
-			TimeRange.second = TimeRange.first + delta;
-			return TimeRange;
-		};
-	FAppearanceProfile Profile;
-	Profile.ProfileType = EProfileAction::Maintenance;
-
-	auto const blinkAndResetBetweenTests = [&Timeline, &TimeRange, delta]()
-		{
-			double const BlinkStart = TimeRange.second + delta;
-			// "Blink" the Element
-			Timeline.SetVisibilityAt(BlinkStart - KEYFRAME_TIME_EPSILON, 1, EInterpolation::Step);
-			Timeline.SetVisibilityAt(BlinkStart, 0.f, EInterpolation::Step);
-			// End blink and instruct to use the next keyframes' values, if any, otherwise reset values
-			Timeline.SetVisibilityAt(BlinkStart + delta, 1.f, EInterpolation::Next);
-			Timeline.SetColorAt(BlinkStart + delta, std::nullopt, EInterpolation::Next);
-			Timeline.SetCuttingPlaneAt(BlinkStart + delta, {}, EGrowthStatus::FullyGrown, EInterpolation::Next);
-		};
-	auto const testColor = [&Timeline, &Profile, &Idx, &incrTimes, &blinkAndResetBetweenTests]
-	(bool start, bool active, bool finish)
-		{
-			Profile.StartAppearance.bUseOriginalColor = !start;
-			Profile.ActiveAppearance.Base.bUseOriginalColor = !active;
-			Profile.FinishAppearance.bUseOriginalColor = !finish;
-			if (start) Profile.StartAppearance.Color =
-				FITwinMathExts::RandomFloatColorFromIndex(Idx++, nullptr);
-			if (active) Profile.ActiveAppearance.Base.Color =
-				FITwinMathExts::RandomFloatColorFromIndex(Idx++, nullptr);
-			if (finish) Profile.FinishAppearance.Color =
-				FITwinMathExts::RandomFloatColorFromIndex(Idx++, nullptr);
-			AddColorToTimeline(Timeline, Profile, incrTimes(), FTaskDependenciesData{});
-			blinkAndResetBetweenTests();
-		};
-	// Reset to defaults
-	Profile.StartAppearance.bUseOriginalAlpha = true;
-	Profile.ActiveAppearance.Base.bUseOriginalAlpha = true;
-	Profile.FinishAppearance.bUseOriginalAlpha = true;
-	Profile.ActiveAppearance.GrowthSimulationMode = EGrowthSimulationMode::None;
-	testColor(false, true, false);
-	testColor(false, true, true);
-	testColor(true, true, false);
-	testColor(true, true, true);
-
-	auto const testAlpha = [&Timeline, &Profile, &Idx, &incrTimes, &blinkAndResetBetweenTests]
-	(bool start, bool active, bool activeVaries, bool finish)
-		{
-			Profile.StartAppearance.bUseOriginalAlpha = !start;
-			Profile.ActiveAppearance.Base.bUseOriginalAlpha = !active;
-			Profile.FinishAppearance.bUseOriginalAlpha = !finish;
-			if (start)
-				Profile.StartAppearance.Alpha = .25f;
-			if (active)
-			{
-				if (activeVaries)
-				{
-					Profile.ActiveAppearance.Base.Alpha = .05f;
-					Profile.ActiveAppearance.FinishAlpha = 1.f;
-					if ((Idx++) % 2 == 0) std::swap(
-						Profile.ActiveAppearance.Base.Alpha, Profile.ActiveAppearance.FinishAlpha);
-				}
-				else
-					Profile.ActiveAppearance.FinishAlpha = Profile.ActiveAppearance.Base.Alpha = .1f;
-			}
-			if (finish)
-				Profile.FinishAppearance.Alpha = .5f;
-
-			AddVisibilityToTimeline(Timeline, Profile, incrTimes(), FTaskDependenciesData{});
-			blinkAndResetBetweenTests();
-		};
-
-	// Reset to defaults
-	Profile.ActiveAppearance.GrowthSimulationMode = EGrowthSimulationMode::None;
-	Profile.StartAppearance.bUseOriginalColor = true;
-	Profile.ActiveAppearance.Base.bUseOriginalColor = true;
-	Profile.FinishAppearance.bUseOriginalColor = true;
-	testAlpha(false, true, false, false);
-	testAlpha(false, true, true, false);
-	//testAlpha(false, true, false, true);
-	testAlpha(false, true, true, true);
-	//testAlpha(true, true, false, false);
-	testAlpha(true, true, true, true);
-
-	// Reset to defaults
-	Profile.StartAppearance.bUseOriginalColor = true;
-	Profile.ActiveAppearance.Base.bUseOriginalColor = true;
-	Profile.FinishAppearance.bUseOriginalColor = true;
-	Profile.StartAppearance.bUseOriginalAlpha = true;
-	Profile.ActiveAppearance.Base.bUseOriginalAlpha = true;
-	Profile.FinishAppearance.bUseOriginalAlpha = true;
-	Profile.ActiveAppearance.GrowthDirectionCustom = FVector(1., 1., 1.);
-	Profile.ActiveAppearance.bInvertGrowth = false;
-	for (uint8_t i = 0; i <= (int)EGrowthSimulationMode::Custom; ++i)
-	{
-		Profile.ActiveAppearance.GrowthSimulationMode = (EGrowthSimulationMode)i;
-		AddCuttingPlaneToTimeline(Timeline, Profile, incrTimes(), CoordConv);
-		blinkAndResetBetweenTests();
-	}
-	Profile.ActiveAppearance.bInvertGrowth = true;
-	for (uint8_t i = 0; i <= (int)EGrowthSimulationMode::Custom; ++i)
-	{
-		Profile.ActiveAppearance.GrowthSimulationMode = (EGrowthSimulationMode)i;
-		AddCuttingPlaneToTimeline(Timeline, Profile, incrTimes(), CoordConv);
-		blinkAndResetBetweenTests();
-	}
-}
+// REMOVED blame here:
+// void CreateTestingTimeline(FITwinElementTimeline& Timeline, FITwinCoordConversions const& CoordConv)
 
 } // namespace ITwin::Timeline

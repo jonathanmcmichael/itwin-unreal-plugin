@@ -19,6 +19,7 @@
 #include <ITwinElementID.h>
 #include <Timeline/AnchorPoint.h>
 #include <Timeline/Definition.h>
+#include <Timeline/GrowthStatus.h>
 #include <Timeline/TimelineBase.h>
 #include <Timeline/TimelineTypes.h>
 
@@ -49,14 +50,18 @@ namespace ITwin::Timeline {
 ITWIN_TIMELINE_DEFINE_PROPERTY_VALUES(PVisibility,
 	(float, Value)
 )
-[[nodiscard]] TSharedPtr<FJsonValue> ToJsonValue(PVisibility const& Prop);
+[[nodiscard]] TSharedPtr<FJsonValue> ToJsonValue(PVisibility const& Prop, int Decimals);
+[[nodiscard]] bool FromJsonValue(double Time, EInterpolation Interp, TSharedPtr<FJsonValue> const& Value,
+								 PropertyEntry<PVisibility>& Entry);
 inline bool NoEffect(PVisibility const& Prop) { return Prop.Value == 1.f; }
 
 ITWIN_TIMELINE_DEFINE_PROPERTY_VALUES(PColor,
 	(ITwin::Flag::FPresence, bHasColor)
 	(FVector, Value)
 )
-[[nodiscard]] TSharedPtr<FJsonValue> ToJsonValue(PColor const& Prop);
+[[nodiscard]] TSharedPtr<FJsonValue> ToJsonValue(PColor const& Prop, int Decimals);
+[[nodiscard]] bool FromJsonValue(double Time, EInterpolation Interp, TSharedPtr<FJsonValue> const& Value,
+								 PropertyEntry<PColor>& Entry);
 inline bool NoEffect(PColor const& Prop) { return !Prop.bHasColor; }
 
 /// Offset from the Elements group's axis-aligned bounding box center, to apply after the rotation at a given
@@ -90,39 +95,11 @@ ITWIN_TIMELINE_DEFINE_PROPERTY_VALUES(PTransform,
 	(FQuat, Rotation)
 	(FDeferredAnchor, DefrdAnchor)
 )
-[[nodiscard]] TSharedPtr<FJsonValue> ToJsonValue(PTransform const&);
+[[nodiscard]] TSharedPtr<FJsonValue> ToJsonValue(PTransform const&, int Decimals);
+[[nodiscard]] bool FromJsonValue(double Time, EInterpolation Interp, TSharedPtr<FJsonValue> const& Value,
+								 PropertyEntry<PTransform>& Entry);
 inline bool NoEffect(PTransform const& Prop) { return !Prop.bIsTransformed; }
 //[[nodiscard]] FMatrix TransformToMatrix(const PTransform& t);
-
-namespace Detail::GrowthStatus
-{
-	namespace Bit { enum EBit { Removed, Grown, Deferred }; }
-	namespace Mask {
-		enum EMask { Removed = (1 << Bit::Removed), Grown = (1 << Bit::Grown),
-					 Deferred = (1 << Bit::Deferred) };
-	}
-	constexpr int IgnoreDeferred = ~Mask::Deferred; ///< to be ANDed with
-}
-
-enum class EGrowthStatus : uint8_t
-{
-	/// Neither of the other states, ie the growth is probably somewhere in the middle of the Element(s) BBox
-	Partial = 0,
-	FullyRemoved = Detail::GrowthStatus::Mask::Removed,
-	/// The growth animation has reached a point where the Element(s) are fully hidden (ie. construction has
-	/// not started, or removal has finished). This is a deferred state, in that it will have to be converted
-	/// to the first or last(*) cutting plane equation of the growth simulation ((*) depending on the task
-	/// action = install/remove/etc.)
-	DeferredFullyRemoved = (FullyRemoved | Detail::GrowthStatus::Mask::Deferred),
-	/// The Element(s) are simply full visible ('static' state, as opposed to DeferredFullyRemoved).
-	FullyGrown = Detail::GrowthStatus::Mask::Grown,
-	/// The Element(s) are simply fully hidden ('static' state, as opposed to DeferredFullyRemoved).
-	/// The growth animation has reached a point where the Element(s) are fully visible (ie. construction has
-	/// finished, or removal has not started). This is a deferred state, in that it will have to be converted
-	/// to the first or last(*) cutting plane equation of the growth simulation ((*) depending on the task
-	/// action = install/remove/etc.)
-	DeferredFullyGrown = (FullyGrown | Detail::GrowthStatus::Mask::Deferred),
-};
 
 struct FDeferredPlaneEquation
 {
@@ -157,7 +134,9 @@ struct FDeferredPlaneEquation
 ITWIN_TIMELINE_DEFINE_PROPERTY_VALUES(PClippingPlane,
 	(FDeferredPlaneEquation, DefrdPlaneEq)
 )
-[[nodiscard]] TSharedPtr<FJsonValue> ToJsonValue(PClippingPlane const&);
+[[nodiscard]] TSharedPtr<FJsonValue> ToJsonValue(PClippingPlane const&, int Decimals);
+[[nodiscard]] bool FromJsonValue(double Time, EInterpolation Interp, TSharedPtr<FJsonValue> const& Value,
+								 PropertyEntry<PClippingPlane>& Entry);
 inline bool NoEffect(PClippingPlane const& Prop) {
 	return EGrowthStatus::DeferredFullyGrown == Prop.DefrdPlaneEq.GrowthStatus
 		|| EGrowthStatus::FullyGrown == Prop.DefrdPlaneEq.GrowthStatus;
@@ -291,11 +270,18 @@ public:
 	template<typename JsonPrintPolicy> [[nodiscard]] FString ToJsonString() const;
 	[[nodiscard]] FString ToPrettyJsonString() const;
 	[[nodiscard]] FString ToCondensedJsonString() const;
+	size_t FromJsonString(const FString& JsonString);
 
 	// In case we need the elementTimelineId_ inside ElementTimelineEx, we'd have to override this:
 	//std::shared_ptr<ElementTimelineEx> Add(const typename Super::ObjectTimelinePtr& object) override;
 	// with the code from vue.git/viewer/Code/RealTimeBuilder/IModel/RenderSchedule.inl
 };
+
+/// Compares two MainTimeline instances element-by-element, using \p Tolerance
+/// for all floating-point and vector/quaternion fields. Non-numerical fields (element keys,
+/// interpolation modes, boolean flags, enum values) are compared exactly.
+/// DOES NOT assume the timelines are stored in the same order in both instances.
+[[nodiscard]] bool AreNearlyEqual(MainTimeline const& A, MainTimeline const& B, float Tolerance = UE_SMALL_NUMBER);
 
 } // ns ITwin::Timeline
 

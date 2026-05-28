@@ -23,8 +23,6 @@ add_library(Visualization ${libtype}
 		AsyncHttp.inl
 		MaterialPersistence.cpp
 		MaterialPersistence.h
-		ScenePersistenceDS.cpp
-		ScenePersistenceDS.h
 		ScenePersistence.cpp
 		ScenePersistence.h
 		ScenePersistenceAPI.cpp

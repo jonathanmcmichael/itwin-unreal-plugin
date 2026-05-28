@@ -26,7 +26,7 @@ namespace AdvViz::SDK
 	public:
 		std::shared_ptr<Http> http_;
 		std::shared_ptr<ISplinesManager> splineManager_;
-		std::shared_ptr<IPathAnimator> animPathManager_;
+		std::shared_ptr<IPathAnimManager> animPathManager_;
 
 		std::shared_ptr< std::atomic_bool > isThisValid_;
 		using ObjRefAndGPId = std::pair<std::string /*objRef*/, RefID/*group*/>;
@@ -64,7 +64,7 @@ namespace AdvViz::SDK
 			splineManager_ = splineManager;
 		}
 
-		void SetAnimPathManager(std::shared_ptr<IPathAnimator> const& animPathManager)
+		void SetAnimPathManager(std::shared_ptr<IPathAnimManager> const& animPathManager)
 		{
 			animPathManager_ = animPathManager;
 		}
@@ -603,12 +603,14 @@ namespace AdvViz::SDK
 				if (inst->GetAnimPathId())
 				{
 					// update animation path database id within the instance
-					auto animPathInfoPtr = animPathManager_->GetAnimationPathInfo(*(inst->GetAnimPathId()));
-					auto animPathInfo = animPathInfoPtr->GetRAutoLock();
-					auto animPathRefId = animPathInfo->GetId();	
-					BE_ASSERT(animPathRefId.HasDBIdentifier(), "animation paths should be saved before instances");
-					inst->SetAnimId(animPathRefId.GetDBIdentifier());
-					inst->SetAnimPathId(animPathRefId);
+					if (auto animPathInfoPtr = animPathManager_->GetAnimationPathInfo(*(inst->GetAnimPathId())))
+					{
+						auto animPathInfo = animPathInfoPtr->GetRAutoLock();
+						auto animPathRefId = animPathInfo->GetId();	
+						BE_ASSERT(animPathRefId.HasDBIdentifier(), "animation paths should be saved before instances");
+						inst->SetAnimId(animPathRefId.GetDBIdentifier());
+						inst->SetAnimPathId(animPathRefId);
+					}
 				}
 
 				if (!inst->HasDBIdentifier())
@@ -1258,7 +1260,7 @@ namespace AdvViz::SDK
 		GetImpl().SetSplineManager(splineManager);
 	}
 
-	void InstancesManager::SetAnimPathManager(std::shared_ptr<IPathAnimator> const& animPathManager)
+	void InstancesManager::SetAnimPathManager(std::shared_ptr<IPathAnimManager> const& animPathManager)
 	{
 		GetImpl().SetAnimPathManager(animPathManager);
 	}

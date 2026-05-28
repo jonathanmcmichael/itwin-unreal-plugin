@@ -115,10 +115,11 @@ void UITwinContentManager::DownloadFromAssetPath(const FString& path)
     if (it == ContentInfoMap.end())
     {
         // Clipping primitives are a special case (embedded in standard iTwin Engage content).
-        if (!path.Contains(TEXT("Clipping/Clipping")))
-        {
-            BE_LOGE("ContentHelper", "Cannot find content info for path: " << TCHAR_TO_UTF8(*path));
-        }
+        //obsolete log: most of the content is downloaded and does not rely on infoMap
+		/*if (!path.Contains(TEXT("Clipping/Clipping")))
+		{
+			BE_LOGE("ContentHelper", "Cannot find content info for path: " << TCHAR_TO_UTF8(*path));
+		}*/
         return;
     }
     // mount pak file

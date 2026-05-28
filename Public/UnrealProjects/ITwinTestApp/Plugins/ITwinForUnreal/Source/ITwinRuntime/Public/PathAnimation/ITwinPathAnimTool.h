@@ -15,7 +15,7 @@
 #include <Misc/EnumRange.h>
 #include <Templates/PimplPtr.h>
 #include <Spline/ITwinSplineHelper.h>
-#include <PathAnimation/ITwinAnimPathInfo.h>
+#include <PathAnimation/ITwinAnimPathHelper.h>
 
 #include <ITwinRuntime/Private/Compil/BeforeNonUnrealIncludes.h>
 	#include <glm/ext/matrix_double3x3.hpp>
@@ -28,9 +28,8 @@
 #include "ITwinPathAnimTool.generated.h"
 
 class AITwinPopulation;
-class AITwinPopulationTool;
 class AITwinSplineHelper;
-class AITwinAnimPathInfo;
+class AITwinAnimPathHelper;
 namespace AdvViz::SDK
 {
 	class RefID;
@@ -123,10 +122,19 @@ public:
 	virtual void Tick(float DeltaTime) override;
 
 	// Connect the Population Tool to manage objects to animate
-	void ConnectPopulationTool(AITwinPopulationTool* PopulationTool);
+	void ConnectPopulationTool(class AITwinPopulationTool* PopulationTool);
 
 	// Connect the Spline Tool to manage path animation splines
 	void ConnectSplineTool(class AITwinSplineTool* SplineTool);
+
+	// Set the Decoration Helper to manage instance groups
+	void SetDecorationHelper(class AITwinDecorationHelper* InDecoHelper);
+
+	// Set the Path Animation Manager to manage the creation and update of path animations on the server
+	void SetPathAnimManager(const std::shared_ptr<AdvViz::SDK::IPathAnimManager>& InPathAnimManager);
+
+	// Load existing animation paths from the server for the current scene
+	void LoadAnimationPaths();
 
 	// Initiate the interactive creation of a new animation path
 	bool StartInteractiveCreation(EITwinAnimPathType PathType);
@@ -181,8 +189,8 @@ public:
 	//FString GetName(FAnimPathIdentifier PathHandle) const;
 	//void SetName(FAnimPathIdentifier PathHandle, const FString& Name);
 
-	void Get3DObjects(FAnimPathIdentifier PathHandle, TArray<FString>& AssetPaths) const;
-	void Set3DObjects(FAnimPathIdentifier PathHandle, const TArray<FString>& AssetPaths);
+	void Get3DObjects(FAnimPathIdentifier PathHandle, TArray<FString>& Assets) const;
+	void Set3DObjects(FAnimPathIdentifier PathHandle, const TArray<FString>& Assets);
 
 	bool HasInvDirection(FAnimPathIdentifier PathHandle) const;
 	void SetInvDirection(FAnimPathIdentifier PathHandle, bool bInvDirection);

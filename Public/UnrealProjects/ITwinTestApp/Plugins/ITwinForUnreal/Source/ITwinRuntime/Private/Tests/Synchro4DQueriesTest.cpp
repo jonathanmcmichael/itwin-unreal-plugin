@@ -6,7 +6,7 @@
 |
 +--------------------------------------------------------------------------------------*/
 
-#if WITH_TESTS
+#if WITH_TESTS && WITH_EDITOR
 
 // Note: these tests are all disabled because they require an iModel and an auth token,
 // so that they only ran in the PIE in their current state.
@@ -475,6 +475,9 @@ void Synchro4DQueriesSpec::WaitTestSchedule(const FDoneDelegate& Done)
 void Synchro4DQueriesSpec::CheckEntireScheduleMatchesJson()
 {
 	FITwinSynchro4DSchedulesInternals const& FullSched = Helper->GetFullScheduleInternals();
+	// Test no longer run, if reviving I'll probably need to use these as well:
+	//FullSched.GetTimeline().SetJsonPrintingWithHumanReadableTimes(false);
+	//FullSched.GetTimeline().SetJsonPrintingNumberOfDecimals(6);
 	FString const TimelineAsJson = FullSched.GetTimeline().ToPrettyJsonString();
 	if (TimelineAsJson.Len() < 8)
 	{
@@ -500,10 +503,12 @@ void Synchro4DQueriesSpec::Define()
 		{
 			if (!Helper)
 				Helper = std::make_shared<FSynchro4DQueriesTestHelper>();
+			pushAllowTickInEditor();
 		});
 	AfterEach([this]()
 		{
 			Helper.reset(); // test structures are reused if you re-run a test!
+			popAllowTickInEditor();
 		});
 
 	// Also disabled: querying NextGen api errors out because it does not support itwin-platform scope yet
@@ -663,4 +668,4 @@ void Synchro4DQueriesSpec::Define()
 		});
 }
 
-#endif //WITH_TESTS
+#endif //WITH_TESTS && WITH_EDITOR

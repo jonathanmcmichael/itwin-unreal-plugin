@@ -33,7 +33,7 @@ class FITwinSchedulesImport
 	FITwinSchedulesImport(FString const& BaseUrl, FITwinScheduleTimeline& MainTimeline,
 		TStrongObjectPtr<UObject> OwnerUObj, std::recursive_mutex& Mux, std::optional<FITwinSchedule>& Scheds);
 	void ResetConnectionForTesting(FString const& ITwinAkaProjectAkaContextId, FString const& IModelId,
-								   FString const& InChangesetId, FString const& CustomCacheDir);
+		FString const& InChangesetId, FString const& CacheDir, EITwinSchedulesGeneration ScheduleGeneration);
 
 public:
 	FITwinSchedulesImport(UITwinSynchro4DSchedules& Owner, std::recursive_mutex& Mutex,

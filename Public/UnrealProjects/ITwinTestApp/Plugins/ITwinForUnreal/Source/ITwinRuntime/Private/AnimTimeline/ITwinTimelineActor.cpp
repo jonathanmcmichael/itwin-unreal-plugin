@@ -2030,6 +2030,9 @@ void AITwinTimelineActor::ReinitPlayer()
 
 void ScreenUtils::SetCurrentView(UWorld* pWorld, const FVector& pos, const FRotator& rot)
 {
+	BE_ASSERT(pWorld != nullptr);
+	if (!pWorld)
+		return;
 	if (APlayerController* pController = pWorld->GetFirstPlayerController())
 	{
 		pController->GetPawnOrSpectator()->SetActorLocation(pos, false, nullptr, ETeleportType::TeleportPhysics);
@@ -2043,13 +2046,26 @@ void ScreenUtils::SetCurrentView(UWorld* pWorld, const FVector& pos, const FRota
 	}
 }
 
-void ScreenUtils::SetCurrentView(UWorld* pWorld, const FTransform& ft)
+void ScreenUtils::SetCurrentView(UWorld* pWorld, const FTransform& ft, bool bVRMode)
 {
-	SetCurrentView(pWorld, FVector(ft.GetTranslation()), FRotator(ft.GetRotation()));
+	BE_ASSERT(pWorld != nullptr);
+	if (!pWorld)
+		return;
+
+	auto rotation = FRotator(ft.GetRotation());
+	if (bVRMode) // only use yaw rotation in VR mode, as pitch and roll are managed by the HMD
+	{
+		rotation.Pitch = 0.0f;
+		rotation.Roll = 0.0f;
+	}
+	SetCurrentView(pWorld, FVector(ft.GetTranslation()), rotation);
 }
 
 void ScreenUtils::GetCurrentView(UWorld* pWorld, FVector& pos, FRotator& rot)
 {
+	BE_ASSERT(pWorld != nullptr);
+	if (!pWorld)
+		return;
 	if (APlayerController* pController = pWorld->GetFirstPlayerController())
 	{
 		//pController->CalcCamera();
@@ -2067,6 +2083,9 @@ void ScreenUtils::GetCurrentView(UWorld* pWorld, FVector& pos, FRotator& rot)
 
 FTransform ScreenUtils::GetCurrentViewTransform(UWorld* pWorld)
 {
+	BE_ASSERT(pWorld != nullptr);
+	if (!pWorld)
+		return {};
 	FVector pos;
 	FRotator rot;
 	ScreenUtils::GetCurrentView(pWorld, pos, rot);

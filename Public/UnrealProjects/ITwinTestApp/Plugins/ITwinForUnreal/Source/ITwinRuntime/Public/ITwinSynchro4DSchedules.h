@@ -242,12 +242,6 @@ public:
 		EditAnywhere)
 	bool bDebugWithRandomProfiles = false;
 
-	/// Use the correct schedules' animated Elements, but they will all use a same test timeline with
-	/// various test appearance profiles occurring in succession in a dummy time range.
-	UPROPERTY(Category = "Schedules Querying|Debug",
-		EditAnywhere)
-	bool bDebugWithDummyTimelines = false;
-
 	/// Log information about the currently selected Element's 4D animation properties as applied by the
 	/// '4D animator' class.
 	UPROPERTY(Category = "Schedules Querying|Debug",
@@ -258,6 +252,18 @@ public:
 	UPROPERTY(Category = "Schedules Querying|Debug",
 		EditAnywhere)
 	FString DebugDumpAsJsonAfterQueryAll;
+
+	/// When using DebugDumpAsJsonAfterQueryAll, the timeline dump will contain human-readable times (with a precision
+	/// limited to 1s) when this is true, or time ticks from FDateTime::GetTicks() when false
+	UPROPERTY(Category = "Schedules Querying|Debug",
+		EditAnywhere)
+	bool bDebugDumpUseHumanReadableTimes = true;
+
+	/// When using DebugDumpAsJsonAfterQueryAll, the timeline dump will have the numerical values limited to this
+	/// number of decimals (unless -1 = unlimited)
+	UPROPERTY(Category = "Schedules Querying|Debug",
+		EditAnywhere)
+	int DebugDumpLimitDecimals = -1;
 
 	/// When not empty, persist all queries and their replies (for later replay/simulation) to the indicated
 	/// folder inside the project's Saved folder. Note that this mode is now almost useless, since downloads

@@ -409,7 +409,7 @@ bool FPaginatedIModelRowsQueries::OnQueryCompleted(bool const bSuccess,
 		if (EState::Cancelled == State || EState::StoppedOnError == State)
 		{
 			BE_LOGI("ITwinAPI", Description << ": queries cancelled"
-								<< (EState::StoppedOnError == State) ? " (on error)" : "");
+								<< ((EState::StoppedOnError == State) ? " (on error)." : "."));
 			PageDecrementer.cleanup();
 			fctFinish();
 			return true;

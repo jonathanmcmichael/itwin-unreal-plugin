@@ -130,4 +130,10 @@ inline FString UTCDateTimeToString(FDateTime const& DateTimeUtc)
 	return FString::Printf(TEXT("%s +0000"), *DateTimeUtc.ToString());
 }
 
+/// Reverse of UTCDateTimeToString
+inline bool FromUTCDateTimeString(FString const& DateStr, FDateTime& DateTimeUtc)
+{
+	return FDateTime::Parse(DateStr.LeftChop(6), DateTimeUtc);
+}
+
 } // ns ITwin::Time

@@ -89,6 +89,4 @@ void HandleFallbackTransfoOutsideTaskIfNeeded(FITwinElementTimeline& ElementTime
 	FTimeRangeInSeconds const& TaskTimes, FITwinCoordConversions const& CoordConv,
 	FTaskDependenciesData const& TaskDeps);
 
-void CreateTestingTimeline(FITwinElementTimeline& Timeline, FITwinCoordConversions const& CoordConv);
-
 } // ns Synchro4DKeyframes

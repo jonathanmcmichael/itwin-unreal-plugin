@@ -38,6 +38,7 @@ class AITwinSplineTool;
 class AITwinSplineHelper;
 class UITwinContentManager;
 class AITwinAnimPathManager;
+class AITwinPathAnimTool;
 
 namespace AdvViz::SDK {
 	struct ITwinAtmosphereSettings;
@@ -152,6 +153,9 @@ public:
 
 	UPROPERTY(BlueprintAssignable)
 	FOnDecorationIODone OnAnnotationsLoaded;
+	
+	UPROPERTY(BlueprintAssignable)
+	FOnDecorationIODone OnPathAnimationsLoaded;
 
 	FOnDownloadRequest OnDownloadRequest;
 
@@ -229,6 +233,8 @@ public:
 	};
 	void SaveSceneWithOptions(FSaveRequestOptions const& Options);
 
+	bool IsVREnabled();
+
 	//! Permanently deletes all material customizations for current model (cannot be undone!)
 	UFUNCTION(Category = "iTwin", BlueprintCallable)
 	void DeleteAllCustomMaterials();
@@ -268,7 +274,8 @@ public:
 	void RemoveComponent(EITwinModelType ct, const FString& id) const;
 
 	void ConnectSplineToolToSplinesManager(AITwinSplineTool* splineTool);
-	void ConnectPathAnimator(AITwinAnimPathManager* manager);
+	void ConnectPathAnimToolToPathManager(AITwinPathAnimTool* pathAnimTool);
+	//void ConnectPathAnimManager(AITwinAnimPathManager* manager); // obsolete Unreal UI
 
 	// return link identifiers found in scene
 	std::vector<ITwin::ModelLink> GetLinkedElements() const;

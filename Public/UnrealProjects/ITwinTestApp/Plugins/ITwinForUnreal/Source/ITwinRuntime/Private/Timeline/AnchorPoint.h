@@ -10,6 +10,8 @@
 
 #include <Containers/UnrealString.h>
 
+#include <optional>
+
 namespace ITwin::Timeline {
 
 enum class EAnchorPoint : uint8_t
@@ -46,6 +48,21 @@ inline FString GetAnchorPointString(EAnchorPoint const AnchorPoint)
 	case EAnchorPoint::Static:	return TEXT("Static");
 	default:					return TEXT("<InvalidAnchorPoint>");
 	}
+}
+
+inline std::optional<EAnchorPoint> ParseAnchorPoint(FString const& AnchorPointStr)
+{
+	if (AnchorPointStr == TEXT("Center"))   return EAnchorPoint::Center;
+	if (AnchorPointStr == TEXT("MinX"))     return EAnchorPoint::MinX;
+	if (AnchorPointStr == TEXT("MaxX"))     return EAnchorPoint::MaxX;
+	if (AnchorPointStr == TEXT("MinY"))     return EAnchorPoint::MinY;
+	if (AnchorPointStr == TEXT("MaxY"))     return EAnchorPoint::MaxY;
+	if (AnchorPointStr == TEXT("MinZ"))     return EAnchorPoint::MinZ;
+	if (AnchorPointStr == TEXT("MaxZ"))     return EAnchorPoint::MaxZ;
+	if (AnchorPointStr == TEXT("Original")) return EAnchorPoint::Original;
+	if (AnchorPointStr == TEXT("Custom"))   return EAnchorPoint::Custom;
+	if (AnchorPointStr == TEXT("Static"))   return EAnchorPoint::Static;
+	return std::nullopt;
 }
 
 } // namespace ITwin::Timeline

@@ -785,6 +785,11 @@ class FITwinSceneMapping
 {
 public:
 	using FDuplicateElementsVec = FSmallVec<ITwinScene::ElemIdx, 2>;
+	struct FElemGuid
+	{
+		ITwinScene::ElemIdx Rank; ///< first seen for this GUID, in case of duplicates
+		FGuid FederatedGuid;
+	};
 private:
 	using FSceneElemsCont = boost::multi_index_container<FITwinElement,
 		boost::multi_index::indexed_by<
@@ -797,11 +802,6 @@ private:
 	/// To process only Elements that were visible in the UE scene at some point, you now need to check
 	/// FITwinElement::bHasMesh.
 	FSceneElemsCont AllElements;
-	struct FElemGuid
-	{
-		ITwinScene::ElemIdx Rank; ///< first seen for this GUID, in case of duplicates
-		FGuid FederatedGuid;
-	};
 	// Note: bidirectional map, without drawing in boost::bimap dependency...
 	using FElemGuidsCont = boost::multi_index_container<FElemGuid,
 		boost::multi_index::indexed_by<
@@ -942,12 +942,9 @@ public:
 	}
 	[[nodiscard]] FITwinElement const& ElementFor(ITwinScene::ElemIdx const ByElemIdx) const;
 	[[nodiscard]] FITwinElement& ElementFor(ITwinScene::ElemIdx const ByElemIdx);
-	/// ONLY for use in the game thread! See comment on thread safety on GetElementForSLOW
 	[[nodiscard]] FITwinElement& ElementForSLOW(ITwinElementID const ById,
 												ITwinScene::ElemIdx* Rank = nullptr);
-	/// Does NOT create the Element if it is not already known! This is the only way to be thread-safe
-	/// when 3D Tiles are received (for example) at the same time that the 4D schedule is loaded using
-	/// tasks running on worker threads (azdev#1704016).
+	/// Does NOT create the Element if it is not already known.
 	[[nodiscard]] FITwinElement* GetElementForSLOW(ITwinElementID const KnownElementId,
 												   ITwinScene::ElemIdx* Rank = nullptr);
 	[[nodiscard]] bool FindElementIDForGUID(FGuid const& ElementGuid, ITwinElementID& Found) const;
@@ -961,6 +958,13 @@ public:
 	FDuplicateElementsVec const& GetDuplicateElements(ITwinElementID const ElemID) const;
 	std::vector<ITwinScene::ElemIdx> const& GetConstructionDetailingParentsToHide() const;
 	FString ToString() const;
+	/// Serialize AllElements, FederationGUIDs, DuplicateElements and ConstructionDetailingParentsToHide members to a
+	/// JSON object, iterating in IndexByRank order.
+	[[nodiscard]] TSharedPtr<FJsonObject> ToJson() const;
+	/// Deserialize AllElements, FederationGUIDs, DuplicateElements and ConstructionDetailingParentsToHide from a JSON
+	/// object, creating entries sequentially via ElementForSLOW.
+	/// \return true on success
+	[[nodiscard]] bool FromJson(TSharedPtr<FJsonObject> const& Root);
 	void CreateHighlightsAndOpacitiesTexture(FITwinSceneTile& SceneTile);
 	void CreateCuttingPlanesTexture(FITwinSceneTile& SceneTile);
 	/// Makes sure feature IDs are available in per-vertex UVs. They should have been baked
@@ -1123,6 +1127,11 @@ private:
 		Container const& TimelineElements, std::vector<ITwinScene::ElemIdx>& SceneElems,
 		std::vector<ITwinTile::ElemIdx>& TileElems);
 };
+
+inline bool operator<(FITwinSceneMapping::FElemGuid const& A, FITwinSceneMapping::FElemGuid const& B)
+{
+	return A.Rank < B.Rank;
+}
 
 // We create a specific class instead of "using" to allow forward declaration.
 class TSceneMappingPtr :public AdvViz::SDK::Tools::TSharedLockableData<FITwinSceneMapping>

@@ -38,7 +38,7 @@ class AITwinIModel;
 
 namespace ScreenUtils
 {
-	ITWINRUNTIME_API void SetCurrentView(UWorld* pWorld, const FTransform& ft);
+	ITWINRUNTIME_API void SetCurrentView(UWorld* pWorld, const FTransform& ft, bool bVRMode);
 	ITWINRUNTIME_API void SetCurrentView(UWorld* pWorld, const FVector& pos,const FRotator& rot);
 	ITWINRUNTIME_API void GetCurrentView(UWorld* pWorld, FVector& pos, FRotator& rot);
 	ITWINRUNTIME_API FTransform GetCurrentViewTransform(UWorld* pWorld);

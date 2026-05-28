@@ -23,21 +23,21 @@ namespace ITwin::Timeline {
 ITWIN_TIMELINE_DEFINE_PROPERTY_VALUES(Test_Visibility,
 	(float, test_value_)
 )
-TSharedPtr<FJsonValue> ToJsonValue(Test_Visibility const&) { return MakeShared<FJsonValueNumber>(0.f); }
+TSharedPtr<FJsonValue> ToJsonValue(Test_Visibility const&, int) { return MakeShared<FJsonValueNumber>(0.f); }
 inline bool NoEffect(Test_Visibility const& Prop) { return Prop.test_value_ == 1.f; }
 
 ITWIN_TIMELINE_DEFINE_PROPERTY_VALUES(Test_Color,
 	(bool, test_hasColor_, ITwin::Timeline::Interpolators::BoolOr)
 	(FVector, test_value_)
 )
-TSharedPtr<FJsonValue> ToJsonValue(Test_Color const&) { return MakeShared<FJsonValueNumber>(0.f); }
+TSharedPtr<FJsonValue> ToJsonValue(Test_Color const&, int) { return MakeShared<FJsonValueNumber>(0.f); }
 inline bool NoEffect(Test_Color const& Prop) { return !Prop.test_hasColor_; }
 
 ITWIN_TIMELINE_DEFINE_PROPERTY_VALUES(Test_Transform,
 	(FQuat, test_orientation_)
 	(FVector, test_position_)
 )
-TSharedPtr<FJsonValue> ToJsonValue(Test_Transform const&) { return MakeShared<FJsonValueNumber>(0.f); }
+TSharedPtr<FJsonValue> ToJsonValue(Test_Transform const&, int) { return MakeShared<FJsonValueNumber>(0.f); }
 inline bool NoEffect(Test_Transform const& Prop) { return false; }
 
 namespace Interpolators
@@ -58,7 +58,7 @@ ITWIN_TIMELINE_DEFINE_PROPERTY_VALUES(Test_CuttingPlane,
 	(bool, test_fullyVisible_, ITwin::Timeline::Interpolators::BoolAnd)
 	(bool, test_fullyHidden_, ITwin::Timeline::Interpolators::BoolAnd)
 )
-TSharedPtr<FJsonValue> ToJsonValue(Test_CuttingPlane const&) { return MakeShared<FJsonValueNumber>(0.f); }
+TSharedPtr<FJsonValue> ToJsonValue(Test_CuttingPlane const&, int) { return MakeShared<FJsonValueNumber>(0.f); }
 inline bool NoEffect(Test_CuttingPlane const& Prop) { return Prop.test_fullyVisible_; }
 
 ITWIN_TIMELINE_DEFINE_OBJECT_PROPERTIES(Test_Element,
@@ -67,7 +67,7 @@ ITWIN_TIMELINE_DEFINE_OBJECT_PROPERTIES(Test_Element,
 	(Test_Transform, test_transform_)
 	(Test_CuttingPlane, test_cuttingPlane_)
 )
-TSharedPtr<FJsonValue> ToJsonValue(Test_Element const&) { return MakeShared<FJsonValueNumber>(0.f); }
+TSharedPtr<FJsonValue> ToJsonValue(Test_Element const&, int) { return MakeShared<FJsonValueNumber>(0.f); }
 
 class Test_ElementTimelineEx: public Test_ElementTimeline
 {

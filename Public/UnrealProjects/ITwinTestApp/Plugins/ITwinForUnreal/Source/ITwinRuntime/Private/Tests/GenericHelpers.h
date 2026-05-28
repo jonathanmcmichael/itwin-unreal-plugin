@@ -12,7 +12,13 @@
 #include <Misc/AutomationTest.h>
 #include <TimerManager.h>
 
-// Copied from CesiumRuntime/Private/Tests/CesiumTestHelpers.h
+// All copied from CesiumRuntime/Private/Tests/CesiumTestHelpers.h
+
+#if WITH_TESTS && WITH_EDITOR
+void pushAllowTickInEditor();
+void popAllowTickInEditor();
+#endif
+
 template <typename T>
 void WaitForImpl(
     const FDoneDelegate& done,
@@ -34,7 +40,6 @@ void WaitForImpl(
   }
 }
 
-// Copied from CesiumRuntime/Private/Tests/CesiumTestHelpers.h
 /// <summary>
 /// Waits for a provided lambda function to become true, ticking through render
 /// frames in the meantime. If the timeout elapses before the condition becomes

@@ -57,12 +57,6 @@ class UITwinSceneMappingBuilder : public UObject, public ICesium3DTilesetLifecyc
 public:
 	void SetIModel(AITwinIModel& InIModel);
 
-	// Worker thread callback - called during Cesium's primitive loading
-	void OnPrimitiveLoadedWorkerThread(
-		const CesiumGltf::Model& Model,
-		const CesiumGltf::MeshPrimitive& Primitive,
-		LoadGltfResult::LoadedPrimitiveResult& PrimitiveResult);
-
 	void PreFetchPrimitiveData(const CesiumGltf::Model& Model, const CesiumGltf::MeshPrimitive& Primitive, int32 MeshIndex, int32 PrimitiveIndex);
 
 	void OnTileMeshPrimitiveLoaded(ICesiumLoadedTilePrimitive& TilePrim) override;

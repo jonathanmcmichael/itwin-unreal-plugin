@@ -21,12 +21,12 @@ class AITwinSplineHelper;
 class AITwinPopulation;
 namespace AdvViz::SDK
 {
-	class IPathAnimator;
+	class IPathAnimManager;
 }
 class BakedKeyFrames;
 
 typedef AdvViz::SDK::IAnimationPathInfoPtr SharedPathInfo;
-typedef AdvViz::SDK::IPathAnimatorPtr SharedPathAnimator;
+typedef AdvViz::SDK::IPathAnimManagerPtr SharedPathAnimManager;
 typedef AdvViz::SDK::IInstancePtr SharedInstance;
 
 class InstanceWithSplinePathExt : public AdvViz::SDK::Tools::Extension, public AdvViz::SDK::Tools::TypeId<InstanceWithSplinePathExt>, public std::enable_shared_from_this<InstanceWithSplinePathExt>
@@ -78,7 +78,7 @@ public:
 	void SetEnabled(AITwinPopulation* Population, int32 InstanceIdx, bool InEnable);
 	bool IsEnabled(AITwinPopulation* Population, int32 InstanceIdx);
 
-	void SetPathAnimator(const SharedPathAnimator &InPathAnimator);
+	void SetPathAnimManager(const SharedPathAnimManager &InPathAnimManager);
 
 private:
 	class FImpl;

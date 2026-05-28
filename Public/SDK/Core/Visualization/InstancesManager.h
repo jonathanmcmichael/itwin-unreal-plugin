@@ -16,7 +16,7 @@
 MODULE_EXPORT namespace AdvViz::SDK 
 {
 	class ISplinesManager;
-	class IPathAnimator;
+	class IPathAnimManager;
 
 	class IInstancesManager : public Tools::Factory<IInstancesManager>, public Tools::ExtensionSupport
 	{
@@ -63,7 +63,7 @@ MODULE_EXPORT namespace AdvViz::SDK
 		virtual void IterateInstancesGroups(std::function<void(IInstancesGroup const&)> const& func) const = 0;
 
 		virtual void SetSplineManager(std::shared_ptr<ISplinesManager> const& splineManager) = 0;
-		virtual void SetAnimPathManager(std::shared_ptr<IPathAnimator> const& animPathManager) = 0;
+		virtual void SetAnimPathManager(std::shared_ptr<IPathAnimManager> const& animPathManager) = 0;
 	};
 
 	class ADVVIZ_LINK InstancesManager : public IInstancesManager, Tools::TypeId<InstancesManager>
@@ -114,7 +114,7 @@ MODULE_EXPORT namespace AdvViz::SDK
 		void IterateInstancesGroups(std::function<void(IInstancesGroup const&)> const& func) const override;
 
 		void SetSplineManager(std::shared_ptr<ISplinesManager> const& splineManager) override;
-		void SetAnimPathManager(std::shared_ptr<IPathAnimator> const& animPathManager) override;
+		void SetAnimPathManager(std::shared_ptr<IPathAnimManager> const& animPathManager) override;
 
 		/// Set Http server to use (if none provided, the default created by Config is used.)
 		void SetHttp(std::shared_ptr<Http> http);
