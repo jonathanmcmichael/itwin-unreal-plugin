@@ -55,6 +55,7 @@ namespace BeUtils
 		std::array<CacheArray, 3> perProjectionData_;
 	};
 
+	class Spline2DProjector;
 
 	//------------------------------------------------------------
 	//
@@ -111,7 +112,7 @@ namespace BeUtils
 			EPathRegularSamplingMode samplingMode,
 			std::variant<size_t, double> const& fixedCountOrDistance,
 			TransformHolder const& transform,
-			E2DProjection projection = E2DProjection::None) const;
+			Spline2DProjector const& projector) const;
 
 
 		//! Clean cache (data recorded to avoid recomputing the spline for a given resolution several times).
@@ -133,7 +134,7 @@ namespace BeUtils
 		//! @return Size of the #segments vector upon exit (= number of segments produced?).
 		size_t ComputeSegments(std::vector<Segment_2D>& segments, value_type const& dU,
 			value_type const& dCurveLen, BoundingBox& bbox, TransformHolder const& transform,
-			E2DProjection projection = E2DProjection::Z_Axis) const;
+			Spline2DProjector const& projector) const;
 
 		//---------------------------------------------------------------------------------------------------------
 		// Curve length and Velocity
@@ -143,23 +144,30 @@ namespace BeUtils
 
 		//! Returns an approximation of the total length of the spline projected along given axis, based on
 		//! the control points only.
-		double GetControlPointsPathLength(TransformHolder const& transform, E2DProjection projection = E2DProjection::None) const;
+		double GetControlPointsPathLength(TransformHolder const& transform, Spline2DProjector const& projector) const;
 
-		//! Returns an approximation of the total length of the spline projected along given axis, with dS as
+		//! Returns an approximation of the total length of the spline projected along given axis, with dU as
 		//! time increment.
-		double EvalSplineLength(TransformHolder const& transform, double& dMaxVelocity, value_type const& dU, E2DProjection projection = E2DProjection::None) const;
+		struct SplineLengthEvalData
+		{
+			double totalLength = 0.0;
+			double maxVelocity = 0.0;
+			double u_start = 0.0; // abscissa of the 1st valid sample, when the projection can fail for some points.
+			double u_end = 1.0; // abscissa of the last valid sample, when the projection can fail for some points.
+		};
+		SplineLengthEvalData EvalSplineLength(TransformHolder const& transform, value_type const& dU, Spline2DProjector const& projector) const;
 
 		//! Returns average speed along the spline projected along given axis, if the curvilinear abscissa is
 		//! understood as a time) - based on the control points only.
-		value_type GetMeanVelocity(TransformHolder const& transform, E2DProjection projection = E2DProjection::None) const;
+		value_type GetMeanVelocity(TransformHolder const& transform, Spline2DProjector const& projector) const;
 
 		//! Returns maximum speed along the spline projected along given axis, if the curvilinear abscissa is
 		//! understood as a time) - based on the control points only.
-		value_type EvalMaxVelocity(TransformHolder const& transform, value_type& splineLenEvaluation, E2DProjection projection = E2DProjection::None) const;
+		value_type EvalMaxVelocity(TransformHolder const& transform, value_type& splineLenEvaluation, Spline2DProjector const& projector) const;
 
 		//! Returns average speed along the spline projected along given axis, if the curvilinear abscissa is
 		//! understood as a time).
-		value_type EvalMeanVelocity(TransformHolder const& transform, double& dMaxVelocity, value_type const& dU, E2DProjection projection = E2DProjection::None) const;
+		value_type EvalMeanVelocity(TransformHolder const& transform, double& dMaxVelocity, value_type const& dU, Spline2DProjector const& projector) const;
 
 	private:
 		value_type GetTotalDeltaU() const;

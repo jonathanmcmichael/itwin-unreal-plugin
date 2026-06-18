@@ -39,7 +39,10 @@ struct FITwinClippingBoxInfo : public FITwinClippingInfoBase
 		glm::dmat3x3 BoxInvMatrix = glm::dmat3x3(1.0); // For performance reasons, we store the inverse matrix.
 		glm::dvec3 BoxTranslation = glm::dvec3(0.0);
 		FBoxSphereBounds BoxBounds;
-		bool bInvertEffect = false;
+
+		/// Whether the box is subtractive (i.e. it creates a hole in the scene), or additive (i.e. only the
+		/// content inside the box is visible).
+		bool bIsSubtractive = true;
 	};
 
 	void CreateEdgeSplines(AITwinSplineTool* SplineTool);

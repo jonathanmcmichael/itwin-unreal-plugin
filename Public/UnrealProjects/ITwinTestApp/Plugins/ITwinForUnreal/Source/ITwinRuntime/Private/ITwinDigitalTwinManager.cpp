@@ -778,6 +778,19 @@ AITwinIModel* AITwinDigitalTwinManager::GetIModel(FString const& StringId) const
 	return !StringId.IsEmpty() && LoadedObjects.Contains(StringId) ? Cast<AITwinIModel>(LoadedObjects[StringId]) : nullptr;
 }
 
+TUniquePtr<FITwinTilesetAccess> AITwinDigitalTwinManager::GetTilesetAccessFromId(FString const& StringId) const
+{
+	if (AITwinIModel* IModel = GetIModel(StringId))
+	{
+		return IModel->MakeTilesetAccess();
+	}
+	else if (AITwinRealityData* RealityData = GetRealityData(StringId))
+	{
+		return RealityData->MakeTilesetAccess();
+	}
+	return {};
+}
+
 bool AITwinDigitalTwinManager::IsComponentLoaded(FString const& StringId) const
 {
 	return !StringId.IsEmpty() && LoadedObjects.Contains(StringId);
@@ -888,18 +901,33 @@ bool AITwinDigitalTwinManager::HasLoadingPending(bool bLogState /*= false*/) con
 	return !PendingLoadIds.IsEmpty() || LoadedObjects.Num() != CompletedLoadIds.Num();
 }
 
-TSet<FString> AITwinDigitalTwinManager::GetLoadedIModels(bool bOnlyCountFullyLoadedModels) const
+TSet<FString> AITwinDigitalTwinManager::GetLoadedLayers(EITwinModelType LayerType, bool bOnlyCountFullyLoadedLayers) const
 {
-	TSet<FString> LoadedIModels;
+	TSet<FString> LoadedLayers;
+
+	auto const IsOfLayerType = [this](FString const& StringId, EITwinModelType LayerType) -> bool
+	{
+		switch (LayerType)
+		{
+		case EITwinModelType::IModel:
+			return IsIModel(StringId);
+		case EITwinModelType::RealityData:
+			return IsRealityData(StringId);
+		default:
+			BE_ISSUE("unhandled layer type", static_cast<int>(LayerType));
+			return false;
+		}
+	};
+
 	for (auto const& [StringId, _] : LoadedObjects)
 	{
-		if (IsIModel(StringId))
+		if (IsOfLayerType(StringId, LayerType))
 		{
-			if (!bOnlyCountFullyLoadedModels || CompletedLoadIds.Contains(StringId))
-				LoadedIModels.Add(StringId);
+			if (!bOnlyCountFullyLoadedLayers || CompletedLoadIds.Contains(StringId))
+				LoadedLayers.Add(StringId);
 		}
 	}
-	return LoadedIModels;
+	return LoadedLayers;
 }
 
 void AITwinDigitalTwinManager::SetAutoLoadAllComponents(bool bInAutoLoadAllComponents)

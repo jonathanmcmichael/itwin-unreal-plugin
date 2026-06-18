@@ -202,6 +202,8 @@ namespace ITwin
 	/// activated.
 	static bool bDrawDebugBoxes = false;
 #endif
+
+	static bool bQueryCombinedMetadataWithoutBBoxes = true;
 }
 
 class FITwinIModelGltfTuner : public BeUtils::GltfTuner
@@ -454,6 +456,7 @@ public:
 		S4D.MaxTimelineUpdateMilliseconds = Settings.Synchro4DMaxTimelineUpdateMilliseconds;
 		S4D.ScheduleQueriesServerPagination = Settings.Synchro4DQueriesDefaultPagination;
 		S4D.ScheduleQueriesBindingsPagination = Settings.Synchro4DQueriesBindingsPagination;
+		S4D.IModelDataQueriesPagination = Settings.IModelDataQueriesPagination;
 		S4D.GlTFTranslucencyRule = Settings.Synchro4DGlTFTranslucencyRule;
 		S4D.bDisableColoring = Settings.bSynchro4DDisableColoring;
 		S4D.bDisableVisibilities = Settings.bSynchro4DDisableVisibilities;
@@ -631,8 +634,9 @@ public:
 		}
 	}
 
-	static constexpr double SchedProgressCombinedMetadataRatio = 0.45;
-	static constexpr double SchedProgressConstructionDetailingRatio = 0.05;
+	double SchedProgressCombinedMetadataRatio = 0.;
+	double SchedProgressElemBBoxesRatio = 0.;
+	double SchedProgressConstructionDetailingRatio = 0.;
 	double LastSchedule4DPercentComplete = 0.;
 	void UpdateIModel4DLoadProgress(std::optional<double> PercentComplete = {})
 	{
@@ -643,13 +647,22 @@ public:
 			return;
 		}
 		ITwinHttp::FLock Lock(ScheduleDataLoadingMutex);
+		if (0. == SchedProgressCombinedMetadataRatio) // init ratios
+		{
+			SchedProgressCombinedMetadataRatio = ITwin::bQueryCombinedMetadataWithoutBBoxes ? 0.25 : 0.45;
+			SchedProgressElemBBoxesRatio = ITwin::bQueryCombinedMetadataWithoutBBoxes ? 0.2 : 0.0;
+			SchedProgressConstructionDetailingRatio = 0.05;
+		}
 		if (PercentComplete)
 			LastSchedule4DPercentComplete = *PercentComplete;
-		Owner.ScheduleDownloadPercentComplete =
-			(1. - SchedProgressCombinedMetadataRatio - SchedProgressConstructionDetailingRatio)
-				* LastSchedule4DPercentComplete;
+		Owner.ScheduleDownloadPercentComplete = (1. - SchedProgressCombinedMetadataRatio
+													- SchedProgressConstructionDetailingRatio
+													- SchedProgressElemBBoxesRatio)
+			* LastSchedule4DPercentComplete;
 		Owner.ScheduleDownloadPercentComplete +=
 			SchedProgressCombinedMetadataRatio * GetQueryingSubprogress(ElementsMetadataQuerying);
+		Owner.ScheduleDownloadPercentComplete +=
+			SchedProgressElemBBoxesRatio * GetQueryingSubprogress(ElementsBBoxesQuerying);//nullptr handled
 		Owner.ScheduleDownloadPercentComplete +=
 			SchedProgressConstructionDetailingRatio * GetQueryingSubprogress(ConstructionDetailingQuerying);
 		Internals.LogScheduleDownloadProgressed();
@@ -657,6 +670,8 @@ public:
 
 	std::shared_ptr<FPaginatedIModelRowsQueries> ElementsMetadataQuerying;
 	std::shared_ptr<FPaginatedIModelRowsQueries> ConstructionDetailingQuerying;
+	// not always used, depends on bQueryCombinedMetadataWithoutBBoxes:
+	std::shared_ptr<FPaginatedIModelRowsQueries> ElementsBBoxesQuerying;
 
 	class FRetrieveSavedViewsPageByPage
 	{
@@ -795,6 +810,8 @@ void AITwinIModel::FImpl::MakeTileset(std::optional<FITwinExportInfo> const& Exp
 	// successively, but we also need to support interrupting and restart queries from scratch
 	// because this code path can be executed several times for an iModel, eg. upon UpdateIModel
 	ElementsMetadataQuerying->Restart();
+	if (ElementsBBoxesQuerying)
+		ElementsBBoxesQuerying->Restart();
 	ConstructionDetailingQuerying->Restart();
 	// It seems risky to NOT do a ResetSchedules here: for example, FITwinElement::AnimationKeys are
 	// not set, MainTimeline::NonAnimatedDuplicates is empty, etc.
@@ -1138,23 +1155,42 @@ void AITwinIModel::FImpl::Initialize()
 	SceneMappingBuilder =
 		TStrongObjectPtr<UITwinSceneMappingBuilder>(NewObject<UITwinSceneMappingBuilder>(&Owner));
 	SceneMappingBuilder->SetIModel(Owner);
+	CreateSynchro4DSchedulesComponent(GetTuner());
 	ElementsMetadataQuerying = std::make_shared<FPaginatedIModelRowsQueries>(
-		Owner, EElementsMetadata::Combined, ScheduleDataLoadingMutex,
-		[this]() { UpdateIModel4DLoadProgress(); });
+		Owner, ITwin::bQueryCombinedMetadataWithoutBBoxes ? EElementsMetadata::CombinedNoBBoxes
+														  : EElementsMetadata::Combined,
+		ScheduleDataLoadingMutex, [this]() { UpdateIModel4DLoadProgress(); },
+		(Owner.Synchro4DSchedules->IModelDataQueriesPagination > 0)
+			? (int)Owner.Synchro4DSchedules->IModelDataQueriesPagination
+			: (ITwin::bQueryCombinedMetadataWithoutBBoxes ? 50'000 : 32'000),
+		ITwin::bQueryCombinedMetadataWithoutBBoxes ? 2 : 4);
+	if (ITwin::bQueryCombinedMetadataWithoutBBoxes)
+	{
+		ElementsBBoxesQuerying = std::make_shared<FPaginatedIModelRowsQueries>(
+			Owner, EElementsMetadata::StandaloneBBoxes, ScheduleDataLoadingMutex,
+			[this]() { UpdateIModel4DLoadProgress(); },
+			(Owner.Synchro4DSchedules->IModelDataQueriesPagination > 0)
+				? (int)Owner.Synchro4DSchedules->IModelDataQueriesPagination : 50'000,
+			2);
+	}
 	ConstructionDetailingQuerying = std::make_shared<FPaginatedIModelRowsQueries>(
 		Owner, EElementsMetadata::ConstructionDetailing, ScheduleDataLoadingMutex,
-		[this]() { UpdateIModel4DLoadProgress(); });
+		[this]() { UpdateIModel4DLoadProgress(); },
+		(Owner.Synchro4DSchedules->IModelDataQueriesPagination > 0)
+			? (int)Owner.Synchro4DSchedules->IModelDataQueriesPagination : 50'000,
+		4);
 	Internals.Uniniter->Register([this] {
 		ElementsMetadataQuerying->OnIModelUninit();
+		if (ElementsBBoxesQuerying)
+			ElementsBBoxesQuerying->OnIModelUninit();
 		ConstructionDetailingQuerying->OnIModelUninit();
 		SceneMappingBuilder.Reset();
 		Internals.ClippingHelper.Reset();
 	});
 	// When loading a level (or doing "Save current Level as"), EndPlay is not called (because not in PIE...)
-	// and detroying the old world crashes because of the leak! (at least starting from UE 5.6)
+	// and destroying the old world crashes because of the leak! (at least starting from UE 5.6)
 	GEngine->OnWorldDestroyed().AddRaw(this, &AITwinIModel::FImpl::OnWorldDestroyed);
 
-	CreateSynchro4DSchedulesComponent(GetTuner());
 	{
 		auto SceneMappingLock = Internals.SceneMapping->GetAutoLock();
 		SceneMappingLock->ShouldHideConstructionData(!Owner.bShowConstructionData);
@@ -1244,7 +1280,10 @@ bool AITwinIModel::ClearMetadataCacheWithConfirmation()
 	if (Impl->ElementsMetadataQuerying && Impl->ConstructionDetailingQuerying
 		&& GetScheduleDownloadPercentComplete() == 100.)
 	{
-		return Impl->ConstructionDetailingQuerying->ClearCacheOnDisk()
+		bool const bRet =
+			Impl->ElementsBBoxesQuerying ? Impl->ElementsBBoxesQuerying->ClearCacheOnDisk() : true;
+		return bRet
+			&& Impl->ConstructionDetailingQuerying->ClearCacheOnDisk()
 			&& Impl->ElementsMetadataQuerying->ClearCacheOnDisk();
 	}
 	return false;
@@ -1903,7 +1942,9 @@ void AITwinIModel::OnConvertedIModelCoordsToGeoCoords(bool bSuccess,
 		&& ensure(Impl->IModelProperties && Impl->IModelProperties->EcefLocation))
 	{
 		if (bSuccess && GeoCoords.geoCoords && !GeoCoords.geoCoords->empty()
-			&& int(AdvViz::SDK::GeoServiceStatus::Success) == GeoCoords.geoCoords->begin()->s)
+			&& (int(AdvViz::SDK::GeoServiceStatus::Success) == GeoCoords.geoCoords->begin()->s
+				// this one is actually a warning
+				|| int(AdvViz::SDK::GeoServiceStatus::OutOfUsefulRange) == GeoCoords.geoCoords->begin()->s))
 		{
 			auto& GeoCoord = GeoCoords.geoCoords->begin()->p;
 			Impl->IModelProperties->EcefLocation->ProjectExtentsCenterGeoCoords = FCartographicProps{
@@ -1912,15 +1953,25 @@ void AITwinIModel::OnConvertedIModelCoordsToGeoCoords(bool bSuccess,
 				.Longitude = GeoCoord[0]
 			};
 			Impl->IModelProperties->EcefLocation->bHasProjectExtentsCenterGeoCoords = true;
+			if (int(AdvViz::SDK::GeoServiceStatus::OutOfUsefulRange) == GeoCoords.geoCoords->begin()->s)
+			{
+				BE_LOGW("ITwinAPI", "Geographic conversion succeeded with the warning \""
+					<< AdvViz::SDK::toString(AdvViz::SDK::GeoServiceStatus(GeoCoords.geoCoords->begin()->s))
+					<< "\", for iModel " << TCHAR_TO_UTF8(*(
+						Impl->ExportInfoPendingLoad ? Impl->ExportInfoPendingLoad->DisplayName : IModelId))
+					<< ": geolocation may be incorrect or imprecise!");
+			}
 		}
 		else
 		{
+			BE_LOGE("ITwinAPI", "Geographic conversion failed with error \""
+				<< ((GeoCoords.geoCoords && !GeoCoords.geoCoords->empty())
+					? AdvViz::SDK::toString(AdvViz::SDK::GeoServiceStatus(GeoCoords.geoCoords->begin()->s))
+					: std::string("unknown error"))
+				<< TCHAR_TO_UTF8(*(Impl->ExportInfoPendingLoad ? Impl->ExportInfoPendingLoad->DisplayName : IModelId))
+				<< ": geolocation may be incorrect or imprecise!");
 			// Signal to MakeTileset to behave as if we had no GCS, since conversion failed anyway
 			Impl->IModelProperties->EcefLocation->bHasGeographicCoordinateSystem = false;
-			BE_LOGE("ITwinAPI", "Geographic conversion failed, geo-location for iModel "
-				<< TCHAR_TO_UTF8(*(Impl->ExportInfoPendingLoad
-					? Impl->ExportInfoPendingLoad->DisplayName : IModelId))
-				<< " may be incorrect or imprecise");
 		}
 		// Construct the tileset anyway: if GCS conversion failed, it will fall back to linear mapping from
 		// ECEF origin.
@@ -3012,6 +3063,8 @@ void AITwinIModel::RefreshTileset()
 		Impl->ResetSceneMapping();
 		if (Impl->ElementsMetadataQuerying)
 			Impl->ElementsMetadataQuerying->Restart();
+		if (Impl->ElementsBBoxesQuerying)
+			Impl->ElementsBBoxesQuerying->Restart();
 		if (Impl->ConstructionDetailingQuerying)
 			Impl->ConstructionDetailingQuerying->Restart();
 		if (IsValid(Synchro4DSchedules) && ensure(bResolvedChangesetIdValid))
@@ -3385,6 +3438,7 @@ size_t FITwinIModelInternals::ElementsMetadataFetchedFromRemote() const
 {
 	auto& Impl = FITwinIModelImplAccess::Get(Owner);
 	return (Impl.ElementsMetadataQuerying ? Impl.ElementsMetadataQuerying->GetRequestsFromRemote() : 0)
+		+ (Impl.ElementsBBoxesQuerying ? Impl.ElementsBBoxesQuerying->GetRequestsFromRemote() : 0)
 		+ (Impl.ConstructionDetailingQuerying ? Impl.ConstructionDetailingQuerying->GetRequestsFromRemote() : 0);
 }
 
@@ -3392,6 +3446,7 @@ size_t FITwinIModelInternals::ElementsMetadataFetchedFromCache() const
 {
 	auto& Impl = FITwinIModelImplAccess::Get(Owner);
 	return (Impl.ElementsMetadataQuerying ? Impl.ElementsMetadataQuerying->GetRequestsFromCache() : 0)
+		+ (Impl.ElementsBBoxesQuerying ? Impl.ElementsBBoxesQuerying->GetRequestsFromCache() : 0)
 		+ (Impl.ConstructionDetailingQuerying ? Impl.ConstructionDetailingQuerying->GetRequestsFromCache() : 0);
 }
 
@@ -3399,23 +3454,39 @@ size_t FITwinIModelInternals::ElementsMetadataFetchedFromCache() const
 EHttpResponseCodes::Type FITwinIModelInternals::ElementsMetadataFirstErrorCode() const
 {
 	auto& Impl = FITwinIModelImplAccess::Get(Owner);
-	if (!Impl.ElementsMetadataQuerying || EHttpResponseCodes::Ok == Impl.ElementsMetadataQuerying->GetFirstErrorCode())
+	auto Ret = EHttpResponseCodes::Ok;
+	auto NotOk = [&Ret](std::shared_ptr<FPaginatedIModelRowsQueries> const& Query)
+		{
+			if (Query)
+				Ret = Query->GetFirstErrorCode();
+			return (EHttpResponseCodes::Ok != Ret);
+		};
+	if (NotOk(Impl.ElementsMetadataQuerying)
+		|| NotOk(Impl.ElementsBBoxesQuerying)
+		|| NotOk(Impl.ConstructionDetailingQuerying))
 	{
-		return Impl.ConstructionDetailingQuerying ? Impl.ConstructionDetailingQuerying->GetFirstErrorCode()
-												  : EHttpResponseCodes::Ok;
+		return Ret;
 	}
-	return Impl.ElementsMetadataQuerying->GetFirstErrorCode();
+	return EHttpResponseCodes::Ok;
 }
 
 FString FITwinIModelInternals::ElementsMetadataFirstErrorString() const
 {
 	auto& Impl = FITwinIModelImplAccess::Get(Owner);
-	if (!Impl.ElementsMetadataQuerying || Impl.ElementsMetadataQuerying->GetFirstErrorString().IsEmpty())
+	FString Ret;
+	auto NotEmpty = [&Ret](std::shared_ptr<FPaginatedIModelRowsQueries> const& Query)
+		{
+			if (Query)
+				Ret = Query->GetFirstErrorString();
+			return !Ret.IsEmpty();
+		};
+	if (NotEmpty(Impl.ElementsMetadataQuerying)
+		|| NotEmpty(Impl.ElementsBBoxesQuerying)
+		|| NotEmpty(Impl.ConstructionDetailingQuerying))
 	{
-		return Impl.ConstructionDetailingQuerying ? Impl.ConstructionDetailingQuerying->GetFirstErrorString()
-												  : FString();
+		return Ret;
 	}
-	return Impl.ElementsMetadataQuerying->GetFirstErrorString();
+	return {};
 }
 
 bool FITwinIModelInternals::AreSynchro4DSchedulesMetadataLoadedOrCancelled() const
@@ -3428,8 +3499,17 @@ bool FITwinIModelInternals::AreSynchro4DSchedulesMetadataLoadedOrCancelled() con
 		|| FPaginatedIModelRowsQueries::EState::Cancelled == State)
 	{
 		State = Impl.ConstructionDetailingQuerying->GetState();
-		return FPaginatedIModelRowsQueries::EState::Finished == State
-			|| FPaginatedIModelRowsQueries::EState::Cancelled == State;
+		if (FPaginatedIModelRowsQueries::EState::Finished == State
+			|| FPaginatedIModelRowsQueries::EState::Cancelled == State)
+		{
+			if (Impl.ElementsBBoxesQuerying)
+			{
+				State = Impl.ElementsBBoxesQuerying->GetState();
+				return (FPaginatedIModelRowsQueries::EState::Finished == State
+					|| FPaginatedIModelRowsQueries::EState::Cancelled == State);
+			}
+			else return true; // as this one is "optional" (depends on a compile flag)
+		}
 	}
 	return false;
 }
@@ -3444,6 +3524,11 @@ bool FITwinIModelInternals::HasSynchro4DSchedulesMetadataQueryingError() const
 	}
 	if (Impl.ConstructionDetailingQuerying
 		&& FPaginatedIModelRowsQueries::EState::StoppedOnError == Impl.ConstructionDetailingQuerying->GetState())
+	{
+		return true;
+	}
+	if (Impl.ElementsBBoxesQuerying
+		&& FPaginatedIModelRowsQueries::EState::StoppedOnError == Impl.ElementsBBoxesQuerying->GetState())
 	{
 		return true;
 	}
@@ -3465,6 +3550,8 @@ void FITwinIModelInternals::Update4DScheduleDownloadStatus(FITwinIModelInternals
 			// Error on the 4D download side => mark these as cancelled even when finished
 			if (Impl.ElementsMetadataQuerying)
 				Impl.ElementsMetadataQuerying->Cancel();
+			if (Impl.ElementsBBoxesQuerying)
+				Impl.ElementsBBoxesQuerying->Cancel();
 			if (Impl.ConstructionDetailingQuerying)
 				Impl.ConstructionDetailingQuerying->Cancel();
 		}
@@ -3479,12 +3566,14 @@ void FITwinIModelInternals::Update4DScheduleDownloadStatus(FITwinIModelInternals
 		Impl.UpdateIModel4DLoadProgress(PercentComplete);
 		break;
 	case E4DScheduleStatus::NoneOrEmpty:
-		if (!Impl.ElementsMetadataQuerying)
+		if (Impl.ElementsMetadataQuerying)
+			Impl.ElementsMetadataQuerying->Cancel();
+		if (Impl.ElementsBBoxesQuerying)
+			Impl.ElementsBBoxesQuerying->Cancel();
+		if (Impl.ConstructionDetailingQuerying)
+			Impl.ConstructionDetailingQuerying->Cancel();
+		if (!Impl.ElementsMetadataQuerying || !Impl.ConstructionDetailingQuerying)
 			return;
-		Impl.ElementsMetadataQuerying->Cancel();
-		if (!Impl.ConstructionDetailingQuerying)
-			return;
-		Impl.ConstructionDetailingQuerying->Cancel();
 		Impl.UpdateIModel4DLoadProgress(100.);
 		break;
 	}
@@ -4007,14 +4096,39 @@ static FAutoConsoleCommandWithWorldAndArgs FCmd_ITwinZoomOnSelectedElement(
 	}
 	else
 	{
-		SelectedElement = ITwin::ParseElementID(Args[0]);
+		FGuid ElementGuid;
+		if (Args[0].Len() >= 36)
+		{
+			if (!FGuid::ParseExact(Args[0], EGuidFormats::DigitsWithHyphensLower, ElementGuid))
+				return;
+		}
+		else
+		{
+			SelectedElement = ITwin::ParseElementID(Args[0]);
+		}
 		for (TActorIterator<AITwinIModel> IModelIter(World); IModelIter; ++IModelIter)
 		{
-			if (GetInternals(**IModelIter).HasElementWithID(SelectedElement))
+			InIModel = *IModelIter;
+			auto& IModelInt = GetInternals(*InIModel);
+			auto SceneMappingLock = IModelInt.SceneMapping->GetAutoLock();
+			bool bFoundInIModel = false;
+			if (ElementGuid.IsValid())
 			{
-				InIModel = *IModelIter;
-				auto& IModelInt = GetInternals(*InIModel);
-				auto SceneMappingLock = IModelInt.SceneMapping->GetAutoLock();
+				if (SceneMappingLock->FindElementIDForGUID(ElementGuid, SelectedElement))
+					bFoundInIModel = true;
+			}
+			if (!bFoundInIModel && SelectedElement == ITwin::NOT_ELEMENT)
+			{
+				// Won't work unless emptying SourceElementIDs is commented out in FinishedParsingIModelMetadata
+				if (SceneMappingLock->FindElementIDForSourceID(Args[0], SelectedElement))
+					bFoundInIModel = true;
+			}
+			if (!bFoundInIModel && SelectedElement != ITwin::NOT_ELEMENT)
+			{
+				bFoundInIModel = GetInternals(**IModelIter).HasElementWithID(SelectedElement);
+			}
+			if (bFoundInIModel)
+			{
 				auto const* SceneElem = SceneMappingLock->GetElementForSLOW(SelectedElement);
 				auto* Schedules = InIModel->FindComponentByClass<UITwinSynchro4DSchedules>();
 				// If animated, try to set the current time to when the Element is (partly) visible
@@ -4038,6 +4152,7 @@ static FAutoConsoleCommandWithWorldAndArgs FCmd_ITwinZoomOnSelectedElement(
 				IModelInt.DescribeElement(SelectedElement);
 				break;
 			}
+			InIModel = nullptr;
 		}
 		if (!InIModel)
 			return;

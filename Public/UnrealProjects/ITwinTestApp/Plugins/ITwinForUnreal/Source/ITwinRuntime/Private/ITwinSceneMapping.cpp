@@ -495,6 +495,16 @@ FITwinElement& FITwinSceneMapping::ElementForSLOW(ITwinElementID const ElementID
 	return const_cast<FITwinElement&>(*It);
 }
 
+bool FITwinSceneMapping::FindElementIDForSourceID(FString const& SourceID, ITwinElementID& Found) const
+{
+	auto& BySrcID = SourceElementIDs.get<IndexBySourceID>();
+	auto It = BySrcID.find(SourceID);
+	if (It == BySrcID.end())
+		return false;
+	Found = ElementFor(It->Rank).ElementID;
+	return true;
+}
+
 bool FITwinSceneMapping::FindElementIDForGUID(FGuid const& ElementGuid, ITwinElementID& Found) const
 {
 	auto& ByGUID = FederatedElementGUIDs.get<IndexByGUID>();
@@ -650,17 +660,21 @@ void FITwinSceneMapping::ReserveIModelMetadata(int TotalElements)
 	SourceElementIDs.reserve(TotalElements);
 }
 
-void FITwinSceneMapping::FinishedParsingIModelMetadata()
+void FITwinSceneMapping::FinishedParsingIModelMetadata(bool bFinishedElemIDs, bool bFinishedBBoxes)
 {
-// Need to keep at least as long as (APIM NextGen) schedule is loading!
-//#if !WITH_EDITOR
-//	decltype(FederatedElementGUIDs) EmptyFed;
-//	FederatedElementGUIDs.swap(EmptyFed);
-//#endif
-	decltype(SourceElementIDs) Empty;
-	SourceElementIDs.swap(Empty);
-
-	bNeedConvertElemBBoxes = true;
+	if (bFinishedElemIDs)
+	{
+		CheckParentChildGraph();
+		// Need to keep at least as long as (APIM NextGen) schedule is loading!
+	//#if !WITH_EDITOR
+	//	decltype(FederatedElementGUIDs) EmptyFed;
+	//	FederatedElementGUIDs.swap(EmptyFed);
+	//#endif
+		decltype(SourceElementIDs) Empty;
+		SourceElementIDs.swap(Empty);
+	}
+	if (bFinishedBBoxes)
+		bNeedConvertElemBBoxes = true;
 }
 
 /// Returns true on success
@@ -685,8 +699,33 @@ bool FITwinSceneMapping::ParseElementBBox(TSharedPtr<FJsonValue> const& BBoxLow,
 	return true;
 }
 
-int FITwinSceneMapping::ParseIModelMetadata(TSceneMappingPtr sceneMappingPtr,
-											TArray<TSharedPtr<FJsonValue>> const& JsonRows)
+/*static*/
+int FITwinSceneMapping::ParseStandaloneBoundingBoxes(TSceneMappingPtr SceneMappingPtr,
+													 TArray<TSharedPtr<FJsonValue>> const& JsonRows)
+{
+	int i = 0;
+	for (auto const& Row : JsonRows)
+	{
+		auto const& Entries = Row->AsArray();
+		if (!ensure(Entries.Num() == 3))
+			continue;
+		ITwinElementID const ElemId = ITwin::ParseElementID(Entries[0]->AsString());
+		if (!ensure(ITwin::NOT_ELEMENT != ElemId))
+			continue;
+		{
+			// locking in the loop gives more chance for others (game thread) to get the lock
+			auto SceneLocked = SceneMappingPtr->GetAutoLock();
+			FITwinElement& Elem = SceneLocked->ElementForSLOW(ElemId);
+			if (ParseElementBBox(Entries[1], Entries[2], Elem.BBox))
+				++i;
+		}
+	}
+	return i;
+}
+
+/*static*/
+int FITwinSceneMapping::ParseIModelMetadata(TSceneMappingPtr SceneMappingPtr,
+	TArray<TSharedPtr<FJsonValue>> const& JsonRows, bool const bWithBBoxes)
 {
 	int GoodSrcIDs = 0, GoodFedGUIDs = 0, EmptyFedGUIDs = 0, EmptySrcIDs = 0, NoBBoxElems = 0;
 	for (auto const& Row : JsonRows)
@@ -697,40 +736,43 @@ int FITwinSceneMapping::ParseIModelMetadata(TSceneMappingPtr sceneMappingPtr,
 		ITwinElementID const ElemId = ITwin::ParseElementID(Entries[0]->AsString());
 		if (!ensure(ITwin::NOT_ELEMENT != ElemId))
 			continue;
-
-		ITwinElementID const ParentId = (Entries.Num() < 4 || Entries[3]->IsNull())
-			? ITwin::NOT_ELEMENT : ITwin::ParseElementID(Entries[3]->AsString());
+		int const ParentEntry = bWithBBoxes ? 3 : 1;
+		ITwinElementID const ParentId = (Entries.Num() < (ParentEntry + 1) || Entries[ParentEntry]->IsNull())
+			? ITwin::NOT_ELEMENT : ITwin::ParseElementID(Entries[ParentEntry]->AsString());
 		{
-			auto sceneLocked = sceneMappingPtr->GetAutoLock(); // locking in the loop gives more chance for others (game thread) to get the lock
-			auto& GuidMap = sceneLocked->FederatedElementGUIDs.get<IndexByGUID>();
-			auto& SourceIdMap = sceneLocked->SourceElementIDs.get<IndexBySourceID>();
+			// locking in the loop gives more chance for others (game thread) to get the lock
+			auto SceneLocked = SceneMappingPtr->GetAutoLock();
+			auto& GuidMap = SceneLocked->FederatedElementGUIDs.get<IndexByGUID>();
+			auto& SourceIdMap = SceneLocked->SourceElementIDs.get<IndexBySourceID>();
 
 			ITwinScene::ElemIdx InVec = ITwinScene::NOT_ELEM;
-			FITwinElement& Elem = sceneLocked->ElementForSLOW(ElemId, &InVec);
+			FITwinElement& Elem = SceneLocked->ElementForSLOW(ElemId, &InVec);
 			if (ITwinScene::NOT_ELEM != Elem.ParentInVec)
-				continue; // already known - our SQL query indeed generates duplicates in some iModels, why...?
-			if (Entries.Num() >= 3)
-				NoBBoxElems += (ParseElementBBox(Entries[1], Entries[2], Elem.BBox) ? 0 : 1);
-			else
-				++NoBBoxElems;
+			{
+				// already known - our SQL query indeed generates duplicates in some iModels, why...?
+				// the BBox parsing can have created the Element too, but in that case the ParentInVec is not set
+				continue;
+			}
+			if (bWithBBoxes && Entries.Num() >= ParentEntry) // BBox entries are the 2 columns before ParentEntry
+				ParseElementBBox(Entries[ParentEntry - 2], Entries[ParentEntry - 1], Elem.BBox);
 			if (ITwin::NOT_ELEMENT != ParentId)
 			{
-				FITwinElement& ParentElem = sceneLocked->ElementForSLOW(ParentId, &Elem.ParentInVec);
-				// TODO_GCO: optimize with a first loop that creates all ParentElem and counts their children,
-				// exploiting the fact that children of the same parent "seem" to be contiguous (but let's not
-				// assume it's always the case...), then a second loop that reserves the SubElems vectors and
-				// fills them
+				FITwinElement& ParentElem = SceneLocked->ElementForSLOW(ParentId, &Elem.ParentInVec);
 				ParentElem.SubElemsInVec.push_back(InVec);
 			}
-			if (Entries.Num() >= 5)
+			int NextEntry = ParentEntry + 1;
+			if (Entries.Num() >= (NextEntry + 1))
 			{
-				sceneLocked->ParseSomeElementIdentifier<FGuid>(GuidMap, InVec, Entries[4], GoodFedGUIDs, EmptyFedGUIDs);
+				SceneLocked->ParseSomeElementIdentifier<FGuid>(
+					GuidMap, InVec, Entries[NextEntry], GoodFedGUIDs, EmptyFedGUIDs, false);
 			}
 			else
 				++EmptyFedGUIDs;
-			if (Entries.Num() >= 6)
+			++NextEntry;
+			if (Entries.Num() >= (NextEntry + 1))
 			{
-				sceneLocked->ParseSomeElementIdentifier<FString>(SourceIdMap, InVec, Entries[5], GoodSrcIDs, EmptySrcIDs);
+				SceneLocked->ParseSomeElementIdentifier<FString>(
+					SourceIdMap, InVec, Entries[NextEntry], GoodSrcIDs, EmptySrcIDs, true);
 			}
 			else
 				++EmptySrcIDs;
@@ -740,7 +782,7 @@ int FITwinSceneMapping::ParseIModelMetadata(TSceneMappingPtr sceneMappingPtr,
 	if (GoodFedGUIDs != JsonRows.Num() || GoodSrcIDs != JsonRows.Num())
 	{
 		int const OtherErr = (2 * JsonRows.Num() - EmptyFedGUIDs - EmptySrcIDs) - GoodFedGUIDs - GoodSrcIDs;
-		UE_LOG(ITwinSceneMap, Display, TEXT("When parsing Element metadata: out of %d entries received, %d had no Federation GUID, %d had no Source Element ID%s"),
+		UE_LOG(ITwinSceneMap, Display, TEXT("When parsing Element metadata: out of %d entries, %d had no Federation GUID, %d had no Source Element ID%s"),
 			JsonRows.Num(), EmptyFedGUIDs, EmptySrcIDs, OtherErr
 			? (*FString::Printf(
 				TEXT(", %d Federation GUIDs or Source Element IDs were incomplete or could not be parsed"),
@@ -750,13 +792,12 @@ int FITwinSceneMapping::ParseIModelMetadata(TSceneMappingPtr sceneMappingPtr,
 	return GoodFedGUIDs;//informative only, but FedGUIDs are more important than SrcID
 }
 
-bool FITwinSceneMapping::CheckParentChildGraph(TSceneMappingPtr sceneMappingPtr)
+bool FITwinSceneMapping::CheckParentChildGraph()
 {
 	bool bError = false;
 	// check there is no loop in the parent-child graph, it would be fatal
 	{
-		auto sceneLocked = sceneMappingPtr->GetRAutoLock();
-		size_t const Count = sceneLocked->AllElements.size();
+		size_t const Count = AllElements.size();
 		std::vector<bool> Visited(Count, false);
 		for (size_t LoopIdxInVec = 0; LoopIdxInVec < Count; ++LoopIdxInVec)
 		{
@@ -769,7 +810,7 @@ bool FITwinSceneMapping::CheckParentChildGraph(TSceneMappingPtr sceneMappingPtr)
 				//if (Visited[InVec]) break; <== not here, we'd never reach Count in case of a loop!!
 				Visited[InVec.value()] = true;
 				++Depth;
-				Elem = &sceneLocked->GetElement(InVec);
+				Elem = &GetElement(InVec);
 				InVec = Elem->ParentInVec;
 			} while (ITwinScene::NOT_ELEM != InVec && Depth <= Count);
 
@@ -783,8 +824,7 @@ bool FITwinSceneMapping::CheckParentChildGraph(TSceneMappingPtr sceneMappingPtr)
 	{
 		if (bError)
 		{
-			auto sceneLocked = sceneMappingPtr->GetAutoLock();
-			for (auto& Elem : sceneLocked->AllElements) // it's so unlikely, let's just trash all relationships
+			for (auto& Elem : AllElements) // it's so unlikely, let's just trash all relationships
 			{
 				// Same comment about const_cast as on FITwinSceneTile::FindElementFeaturesSLOW
 				const_cast<FITwinElement&>(Elem).ParentInVec = ITwinScene::NOT_ELEM;
@@ -798,7 +838,7 @@ bool FITwinSceneMapping::CheckParentChildGraph(TSceneMappingPtr sceneMappingPtr)
 
 template<typename TSomeID, typename TMapByRank>
 bool FITwinSceneMapping::ParseSomeElementIdentifier(TMapByRank& OutIDMap, ITwinScene::ElemIdx const ElemIdx,
-	TSharedPtr<FJsonValue> const& Entry, int& GoodEntry, int& EmptyEntry)
+	TSharedPtr<FJsonValue> const& Entry, int& GoodEntry, int& EmptyEntry, bool bHandleDuplicates)
 {
 	FString SomeIdStr;
 	if (!Entry->TryGetString(SomeIdStr))
@@ -829,6 +869,7 @@ bool FITwinSceneMapping::ParseSomeElementIdentifier(TMapByRank& OutIDMap, ITwinS
 	}
 	else // already in set => we have a duplicate
 	{
+		ensure(bHandleDuplicates); // can we have FederationGUID duplicates? Probably not, by definition!
 		auto& FirstSourceElem = ElementFor(SourceEntry.first->Rank);
 		// first duplicate: create the list
 		if (ITwinScene::NOT_DUPL == FirstSourceElem.DuplicatesList)
@@ -847,10 +888,15 @@ bool FITwinSceneMapping::ParseSomeElementIdentifier(TMapByRank& OutIDMap, ITwinS
 	return true;
 }
 
-int FITwinSceneMapping::ParseConstructionDetailingParentIDs(TArray<TSharedPtr<FJsonValue>> const& JsonRows)
+/*static*/
+int FITwinSceneMapping::ParseConstructionDetailingParentIDs(TSceneMappingPtr SceneMappingPtr,
+											TArray<TSharedPtr<FJsonValue>> const& JsonRows)
 {
+	{	auto SceneLocked = SceneMappingPtr->GetAutoLock();
+		SceneLocked->ConstructionDetailingParentsToHide.reserve(
+			SceneLocked->ConstructionDetailingParentsToHide.size() + (size_t)JsonRows.Num());
+	}
 	int i = 0;
-	ConstructionDetailingParentsToHide.reserve(ConstructionDetailingParentsToHide.size() + (size_t)JsonRows.Num());
 	for (auto const& Row : JsonRows)
 	{
 		auto const& Entries = Row->AsArray();
@@ -861,8 +907,10 @@ int FITwinSceneMapping::ParseConstructionDetailingParentIDs(TArray<TSharedPtr<FJ
 			continue;
 		++i;
 		ITwinScene::ElemIdx InVec = ITwinScene::NOT_ELEM;
-		(void)ElementForSLOW(ElemId, &InVec);
-		ConstructionDetailingParentsToHide.push_back(InVec); // unique by design of the ECSQL query
+		// locking in the loop gives more chance for others (game thread) to get the lock
+		auto SceneLocked = SceneMappingPtr->GetAutoLock();
+		(void)SceneLocked->ElementForSLOW(ElemId, &InVec);
+		SceneLocked->ConstructionDetailingParentsToHide.push_back(InVec); // unique by design of the ECSQL query
 	}
 	return i;
 }

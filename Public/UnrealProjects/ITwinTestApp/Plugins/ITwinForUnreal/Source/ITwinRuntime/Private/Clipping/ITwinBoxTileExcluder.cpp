@@ -26,7 +26,7 @@ void UITwinBoxTileExcluder::RemoveBox(SharedProperties const& BoxProperties)
 inline bool UITwinBoxTileExcluder::ShouldExcludeTileForBox(const UCesiumTile* TileObject,
 	const SharedProperties& BoxProperties) const
 {
-	if (BoxProperties->bInvertEffect)
+	if (BoxProperties->bIsSubtractive)
 	{
 		// The box behaves as an eraser: we should ignore a given tile only if it is fully
 		// inside the erasing box.

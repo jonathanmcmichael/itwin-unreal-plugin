@@ -27,6 +27,7 @@ add_library (BeUtils
 	SplineSampling/OcclusionMap.cpp
 	SplineSampling/OcclusionMap.h
 	SplineSampling/Poisson2D.h
+	SplineSampling/Spline2DProjector.h
 	SplineSampling/SplineDefines.h
 	SplineSampling/SplineHelper.cpp
 	SplineSampling/SplineHelper.h

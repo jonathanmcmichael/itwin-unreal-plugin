@@ -136,7 +136,8 @@ void FITwinSynchro4DAnimator::TickAnimation(float DeltaTime, bool const bForceUp
 	{
 		return;
 	}
-	auto&& ScheduleRange = Owner.GetDateRange();
+	//Don't use Owner.GetDateRange(), which has a slight difference because of (voluntary) rounding
+	auto&& ScheduleRange = SchedInternals.GetTimeline().GetDateRange();
 	// Avoid incrementing time when clicking Play repeatedly at the end of the schedule (positive speeds,
 	// also handle reverse playback)
 	if (ScheduleRange != FDateRange()
@@ -147,7 +148,7 @@ void FITwinSynchro4DAnimator::TickAnimation(float DeltaTime, bool const bForceUp
 	}
 	if (Impl->bIsPlaying)
 	{
-		Owner.ScheduleTime += DeltaTime * Owner.GetReplaySpeed();
+		Owner.SetScheduleTime(Owner.ScheduleTime + DeltaTime * Owner.GetReplaySpeed());
 	}
 	if (Impl->bIsPlaying || Impl->bIsPaused)
 	{

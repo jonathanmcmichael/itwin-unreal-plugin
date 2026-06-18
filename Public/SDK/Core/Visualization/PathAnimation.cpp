@@ -491,6 +491,11 @@ namespace AdvViz::SDK
 				pathInfo->SetSplineId(spline->GetId());
 				pathInfo->SetShouldSave(false);
 			}
+			else
+			{
+				BE_LOGW("ITwinDecoration", "Could not find spline with DB id " << row.splineId.value() << " for animation path with id " << row.id.value());
+				// We don't return an error here since the animation path itself is valid and can be loaded, even if the associated spline is missing (maybe it will be loaded later, or maybe the path can be used without the spline, etc.)
+			}
 			if (onPathLoaded)
 				onPathLoaded(pathInfoPtr);
 			return {};

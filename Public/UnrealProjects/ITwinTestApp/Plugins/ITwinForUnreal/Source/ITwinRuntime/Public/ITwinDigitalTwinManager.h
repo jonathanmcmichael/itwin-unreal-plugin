@@ -18,6 +18,7 @@
 
 class AITwinIModel;
 class AITwinRealityData;
+class FITwinTilesetAccess;
 class UDirectionalLightComponent;
 struct FITwinLoadInfo;
 
@@ -156,6 +157,7 @@ public:
 	// Get loaded IModel or Reality Data objects
 	AITwinRealityData* GetRealityData(FString const& StringId) const;
 	AITwinIModel* GetIModel(FString const& StringId) const;
+	TUniquePtr<FITwinTilesetAccess> GetTilesetAccessFromId(FString const& StringId) const;
 
 	UFUNCTION(Category = "iTwin",
 		BlueprintCallable)
@@ -191,10 +193,14 @@ public:
 	//! Returns whether the request retrieving iTWin information is completed.
 	bool HasRetrievedITwinInfo() const;
 
-	//! Return the total number of iModels loaded in the scene.
-	//! \param bOnlyCountFullyLoadedModels if true, iModels added to the scene but not yet fully loaded will
-	//! be ignored in the count.
-	TSet<FString> GetLoadedIModels(bool bOnlyCountFullyLoadedModels) const;
+	//! Return the IDs of all layers of the given type currently loaded in the scene.
+	//! \param bOnlyCountFullyLoadedModels if true, layers added to the scene but not yet fully loaded will
+	//! be ignored.
+	TSet<FString> GetLoadedLayers(EITwinModelType LayerType, bool bOnlyCountFullyLoadedLayers) const;
+
+	TSet<FString> GetLoadedIModels(bool bOnlyCountFullyLoadedModels) const {
+		return GetLoadedLayers(EITwinModelType::IModel, bOnlyCountFullyLoadedModels);
+	}
 
 	UFUNCTION(Category = "iTwin",
 		BlueprintCallable)

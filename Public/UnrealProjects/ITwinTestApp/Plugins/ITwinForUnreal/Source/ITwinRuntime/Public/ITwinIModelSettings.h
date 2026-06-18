@@ -142,6 +142,7 @@ public:
 		Category = "iTwin")
 	int Synchro4DMaxTimelineUpdateMilliseconds = 50;
 
+	/// Maximum number of items per page for 4D queries that support pagination.
 	UPROPERTY(
 		Config,
 		EditAnywhere,
@@ -149,12 +150,26 @@ public:
 		Category = "iTwin")
 	int Synchro4DQueriesDefaultPagination = 10000;
 
+	/// Maximum number of items per page for 4D animation binding queries (maximized at 50,000 for v6.5 schedules,
+	/// but note that v10+ schedules only support a maximum of 10,000).
 	UPROPERTY(
 		Config,
 		EditAnywhere,
 		BlueprintReadOnly,
 		Category = "iTwin")
 	int Synchro4DQueriesBindingsPagination = 50000;
+
+	/// Maximum number of items per page for iModel Elements metadata queries: 32,000 is the maximum in order to
+	/// stay below the server's 8MB reply size limit, but it may be necessary to use a lower value when requests
+	/// failures occur because of poor connectivity or server load (the codename for these requests to look for in
+	/// the logs is "InfosToQueryIModel"). Leave the default value of "0" to let the plugin decide the best pagination
+	/// depending on the configuration of the SQL queries.
+	UPROPERTY(
+		Config,
+		EditAnywhere,
+		BlueprintReadOnly,
+		Category = "iTwin")
+	int IModelDataQueriesPagination = 0;
 
 	/// Defines grouping of translucency-needing Elements
 	UPROPERTY(

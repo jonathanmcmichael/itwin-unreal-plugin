@@ -63,7 +63,7 @@ public:
 
 	//! Sets the selected point index (in the selected spline).
 	UFUNCTION(Category = "iTwin", BlueprintCallable)
-	void SetSelectedPointIndex(int32 pointIndex);
+	void SetSelectedPointIndex(int32 PointIndex, bool bBroadcastPointSelection = false);
 
 	//! Returns the selected point index (in the selected spline), if any. INDEX_NONE if no spline is
 	//! selected, or no point is selected in the selected spline.
@@ -107,6 +107,10 @@ public:
 	//! Enables the automatic duplication of the currently selected point when the user starts moving it.
 	UFUNCTION(Category = "iTwin", BlueprintCallable)
 	void EnableDuplicationWhenMovingPoint(bool value);
+
+	//! Inserts a new point to the given spline, at the specified world position.
+	UFUNCTION(Category = "iTwin", BlueprintCallable)
+	bool InsertPointAt(AITwinSplineHelper* Spline, int32 PointIndex, FVector const& WorldPosition);
 
 	//! Returns the reference position and extent of the selected spline, if any. If no spline is currently
 	//! selected, and there are splines in the scene, an union of all splines will be considered.
@@ -222,6 +226,10 @@ public:
 	UPROPERTY()
 	FSplinePointSelectedEvent SplinePointSelectedEvent;
 
+	DECLARE_DYNAMIC_MULTICAST_DELEGATE(FCutoutPolygonSelectedEvent);
+	UPROPERTY()
+	FCutoutPolygonSelectedEvent CutoutPolygonSelectedEvent;
+
 	DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FSplinePointMovedEvent, bool, bMovedInITS);
 	UPROPERTY()
 	FSplinePointMovedEvent SplinePointMovedEvent;
@@ -266,9 +274,20 @@ private:
 
 namespace ITwin
 {
+	ITWINRUNTIME_API AITwinSplineTool* GetSplineTool(const UWorld* World);
+
 	ITWINRUNTIME_API void EnableSplineTool(UObject* WorldContextObject,
 		bool bEnable,
 		EITwinSplineUsage Usage,
 		AITwinSplineTool::TilesetAccessArray&& CutoutTargetAccess = {},
 		bool bAutomaticCutoutTarget = false);
+
+	ITWINRUNTIME_API TWeakObjectPtr<AITwinSplineTool> ActivateSplineTool(UWorld* World,
+		EITwinSplineUsage Usage,
+		TWeakObjectPtr<AITwinSplineTool> const& InSplineTool = {});
+
+	ITWINRUNTIME_API void SelectSpline(AITwinSplineHelper* SplineHelper,
+		int32 SelectedPointIndex,
+		UWorld* World,
+		TWeakObjectPtr<AITwinSplineTool> const& InSplineTool = {});
 }

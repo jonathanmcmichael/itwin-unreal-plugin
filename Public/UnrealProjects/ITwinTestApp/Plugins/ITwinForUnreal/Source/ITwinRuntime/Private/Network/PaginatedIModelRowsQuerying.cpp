@@ -42,6 +42,13 @@ FString GetMetadataQueryString(EElementsMetadata const KindOfMetadata)
 			+ TEXT(" FROM bis.Element e")
 			+ TEXT(" LEFT JOIN bis.ExternalSourceAspect a ON a.Element.Id = e.ECInstanceId")
 			+ TEXT(" LEFT JOIN bis.GeometricElement3d b ON b.ECInstanceId = e.ECInstanceId");
+	case EElementsMetadata::CombinedNoBBoxes:
+		return FString(
+			TEXT("SELECT e.ECInstanceId, e.Parent.Id, e.FederationGuid, a.Identifier"))
+			+ TEXT(" FROM bis.Element e")
+			+ TEXT(" LEFT JOIN bis.ExternalSourceAspect a ON a.Element.Id = e.ECInstanceId");
+	case EElementsMetadata::StandaloneBBoxes:
+		return FString(TEXT("SELECT ECInstanceId, BBoxLow, BBoxHigh FROM bis.GeometricElement3d"));
 	case EElementsMetadata::ConstructionDetailing:
 		return FString(TEXT("SELECT DISTINCT TargetECInstanceId"))
 			+ TEXT(" FROM Construction.ConstructionDetailingElementSplitsGeometricElement3d");
@@ -56,7 +63,10 @@ FString GetMetadataQueryCountString(EElementsMetadata const KindOfMetadata)
 	switch (KindOfMetadata)
 	{
 	case EElementsMetadata::Combined:
+	case EElementsMetadata::CombinedNoBBoxes:
 		return TEXT("SELECT COUNT(*) FROM bis.Element");
+	case EElementsMetadata::StandaloneBBoxes:
+		return TEXT("SELECT COUNT(*) FROM bis.GeometricElement3d");
 	case EElementsMetadata::ConstructionDetailing:
 		//QueryCountString = TEXT("SELECT DISTINCT COUNT(*) FROM ..."); <= not possible (and/or not efficient)
 		return {};
@@ -72,6 +82,10 @@ std::string GetMetadataQueryDescription(EElementsMetadata const KindOfMetadata)
 	{
 	case EElementsMetadata::Combined:
 		return "Elements metadata";
+	case EElementsMetadata::CombinedNoBBoxes:
+		return "Elements metadata (no BBoxes)";
+	case EElementsMetadata::StandaloneBBoxes:
+		return "Elements bounding boxes";
 	case EElementsMetadata::ConstructionDetailing:
 		return "Construction detailing";
 	default:
@@ -88,6 +102,12 @@ FString GetCacheFolder(EElementsMetadata const KindOfMetadata, AITwinIModel cons
 	case EElementsMetadata::Combined:
 		Type = QueriesCache::ESubtype::ElementsMetadataCombined;
 		break;
+	case EElementsMetadata::CombinedNoBBoxes:
+		Type = QueriesCache::ESubtype::ElementsMetadataNoBBoxes;
+		break;
+	case EElementsMetadata::StandaloneBBoxes:
+		Type = QueriesCache::ESubtype::ElementsMetadataBBoxes;
+		break;
 	case EElementsMetadata::ConstructionDetailing:
 		Type = QueriesCache::ESubtype::ConstructionDetailing;
 		break;
@@ -101,9 +121,9 @@ FString GetCacheFolder(EElementsMetadata const KindOfMetadata, AITwinIModel cons
 
 }
 
-FPaginatedIModelRowsQueries::FPaginatedIModelRowsQueries(
-	AITwinIModel& InIModel, EElementsMetadata const InKindOfMetadata,
-	ITwinHttp::FMutex& InMutex, FOnLoadProgressUpdated InOnLoadProgressUpdated)
+FPaginatedIModelRowsQueries::FPaginatedIModelRowsQueries(AITwinIModel& InIModel,
+	EElementsMetadata const InKindOfMetadata, ITwinHttp::FMutex& InMutex,
+	FOnLoadProgressUpdated InOnLoadProgressUpdated, int InQueryRowCount, int InMaxNumPageInProgress)
 	: IModel(InIModel)
 	, KindOfMetadata(InKindOfMetadata)
 	, ECSQLQueryString(GetMetadataQueryString(InKindOfMetadata))
@@ -113,6 +133,8 @@ FPaginatedIModelRowsQueries::FPaginatedIModelRowsQueries(
 	, Cache(InIModel)
 	, Mutex(InMutex)
 	, OnLoadProgressUpdated(std::move(InOnLoadProgressUpdated))
+	, QueryRowCount(InQueryRowCount)
+	, MaxNumPageInProgress(InMaxNumPageInProgress)
 {
 	bQueryTableCount = !ECSQLQueryCount.IsEmpty();
 }
@@ -141,6 +163,8 @@ double FPaginatedIModelRowsQueries::PercentComplete() const
 	switch (KindOfMetadata)
 	{
 	case EElementsMetadata::Combined:
+	case EElementsMetadata::CombinedNoBBoxes:
+	case EElementsMetadata::StandaloneBBoxes:
 		if (TotalRowsExpected > 0)
 			// Do not return 100% before all queries are actually finished!
 			return std::min(95., (100. * QueryRowStart) / TotalRowsExpected);
@@ -376,7 +400,7 @@ bool FPaginatedIModelRowsQueries::OnQueryCompleted(bool const bSuccess,
 			if (pThis->NumPageInProgress != 0 || !pThis->lastPageReached)
 				return;
 
-			BE_LOGI("ITwinAPI", pThis->Description << ": page query finished\n Total retrieved from "
+			BE_LOGI("ITwinAPI", pThis->Description << ": page query finished, total retrieved from "
 								// likely all retrieved from same source...
 								<< (bFromCache ? "cache: " : "remote: ") << pThis->TotalRowsParsed);
 		}
@@ -389,10 +413,13 @@ bool FPaginatedIModelRowsQueries::OnQueryCompleted(bool const bSuccess,
 			BE_LOGD("ITwinAPI", pThis->Description << " final preparation started");
 		}
 
-		FITwinSceneMapping::CheckParentChildGraph(sceneMapping);
 		{
 			auto SceneMappingLock = sceneMapping->GetAutoLock();
-			SceneMappingLock->FinishedParsingIModelMetadata();
+			SceneMappingLock->FinishedParsingIModelMetadata(
+				EElementsMetadata::Combined == pThis->KindOfMetadata
+					|| EElementsMetadata::CombinedNoBBoxes == pThis->KindOfMetadata,
+				EElementsMetadata::Combined == pThis->KindOfMetadata
+					|| EElementsMetadata::StandaloneBBoxes == pThis->KindOfMetadata);
 		}
 		{
 			ITwinHttp::FLock Lock(pThis->Mutex);
@@ -492,14 +519,16 @@ bool FPaginatedIModelRowsQueries::OnQueryCompleted(bool const bSuccess,
 					switch (pThis->KindOfMetadata)
 					{
 					case EElementsMetadata::Combined:
-						RowsParsed = FITwinSceneMapping::ParseIModelMetadata(sceneMapping, *JsonRows);
+					case EElementsMetadata::CombinedNoBBoxes:
+						RowsParsed = FITwinSceneMapping::ParseIModelMetadata(
+							sceneMapping, *JsonRows, EElementsMetadata::Combined == pThis->KindOfMetadata);
+						break;
+					case EElementsMetadata::StandaloneBBoxes:
+						RowsParsed = FITwinSceneMapping::ParseStandaloneBoundingBoxes(sceneMapping, *JsonRows);
 						break;
 					case EElementsMetadata::ConstructionDetailing:
-					{
-						auto SceneMappingLock = sceneMapping->GetAutoLock();
-						RowsParsed = SceneMappingLock->ParseConstructionDetailingParentIDs(*JsonRows);
+						RowsParsed = FITwinSceneMapping::ParseConstructionDetailingParentIDs(sceneMapping, *JsonRows);
 						break;
-					}
 					default: ensure(false); break;
 					}
 					BE_LOGD("ITwinAPI", strlog << " finished");

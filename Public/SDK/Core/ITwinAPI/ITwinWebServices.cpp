@@ -28,7 +28,7 @@ namespace AdvViz::SDK
 		return std::string("https://") + ITwinServerEnvironment::GetUrlPrefix(Env) + "api.bentley.com";
 	}
 
-	static ITwinWebServices* WorkingInstance = nullptr;
+	static thread_local ITwinWebServices* WorkingInstance = nullptr;
 
 	struct [[nodiscard]] ScopedWorkingWebServices
 	{

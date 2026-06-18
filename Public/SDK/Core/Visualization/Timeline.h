@@ -178,6 +178,7 @@ namespace AdvViz::SDK
 		virtual void MoveClip(size_t indexSrc, size_t indexDst) = 0;
 		virtual size_t GetClipCount() const = 0;
 		virtual bool HasSomethingToSave() const = 0;
+		virtual void SetShouldSaveRecursive(bool bshouldSave) = 0;
 
 		//sceneAPI functions
 		virtual std::vector<std::shared_ptr<ITimelineClip>> GetObsoleteClips() const = 0;
@@ -202,6 +203,7 @@ namespace AdvViz::SDK
 		const RefID& GetId() const override;
 		void SetId(const RefID& id) override;
 
+
 		using Tools::TypeId<Timeline>::GetTypeId;
 		std::uint64_t GetDynTypeId() const override { return GetTypeId(); }
 		bool IsTypeOf(std::uint64_t i) const override { return (i == GetTypeId()); }
@@ -209,6 +211,7 @@ namespace AdvViz::SDK
 
 		//decoration service function
 		bool HasSomethingToSave() const override;
+		void SetShouldSaveRecursive(bool bshouldSave) override;
 
 
 		//sceneAPI functions

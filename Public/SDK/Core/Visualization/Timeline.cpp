@@ -735,4 +735,13 @@ namespace AdvViz::SDK
 			GetImpl().toDeleteClips_.end());
 	}
 
+	void Timeline::SetShouldSaveRecursive(bool bshouldSave)
+	{
+		SetShouldSave(bshouldSave);
+		for (auto clip : GetImpl().clips_)
+		{
+			clip->SetShouldSave(bshouldSave);
+		}
+	}
+
 }

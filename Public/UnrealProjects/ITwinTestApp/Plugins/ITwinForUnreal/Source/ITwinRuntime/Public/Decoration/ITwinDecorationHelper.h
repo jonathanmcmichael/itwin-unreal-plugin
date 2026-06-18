@@ -37,7 +37,6 @@ class AITwinKeyframePath;
 class AITwinSplineTool;
 class AITwinSplineHelper;
 class UITwinContentManager;
-class AITwinAnimPathManager;
 class AITwinPathAnimTool;
 
 namespace AdvViz::SDK {
@@ -275,7 +274,6 @@ public:
 
 	void ConnectSplineToolToSplinesManager(AITwinSplineTool* splineTool);
 	void ConnectPathAnimToolToPathManager(AITwinPathAnimTool* pathAnimTool);
-	//void ConnectPathAnimManager(AITwinAnimPathManager* manager); // obsolete Unreal UI
 
 	// return link identifiers found in scene
 	std::vector<ITwin::ModelLink> GetLinkedElements() const;

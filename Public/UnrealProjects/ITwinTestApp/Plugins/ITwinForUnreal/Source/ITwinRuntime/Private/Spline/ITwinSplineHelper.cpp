@@ -9,6 +9,7 @@
 
 #include <Spline/ITwinSplineHelper.h>
 #include <Spline/ITwinSplineHelper.inl>
+#include <Spline/ITwinSplineHelper2DWidgetImpl.h>
 #include <Math/UEMathConversion.h>
 #include <CesiumGlobeAnchorComponent.h>
 #include <CesiumCartographicPolygon.h>
@@ -20,6 +21,9 @@
 #include <GameFramework/PlayerController.h>
 #include <IncludeCesium3DTileset.h>
 #include <ITwinTilesetAccess.h>
+
+#include <DrawDebugHelpers.h>
+#include <EngineUtils.h> // for TActorIterator<>
 
 #include <Compil/BeforeNonUnrealIncludes.h>
 #	include <BeHeaders/Compil/EnumSwitchCoverage.h>
@@ -39,14 +43,14 @@
 
 namespace ITwinSpline
 {
-	inline int32 GetPrevIndex(const int32& index, const int32& arraySize, bool isLoop)
+	inline int32 GetPrevIndex(const int32 Index, const int32 NumPoints, bool bLoop)
 	{
-		return (index > 0) ? (index - 1) : (isLoop ? (arraySize - 1) : index);
+		return (Index > 0) ? (Index - 1) : (bLoop ? (NumPoints - 1) : Index);
 	}
 
-	inline int32 GetNextIndex(const int32& index, const int32& arraySize, bool isLoop)
+	inline int32 GetNextIndex(const int32 Index, const int32 NumPoints, bool bLoop)
 	{
-		return (index < arraySize - 1) ? (index + 1) : (isLoop ? 0 : index);
+		return (Index < NumPoints - 1) ? (Index + 1) : (bLoop ? 0 : Index);
 	}
 
 	AdvViz::SDK::ESplineTangentMode UEToAViz(const EITwinTangentMode sdkMode)
@@ -76,6 +80,14 @@ namespace ITwinSpline
 			return EITwinTangentMode::Custom;
 		}
 	}
+
+	bool IsPathAnim(const EITwinSplineUsage Usage)
+	{
+		return Usage == EITwinSplineUsage::AnimPath
+			|| Usage == EITwinSplineUsage::AnimPathTraffic
+			|| Usage == EITwinSplineUsage::AnimPathCrowd
+			|| Usage == EITwinSplineUsage::AnimPathObject;
+	}
 }
 
 struct AITwinSplineHelper::FImpl
@@ -99,11 +111,17 @@ struct AITwinSplineHelper::FImpl
 		bool bNeedUpdateTracingData = true;
 	};
 	mutable FTracingData TracingData;
+
 	bool bSelected = false;
 	int32 SelectedPointIndex = -1;
+	bool bInteractiveCreationInProgress = false;
+
+	bool bNeedsUpdate2DElements = false;
+
 
 	static constexpr double RIBBON_SCALE = 0.60;
 	static std::optional<EITwinSplineUsage> UsageForSpawnedActor;
+
 
 	FImpl(AITwinSplineHelper& InOwner);
 	void Initialize(USplineComponent* splineComp, AdvViz::SDK::ISplinePtr spline);
@@ -112,6 +130,10 @@ struct AITwinSplineHelper::FImpl
 	void UpdateSplineFromUEtoAViz();
 	void UpdateSplineFromAVizToUE();
 
+	inline bool NeedsDraw3DElements() const
+	{
+		return Owner.bDraw3DRibbon || Owner.bDraw3DPoints;
+	}
 	void InitMeshComponent(UStaticMeshComponent* meshComp, UStaticMesh* mesh);
 	void AddAllMeshComponents();
 	void RecreateAllMeshComponents();
@@ -222,6 +244,18 @@ struct AITwinSplineHelper::FImpl
 
 	void SetSelected(bool bInSelected);
 	void SetSelectedPointIndex(int32 PointIndex);
+
+	void SetInteractiveCreationInProgress(bool bInProgress);
+
+	bool NeedsUpdate2DElements() const { return bNeedsUpdate2DElements; }
+	void SetNeedsUpdate2DElements(bool bNeedsUpdate) { bNeedsUpdate2DElements  = bNeedsUpdate; }
+	void Invalidate2DElements() { SetNeedsUpdate2DElements(true); }
+
+	void OnSplineModified()
+	{
+		InvalidateTracingData();
+		Invalidate2DElements();
+	}
 };
 
 /*static*/
@@ -282,6 +316,7 @@ void AITwinSplineHelper::FImpl::Initialize(
 	}
 
 	AddAllMeshComponents();
+	Invalidate2DElements();
 }
 
 void AITwinSplineHelper::FImpl::UpdatePointFromUEtoAViz(int32 pointIndex)
@@ -415,8 +450,6 @@ void AITwinSplineHelper::FImpl::UpdateSplineFromAVizToUE()
 		UpdatePointFromAVizToUE(i);
 	}
 
-	InvalidateTracingData();
-
 	// Update tangent mode
 	bool isSameModeForAllPoints = true;
 	bool bHasInitializedMode = false;
@@ -441,10 +474,13 @@ void AITwinSplineHelper::FImpl::UpdateSplineFromAVizToUE()
 	{
 		SplineComponent.UpdateSpline();
 	});
+
+	OnSplineModified();
 }
 
 void AITwinSplineHelper::FImpl::InitMeshComponent(UStaticMeshComponent* meshComp, UStaticMesh* mesh)
 {
+	BE_ASSERT(NeedsDraw3DElements());
 	USceneComponent* rootComp = Owner.GetRootComponent();
 
 	rootComp->SetMobility(EComponentMobility::Static); // avoids a warning
@@ -459,11 +495,16 @@ void AITwinSplineHelper::FImpl::InitMeshComponent(UStaticMeshComponent* meshComp
 
 void AITwinSplineHelper::FImpl::AddAllMeshComponents()
 {
-	if (!Owner.SplineMesh)
+	if (!NeedsDraw3DElements())
+	{
+		// No 3D element should be drawn, so no need to create mesh components.
+		return;
+	}
+	if (Owner.bDraw3DRibbon && !Owner.SplineMesh)
 	{
 		// For edge display mode, use a cylinder with rounded caps ("EdgeMesh") instead of a ribbon
 		// ("SplineMesh") to make edges independent from the view point.
-		FString const SplineMeshAssetName = IsEdgeDisplayHelper() ? TEXT("EdgeMesh") : TEXT("SplineMesh");
+		FString const SplineMeshAssetName = IsEdgeDisplayHelper() ? TEXT("EdgeMesh") : TEXT("SplineMeshTransp");
 		Owner.SplineMesh = LoadObject<UStaticMesh>(
 			nullptr,
 			*FString::Printf(TEXT("/ITwinForUnreal/ITwin/Meshes/%s.%s"), *SplineMeshAssetName, *SplineMeshAssetName),
@@ -472,7 +513,7 @@ void AITwinSplineHelper::FImpl::AddAllMeshComponents()
 			nullptr);
 	}
 
-	if (!Owner.PointMesh)
+	if (Owner.bDraw3DPoints && !Owner.PointMesh)
 	{
 		Owner.PointMesh = LoadObject<UStaticMesh>(
 			nullptr, TEXT("/ITwinForUnreal/ITwin/Meshes/PointMesh.PointMesh"), nullptr, LOAD_None, nullptr);
@@ -488,7 +529,7 @@ void AITwinSplineHelper::FImpl::AddAllMeshComponents()
 	if (IsEdgeDisplayHelper())
 	{
 		// Edge only mode.
-		Owner.SetPointsHiddenInGame(true);
+		Owner.Set3DPointsHiddenInGame(true);
 	}
 }
 
@@ -513,6 +554,10 @@ void AITwinSplineHelper::FImpl::RecreateAllMeshComponents()
 
 bool AITwinSplineHelper::FImpl::CheckSplineMeshComponents() const
 {
+	if (!Owner.bDraw3DRibbon)
+	{
+		return Owner.SplineMeshComponents.Num() == 0;
+	}
 	const bool bIsClosedLoop = Owner.IsClosedLoop();
 	const int32 NbSplinePoints = Owner.GetNumberOfSplinePoints();
 	if (bIsClosedLoop)
@@ -551,6 +596,8 @@ FVector2D AITwinSplineHelper::FImpl::GetRibbonScale2D() const
 
 void AITwinSplineHelper::FImpl::AddSplineMeshComponentsForPoint(int32 pointIndex)
 {
+	BE_ASSERT(Owner.bDraw3DRibbon);
+
 	if (!ensure(pointIndex >= 0 && pointIndex <= Owner.SplineMeshComponents.Num()))
 		return;
 
@@ -569,40 +616,50 @@ void AITwinSplineHelper::FImpl::AddSplineMeshComponentsForPoint(int32 pointIndex
 	splineMeshComp->SetCustomPrimitiveDataFloat(0, bSelected ? 1.0f : 0.0f);
 }
 
-void AITwinSplineHelper::FImpl::AddMeshComponentsForPoint(int32 pointIndex)
+void AITwinSplineHelper::FImpl::AddMeshComponentsForPoint(int32 PointIndex)
 {
+	BE_ASSERT(NeedsDraw3DElements());
+
 	const int32 NbSplinePoints = Owner.GetNumberOfSplinePoints();
 	if (!Owner.SplineComponent ||
-		pointIndex < 0 || pointIndex >= NbSplinePoints)
+		PointIndex < 0 || PointIndex >= NbSplinePoints)
 		return;
 
 	const bool bIsClosedLoop = Owner.SplineComponent->IsClosedLoop();
 
 	// Add a spline mesh if needed
-	if (bIsClosedLoop || pointIndex < NbSplinePoints - 1)
+	if (Owner.bDraw3DRibbon)
 	{
-		AddSplineMeshComponentsForPoint(pointIndex);
+		if (bIsClosedLoop || PointIndex < NbSplinePoints - 1)
+		{
+			AddSplineMeshComponentsForPoint(PointIndex);
+		}
 	}
 
-	// Add a point mesh
-	UStaticMeshComponent* pointMeshComp = Cast<UStaticMeshComponent>(
-		Owner.AddComponentByClass(UStaticMeshComponent::StaticClass(), true, Owner.GetTransform(), false));
+	// Add a point mesh if needed.
+	if (Owner.bDraw3DPoints)
+	{
+		UStaticMeshComponent* PointMeshComp = Cast<UStaticMeshComponent>(
+			Owner.AddComponentByClass(UStaticMeshComponent::StaticClass(), true, Owner.GetTransform(), false));
 
-	Owner.PointMeshComponents.Insert(pointMeshComp, pointIndex);
+		Owner.PointMeshComponents.Insert(PointMeshComp, PointIndex);
 
-	InitMeshComponent(pointMeshComp, Owner.PointMesh.Get());
+		InitMeshComponent(PointMeshComp, Owner.PointMesh.Get());
 
-	pointMeshComp->SetRelativeLocation(Owner.SplineComponent->GetLocationAtSplinePoint(pointIndex, SPL_LOCAL));
-	pointMeshComp->SetRelativeScale3D(FVector(ScaleFactor));
+		PointMeshComp->SetRelativeLocation(Owner.SplineComponent->GetLocationAtSplinePoint(PointIndex, SPL_LOCAL));
+		PointMeshComp->SetRelativeScale3D(FVector(ScaleFactor));
 
-	pointMeshComp->SetCustomPrimitiveDataFloat(0, bSelected ? 1.0f : 0.0f);
+		PointMeshComp->SetCustomPrimitiveDataFloat(0, bSelected ? 1.0f : 0.0f);
+	}
 
 	// Update meshes
-	UpdateMeshComponentsForPoint(pointIndex);
+	UpdateMeshComponentsForPoint(PointIndex);
 }
 
 void AITwinSplineHelper::FImpl::UpdateAllMeshComponents()
 {
+	if (!NeedsDraw3DElements())
+		return;
 	const int32 NbSplinePoints = Owner.GetNumberOfSplinePoints();
 	for (int32 i = 0; i < NbSplinePoints; ++i)
 	{
@@ -610,31 +667,35 @@ void AITwinSplineHelper::FImpl::UpdateAllMeshComponents()
 	}
 }
 
-void AITwinSplineHelper::FImpl::UpdateMeshComponentsForPoint(int32 pointIndex)
+void AITwinSplineHelper::FImpl::UpdateMeshComponentsForPoint(int32 PointIndex)
 {
+	BE_ASSERT(NeedsDraw3DElements());
+
 	if (!Owner.SplineComponent ||
-		pointIndex < 0 || pointIndex >= Owner.SplineComponent->GetNumberOfSplinePoints())
+		PointIndex < 0 || PointIndex >= Owner.SplineComponent->GetNumberOfSplinePoints())
 		return;
 
 	USplineComponent const& SplineComp(*Owner.SplineComponent);
 
-	bool isLoop = LoopIndices();
-	int32 startIndex = pointIndex;
-	int32 endIndex = ITwinSpline::GetNextIndex(startIndex, SplineComp.GetNumberOfSplinePoints(), isLoop);
-
-	if (pointIndex < Owner.SplineMeshComponents.Num())
+	if (Owner.bDraw3DRibbon && PointIndex < Owner.SplineMeshComponents.Num())
 	{
-		USplineMeshComponent* splineMeshComp = Owner.SplineMeshComponents[pointIndex];
-		splineMeshComp->SetStartAndEnd(
-			SplineComp.GetLocationAtSplinePoint(startIndex, SPL_LOCAL),
-			SplineComp.GetLeaveTangentAtSplinePoint(startIndex, SPL_LOCAL),
-			SplineComp.GetLocationAtSplinePoint(endIndex, SPL_LOCAL),
-			SplineComp.GetArriveTangentAtSplinePoint(endIndex, SPL_LOCAL));
-	}
+		bool bLoop = LoopIndices();
+		int32 StartIndex = PointIndex;
+		int32 EndIndex = ITwinSpline::GetNextIndex(StartIndex, SplineComp.GetNumberOfSplinePoints(), bLoop);
 
-	UStaticMeshComponent* pointMeshComp = Owner.PointMeshComponents[pointIndex];
-	pointMeshComp->SetRelativeLocation(
-		SplineComp.GetLocationAtSplinePoint(startIndex, SPL_LOCAL));
+		USplineMeshComponent* splineMeshComp = Owner.SplineMeshComponents[PointIndex];
+		splineMeshComp->SetStartAndEnd(
+			SplineComp.GetLocationAtSplinePoint(StartIndex, SPL_LOCAL),
+			SplineComp.GetLeaveTangentAtSplinePoint(StartIndex, SPL_LOCAL),
+			SplineComp.GetLocationAtSplinePoint(EndIndex, SPL_LOCAL),
+			SplineComp.GetArriveTangentAtSplinePoint(EndIndex, SPL_LOCAL));
+	}
+	if (Owner.bDraw3DPoints && ensure(PointIndex < Owner.PointMeshComponents.Num()))
+	{
+		UStaticMeshComponent* PointMeshComp = Owner.PointMeshComponents[PointIndex];
+		PointMeshComp->SetRelativeLocation(
+			SplineComp.GetLocationAtSplinePoint(PointIndex, SPL_LOCAL));
+	}
 }
 
 void AITwinSplineHelper::FImpl::SetTangentMode(const EITwinTangentMode mode)
@@ -677,6 +738,8 @@ void AITwinSplineHelper::FImpl::SetTangentMode(const EITwinTangentMode mode)
 	UpdateSplineFromUEtoAViz();
 
 	UpdateAllMeshComponents();
+
+	Invalidate2DElements();
 }
 
 void AITwinSplineHelper::FImpl::SetTransform(const FTransform& NewTransform, bool markSplineForSaving)
@@ -685,7 +748,7 @@ void AITwinSplineHelper::FImpl::SetTransform(const FTransform& NewTransform, boo
 	{
 		Polygon.SetActorTransform(NewTransform);
 	});
-	InvalidateTracingData();
+	OnSplineModified();
 
 	if (Spline)
 	{
@@ -764,7 +827,6 @@ void AITwinSplineHelper::FImpl::SetLocationAtSplinePoint(int32 pointIndex, const
 				nextPointIndex, (nextNextPos - pos) * SMOOTH_FACTOR, SPL_LOCAL, false);
 	}
 
-	InvalidateTracingData();
 	SplineComp.UpdateSpline();
 
 	// Update the AdvViz::SDK spline (for the saving of points)
@@ -776,16 +838,21 @@ void AITwinSplineHelper::FImpl::SetLocationAtSplinePoint(int32 pointIndex, const
 	}
 
 	// Update meshes
-	UpdateMeshComponentsForPoint(pointIndex);
-	UpdateMeshComponentsForPoint(prevPointIndex);
-
-	if (TangentMode == EITwinTangentMode::Smooth)
+	if (NeedsDraw3DElements())
 	{
-		UpdateMeshComponentsForPoint(ITwinSpline::GetNextIndex(pointIndex, numPoints, isLoop));
-		UpdateMeshComponentsForPoint(ITwinSpline::GetPrevIndex(prevPointIndex, numPoints, isLoop));
+		UpdateMeshComponentsForPoint(pointIndex);
+		UpdateMeshComponentsForPoint(prevPointIndex);
+
+		if (TangentMode == EITwinTangentMode::Smooth)
+		{
+			UpdateMeshComponentsForPoint(ITwinSpline::GetNextIndex(pointIndex, numPoints, isLoop));
+			UpdateMeshComponentsForPoint(ITwinSpline::GetPrevIndex(prevPointIndex, numPoints, isLoop));
+		}
 	}
 
 	CopyPointToSecondaryCartographicPolygons(pointIndex, prevPointIndex, nextPointIndex);
+
+	OnSplineModified();
 }
 
 bool AITwinSplineHelper::FImpl::IncludeInWorldBox(FBox& Box) const
@@ -803,15 +870,17 @@ bool AITwinSplineHelper::FImpl::IncludeInWorldBox(FBox& Box) const
 	return NbPoints > 0;
 }
 
-void AITwinSplineHelper::FImpl::RemoveSplineMeshComponentForPoint(int32 pointIndex)
+void AITwinSplineHelper::FImpl::RemoveSplineMeshComponentForPoint(int32 PointIndex)
 {
-	// Remove the meshes representing the point
-	if (pointIndex < Owner.SplineMeshComponents.Num()
-		&& Owner.SplineMeshComponents[pointIndex])
+	BE_ASSERT(Owner.bDraw3DRibbon);
+
+	// Remove the spline mesh attached to the point.
+	if (PointIndex < Owner.SplineMeshComponents.Num()
+		&& Owner.SplineMeshComponents[PointIndex])
 	{
-		Owner.SplineMeshComponents[pointIndex]->UnregisterComponent();
-		Owner.SplineMeshComponents[pointIndex]->DestroyComponent();
-		Owner.SplineMeshComponents.RemoveAt(pointIndex);
+		Owner.SplineMeshComponents[PointIndex]->UnregisterComponent();
+		Owner.SplineMeshComponents[PointIndex]->DestroyComponent();
+		Owner.SplineMeshComponents.RemoveAt(PointIndex);
 	}
 }
 
@@ -902,34 +971,43 @@ void AITwinSplineHelper::FImpl::DeletePoint(int32 pointIndex)
 		CHECK_NUMBER_OF_POINTS();
 	}
 
-	// Remove the meshes representing the point
-	int32 splineMeshIndex = pointIndex;
-	if (bIsLastPoint && !Owner.IsClosedLoop())
+	if (NeedsDraw3DElements())
 	{
-		splineMeshIndex = pointIndex - 1;
-	}
-	RemoveSplineMeshComponentForPoint(splineMeshIndex);
-	CHECK_NUMBER_OF_SPLINE_MESH_COMPONENTS();
+		// Remove the meshes representing the point
 
-	if (pointIndex < Owner.PointMeshComponents.Num()
-		&& Owner.PointMeshComponents[pointIndex])
-	{
-		Owner.PointMeshComponents[pointIndex]->UnregisterComponent();
-		Owner.PointMeshComponents[pointIndex]->DestroyComponent();
-		Owner.PointMeshComponents.RemoveAt(pointIndex);
+		if (Owner.bDraw3DRibbon)
+		{
+			int32 SplineMeshIndex = pointIndex;
+			if (bIsLastPoint && !Owner.IsClosedLoop())
+			{
+				SplineMeshIndex = pointIndex - 1;
+			}
+			RemoveSplineMeshComponentForPoint(SplineMeshIndex);
+		}
+		CHECK_NUMBER_OF_SPLINE_MESH_COMPONENTS();
+
+		if (Owner.bDraw3DPoints
+			&& pointIndex < Owner.PointMeshComponents.Num()
+			&& Owner.PointMeshComponents[pointIndex])
+		{
+			Owner.PointMeshComponents[pointIndex]->UnregisterComponent();
+			Owner.PointMeshComponents[pointIndex]->DestroyComponent();
+			Owner.PointMeshComponents.RemoveAt(pointIndex);
+		}
+
+		// Update the meshes of the previous point to fill the gap
+		numPoints = SplineComp.GetNumberOfSplinePoints();
+		prevPointIndex = ITwinSpline::GetPrevIndex(pointIndex, numPoints, isLoop);
+		UpdateMeshComponentsForPoint(prevPointIndex);
+
+		if (TangentMode == EITwinTangentMode::Smooth)
+		{
+			UpdateMeshComponentsForPoint(ITwinSpline::GetNextIndex(prevPointIndex, numPoints, isLoop));
+			UpdateMeshComponentsForPoint(ITwinSpline::GetPrevIndex(prevPointIndex, numPoints, isLoop));
+		}
 	}
 
-	// Update the meshes of the previous point to fill the gap
-	numPoints = SplineComp.GetNumberOfSplinePoints();
-	prevPointIndex = ITwinSpline::GetPrevIndex(pointIndex, numPoints, isLoop);
-	UpdateMeshComponentsForPoint(prevPointIndex);
-
-	if (TangentMode == EITwinTangentMode::Smooth)
-	{
-		UpdateMeshComponentsForPoint(ITwinSpline::GetNextIndex(prevPointIndex, numPoints, isLoop));
-		UpdateMeshComponentsForPoint(ITwinSpline::GetPrevIndex(prevPointIndex, numPoints, isLoop));
-	}
-	InvalidateTracingData();
+	OnSplineModified();
 }
 
 void AITwinSplineHelper::FImpl::DuplicatePoint(int32 pointIndex)
@@ -950,7 +1028,11 @@ void AITwinSplineHelper::FImpl::DuplicatePoint(int32 pointIndex)
 	SplineComp.SetTangentsAtSplinePoint(pointIndex, arriveTangent, FVector(0), SPL_LOCAL, false);
 	SplineComp.SetTangentsAtSplinePoint(pointIndex + 1, FVector(0), leaveTangent, SPL_LOCAL, false);
 	SplineComp.UpdateSpline();
-	AddMeshComponentsForPoint(pointIndex);
+
+	if (NeedsDraw3DElements())
+	{
+		AddMeshComponentsForPoint(pointIndex);
+	}
 
 	CHECK_NUMBER_OF_SPLINE_MESH_COMPONENTS();
 
@@ -968,6 +1050,8 @@ void AITwinSplineHelper::FImpl::DuplicatePoint(int32 pointIndex)
 		UpdatePointFromUEtoAViz(pointIndex + 1);
 	}
 	CHECK_NUMBER_OF_POINTS();
+
+	Invalidate2DElements();
 }
 
 void AITwinSplineHelper::FImpl::DuplicatePoint(int32& pointIndex, FVector& newWorldPosition)
@@ -1118,21 +1202,25 @@ void AITwinSplineHelper::FImpl::SetClosedLoop(bool bInClosedLoop, bool bUpdateSp
 	if (bPropertyChanged)
 	{
 		// Add or remove the last segment, depending on the new closed loop state
-		const int32 NbSplinePoints = Owner.GetNumberOfSplinePoints();
-		if (bInClosedLoop && ensure(Owner.SplineMeshComponents.Num() == NbSplinePoints - 1))
+		if (Owner.bDraw3DRibbon)
 		{
-			AddSplineMeshComponentsForPoint(NbSplinePoints - 1);
-			UpdateMeshComponentsForPoint(NbSplinePoints - 1);
-		}
-		else if (!bInClosedLoop && ensure(Owner.SplineMeshComponents.Num() == NbSplinePoints))
-		{
-			RemoveSplineMeshComponentForPoint(NbSplinePoints - 1);
+			const int32 NbSplinePoints = Owner.GetNumberOfSplinePoints();
+			if (bInClosedLoop && ensure(Owner.SplineMeshComponents.Num() == NbSplinePoints - 1))
+			{
+				AddSplineMeshComponentsForPoint(NbSplinePoints - 1);
+				UpdateMeshComponentsForPoint(NbSplinePoints - 1);
+			}
+			else if (!bInClosedLoop && ensure(Owner.SplineMeshComponents.Num() == NbSplinePoints))
+			{
+				RemoveSplineMeshComponentForPoint(NbSplinePoints - 1);
+			}
 		}
 		if (Spline)
 		{
 			auto spline = Spline->GetAutoLock();
 			spline->SetClosedLoop(bInClosedLoop);
 		}
+		Invalidate2DElements();
 	}
 	CHECK_NUMBER_OF_SPLINE_MESH_COMPONENTS();
 }
@@ -1220,12 +1308,30 @@ void AITwinSplineHelper::FImpl::UpdateTracingData() const
 	FPoly& Polygon = TracingData.SplinePolygon;
 	Polygon.Init();
 	const int32 NumPoints = Owner.GetNumberOfSplinePoints();
-	Polygon.Vertices.SetNum(NumPoints);
-	for (int32 i(0); i < NumPoints; ++i)
+	if (NumPoints > 2)
 	{
-		Polygon.Vertices[i] = FVector3f(GetLocationAtSplinePoint(i));
+		Polygon.Vertices.SetNum(NumPoints);
+		for (int32 i(0); i < NumPoints; ++i)
+		{
+			Polygon.Vertices[i] = FVector3f(GetLocationAtSplinePoint(i));
+		}
 	}
-	if (NumPoints > 0)
+	else if (NumPoints == 2)
+	{
+		// Create a thin rectangle to allow intersection tests on 2-point splines
+		const FVector3f Point0(GetLocationAtSplinePoint(0));
+		const FVector3f Point1(GetLocationAtSplinePoint(1));
+		const FVector3f Direction = (Point1 - Point0).GetSafeNormal();
+		const FVector3f Normal = FVector3f::CrossProduct(Direction, FVector3f::UpVector);
+		const float HalfWidth = 50.f; // considering spline to be 1m wide
+		Polygon.Vertices.SetNum(4);
+		Polygon.Vertices[0] = Point0 + Normal * HalfWidth;
+		Polygon.Vertices[1] = Point0 - Normal * HalfWidth;
+		Polygon.Vertices[2] = Point1 - Normal * HalfWidth;
+		Polygon.Vertices[3] = Point1 + Normal * HalfWidth;
+	}
+
+	if (NumPoints >= 2)
 	{
 		TracingData.SplineBarycenter = Polygon.GetMidPoint();
 	}
@@ -1322,6 +1428,11 @@ void AITwinSplineHelper::FImpl::SetSelected(bool bInSelected)
 			PointMeshComp->SetCustomPrimitiveDataFloat(0, fSelectionValue);
 		}
 	}
+	// Change color of 2D widget
+	if (Owner.OnScreen2DWidget)
+	{
+		Owner.OnScreen2DWidget->SetTint(bSelected ? FLinearColor(0.374, 1., 0.701) : FLinearColor::White);
+	}
 }
 
 void AITwinSplineHelper::FImpl::SetSelectedPointIndex(int32 PointIndex)
@@ -1329,18 +1440,34 @@ void AITwinSplineHelper::FImpl::SetSelectedPointIndex(int32 PointIndex)
 	if (this->SelectedPointIndex == PointIndex)
 		return;
 	if (this->SelectedPointIndex >= 0
+		&& Owner.bDraw3DPoints
 		&& ensure(this->SelectedPointIndex < Owner.PointMeshComponents.Num()))
 	{
 		Owner.PointMeshComponents[this->SelectedPointIndex]->SetCustomPrimitiveDataFloat(1, 0.0f);
 	}
 	this->SelectedPointIndex = PointIndex;
 	if (this->SelectedPointIndex >= 0
+		&& Owner.bDraw3DPoints
 		&& ensure(this->SelectedPointIndex < Owner.PointMeshComponents.Num()))
 	{
 		Owner.PointMeshComponents[this->SelectedPointIndex]->SetCustomPrimitiveDataFloat(1, 1.0f);
 	}
 }
 
+void AITwinSplineHelper::FImpl::SetInteractiveCreationInProgress(bool bInProgress)
+{
+	if (this->bInteractiveCreationInProgress != bInProgress)
+	{
+		this->bInteractiveCreationInProgress = bInProgress;
+		// Invalidate 2D elements, as some buttons are disabled during interactive creation.
+		Invalidate2DElements();
+	}
+}
+
+/*static*/ bool AITwinSplineHelper::Is2DDrawingEnabled()
+{
+	return true;
+}
 
 AITwinSplineHelper::FSpawnContext::FSpawnContext(EITwinSplineUsage SplineUsage)
 {
@@ -1379,12 +1506,63 @@ AITwinSplineHelper::AITwinSplineHelper()
 	{
 		SetRootComponent(CreateDefaultSubobject<USceneComponent>(TEXT("root")));
 	}
+
+	// Configure drawing settings according to the usage of the spline helper.
+	SetDraw3DPoints(false); // legacy mode, not relevant anymore.
+	SetDraw2DElements(true);
+	BE_ASSERT(Is2DDrawingEnabled());
+	// Display 3D ribbon if it makes sense.
+	SetDraw3DRibbon(SplineUsage == EITwinSplineUsage::AnimPathTraffic
+		|| SplineUsage == EITwinSplineUsage::AnimPathCrowd
+		|| SplineUsage == EITwinSplineUsage::PopulationPath);
+
 	GetRootComponent()->SetMobility(EComponentMobility::Movable); // needed for the anchor
 
 	GlobeAnchor = CreateDefaultSubobject<UCesiumGlobeAnchorComponent>(TEXT("GlobeAnchor"));
 
+	if (!HasAnyFlags(RF_ClassDefaultObject))
+	{
+		// Create widget for screen-space rendering.
+		OnScreen2DWidget = CreateWidget<UITwinSplineHelper2DWidgetImpl>(GetWorld(), LoadClass<UITwinSplineHelper2DWidgetImpl>(nullptr,
+			TEXT("/Script/UMGEditor.WidgetBlueprint'/ITwinForUnreal/ITwin/Splines/ITwinSplineHelper2DWidget.ITwinSplineHelper2DWidget_C'")));
+		if (ensure(OnScreen2DWidget))
+		{
+			OnScreen2DWidget->SetSplineHelper(this);
+			OnScreen2DWidget->AddToViewport(10);
+			OnScreen2DWidget->SetVisibility(ESlateVisibility::Hidden);
+		}
+	}
+
 	PrimaryActorTick.bCanEverTick = true;
 }
+
+void AITwinSplineHelper::BeginPlay()
+{
+	Super::BeginPlay();
+
+	SetTickGroup(ETickingGroup::TG_PostUpdateWork);
+
+	// Show the 2D widget after everything is initialized
+	if (OnScreen2DWidget && bDraw2DElements)
+	{
+		if (Impl->IsEdgeDisplayHelper())
+		{
+			// Edge only mode.
+			OnScreen2DWidget->SetShowPins(false);
+		}
+		OnScreen2DWidget->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
+	}
+}
+
+void AITwinSplineHelper::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	if (OnScreen2DWidget)
+	{
+		OnScreen2DWidget->RemoveFromParent();
+	}
+	Super::EndPlay(EndPlayReason);
+}
+
 
 AdvViz::SDK::ISplinePtr AITwinSplineHelper::GetAVizSpline() const
 {
@@ -1449,16 +1627,39 @@ void AITwinSplineHelper::Initialize(USplineComponent* splineComp, AdvViz::SDK::I
 	Impl->Initialize(splineComp, spline);
 }
 
+bool AITwinSplineHelper::IsInteractiveCreationInProgress() const
+{
+	return Impl->bInteractiveCreationInProgress;
+}
+
+void AITwinSplineHelper::SetInteractiveCreationInProgress(bool bInProgress)
+{
+	Impl->SetInteractiveCreationInProgress(bInProgress);
+}
+
 EITwinSplineUsage AITwinSplineHelper::GetUsage() const
 {
-	ensureMsgf(Impl->Spline, TEXT("unsynchronized spline usage Unreal vs AdvViz::SDK"));
+#ifndef RELEASE_CONFIG
 	if (Impl->Spline)
 	{
 		auto spline = Impl->Spline->GetRAutoLock();
-		ensureMsgf(static_cast<EITwinSplineUsage>(spline->GetUsage()) == Impl->Usage,
-			TEXT("unsynchronized spline usage Unreal vs AdvViz::SDK"));
+		BE_ASSERT(static_cast<EITwinSplineUsage>(spline->GetUsage()) == Impl->Usage,
+			"unsynchronized spline usage Unreal vs AdvViz::SDK");
 	}
+#endif
 	return Impl->Usage;
+}
+
+bool AITwinSplineHelper::IsPointEditionAllowed() const
+{
+	const bool bIsEditionAllowed =
+		/* AzDev#1967146: point insertion is now only possible for the selected polygon. */
+		IsSelected()
+		/* Edge display helpers (introduced for cutout cubes), are just used for display and thus are not
+		 * editable. */
+		&& GetUsage() != EITwinSplineUsage::EdgeDisplayHelper;
+
+	return bIsEditionAllowed;
 }
 
 EITwinTangentMode AITwinSplineHelper::GetTangentMode() const
@@ -1476,11 +1677,11 @@ int32 AITwinSplineHelper::FindPointIndexFromMeshComponent(UStaticMeshComponent* 
 	return PointMeshComponents.Find(MeshComp);
 }
 
-UStaticMeshComponent* AITwinSplineHelper::GetPointMeshComponent(int32 PointIndex) const
+UStaticMeshComponent* AITwinSplineHelper::GetLastPointMeshComponent() const
 {
-	if (ensure(PointIndex < PointMeshComponents.Num()))
+	if (PointMeshComponents.Num() > 0)
 	{
-		return PointMeshComponents[PointIndex];
+		return PointMeshComponents.Last();
 	}
 	else
 	{
@@ -1708,12 +1909,90 @@ int32 AITwinSplineHelper::InsertPointAt(const int32 PointIndex, FVector const& N
 
 void AITwinSplineHelper::SetPointsHiddenInGame(bool bNewHidden) const
 {
+	Set3DPointsHiddenInGame(bNewHidden);
+	if (OnScreen2DWidget)
+	{
+		OnScreen2DWidget->SetShowPins(!bNewHidden);
+	}
+}
+
+void AITwinSplineHelper::Set3DPointsHiddenInGame(bool bNewHidden) const
+{
 	for (auto const& PointMeshComp : PointMeshComponents)
 	{
 		if (PointMeshComp)
 		{
 			PointMeshComp->SetHiddenInGame(bNewHidden);
 		}
+	}
+}
+
+void AITwinSplineHelper::Set3DSplinesHiddenInGame(bool bNewHidden) const
+{
+	for (auto const& SplineMeshComp : SplineMeshComponents)
+	{
+		if (SplineMeshComp)
+		{
+			SplineMeshComp->SetHiddenInGame(bNewHidden);
+		}
+	}
+}
+
+void AITwinSplineHelper::SetDraw3DRibbon(bool bInDraw3DRibbon)
+{
+	if (bDraw3DRibbon != bInDraw3DRibbon)
+	{
+		bDraw3DRibbon = bInDraw3DRibbon;
+		if (GetNumberOfSplinePoints() > 0)
+		{
+			Impl->RecreateAllMeshComponents();
+		}
+	}
+}
+
+void AITwinSplineHelper::SetDraw3DPoints(bool bInDraw3DPoints)
+{
+	if (bDraw3DPoints != bInDraw3DPoints)
+	{
+		bDraw3DPoints = bInDraw3DPoints;
+		if (GetNumberOfSplinePoints() > 0)
+		{
+			Impl->RecreateAllMeshComponents();
+		}
+	}
+}
+
+void AITwinSplineHelper::SetDraw2DElements(bool bInDraw2DElements)
+{
+	bDraw2DElements = bInDraw2DElements;
+	Update2DWidgetVisibility();
+}
+
+void AITwinSplineHelper::Set2DThickness(float InThickness)
+{
+	if (OnScreen2DWidget)
+	{
+		OnScreen2DWidget->SetThickness(InThickness);
+	}
+}
+
+bool AITwinSplineHelper::NeedsUpdate2DElements() const
+{
+	return Impl->NeedsUpdate2DElements();
+}
+
+void AITwinSplineHelper::SetNeedsUpdate2DElements(bool bNeedsUpdate)
+{
+	Impl->SetNeedsUpdate2DElements(bNeedsUpdate);
+}
+
+
+void AITwinSplineHelper::Update2DWidgetVisibility()
+{
+	if (OnScreen2DWidget)
+	{
+		OnScreen2DWidget->SetVisibility(
+			(bDraw2DElements && !IsHidden()) ? ESlateVisibility::SelfHitTestInvisible : ESlateVisibility::Collapsed);
 	}
 }
 
@@ -1726,6 +2005,7 @@ void AITwinSplineHelper::SetActorHiddenInGame(bool bNewHidden)
 		Impl->ScaleMeshComponentsForCurrentPOV();
 	}
 	Super::SetActorHiddenInGame(bNewHidden);
+	Update2DWidgetVisibility();
 }
 
 void AITwinSplineHelper::Tick(float /*DeltaTime*/)
@@ -1867,3 +2147,62 @@ int32 AITwinSplineHelper::GetSelectedPointIndex() const
 {
 	return IsSelected() ? Impl->SelectedPointIndex : -1;
 }
+
+bool AITwinSplineHelper::IsUsedForPathAnim() const
+{
+	return ITwinSpline::IsPathAnim(GetUsage());
+}
+
+
+#if ENABLE_DRAW_DEBUG
+
+// Console command to set spline thickness.
+static FAutoConsoleCommandWithWorldAndArgs FCmd_ITwinSetSplineThickness(
+	TEXT("cmd.ITwinSetSplineThickness"),
+	TEXT("Set the thickness of the 2D representation of all splines."),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
+{
+	if (Args.Num() != 1)
+	{
+		BE_ISSUE("Need exactly 1 args: <thickness>");
+		return;
+	}
+	const float NewThickness = FCString::Atof(*Args[0]);
+	if (NewThickness > 0.f)
+	{
+		for (TActorIterator<AITwinSplineHelper> SplineIter(World); SplineIter; ++SplineIter)
+		{
+			(*SplineIter)->Set2DThickness(NewThickness);
+		}
+	}
+}));
+
+
+// Console command to change spline draw mode.
+static FAutoConsoleCommandWithWorldAndArgs FCmd_ITwinSetSplineDrawMode(
+	TEXT("cmd.ITwinSetSplineDrawMode"),
+	TEXT("Set the draw mode of all splines (mode should contain 2D|3D_Point|3D_Ribbon)."),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
+{
+	if (Args.Num() != 1)
+	{
+		BE_ISSUE("Need exactly 1 args: <draw_mode>");
+		return;
+	}
+	const FString NewDrawMode = Args[0];
+	if (!NewDrawMode.IsEmpty())
+	{
+		const bool bDraw2DElements = NewDrawMode.Contains(TEXT("2D"));
+		const bool bDraw3DPoints = NewDrawMode.Contains(TEXT("3D_Point"));
+		const bool bDraw3DRibbon = NewDrawMode.Contains(TEXT("3D_Ribbon"));
+		for (TActorIterator<AITwinSplineHelper> SplineIter(World); SplineIter; ++SplineIter)
+		{
+			(*SplineIter)->SetDraw2DElements(bDraw2DElements);
+			(*SplineIter)->SetDraw3DPoints(bDraw3DPoints);
+			(*SplineIter)->SetDraw3DRibbon(bDraw3DRibbon);
+		}
+	}
+}));
+
+
+#endif // ENABLE_DRAW_DEBUG

@@ -10,6 +10,7 @@
 #include <PathAnimation/ITwinAnimPathHelper.h>
 #include <Spline/ITwinSplineHelper.h>
 #include <PathAnimation/BakedAnimKeyFrames.h>
+#include <Components/SplineComponent.h>
 
 #include <Compil/BeforeNonUnrealIncludes.h>
 #	include <BeHeaders/Compil/EnumSwitchCoverage.h>
@@ -27,65 +28,126 @@ struct UITwinAnimPathHelper::FImpl
 	AdvViz::SDK::IAnimationPathInfoPtr PathProp;
 	TArray<TStrongObjectPtr<UBakedAnimKeyFrames> > BakedFramesPerLane;
 	TArray<FString> Objects; // same as 'objects' of PathProp but in FString format
-	bool isPlaying = false;
+	bool IsPaused = false;
 
 	FImpl(UITwinAnimPathHelper& InOwner)
 		: Owner(InOwner)
-	{
-	}
+	{}
 
-	bool HasBakedAnimation() const
-	{
-		if (BakedFramesPerLane.Num() == 0)
-			return false;
-		auto pathProp = PathProp->GetAutoLock();
-		if (BakedFramesPerLane.Num() != pathProp->GetLaneCount())
-			return false;
-		for (int i = 0; i < BakedFramesPerLane.Num(); ++i)
-			if (!BakedFramesPerLane[i] || !BakedFramesPerLane[i]->IsReady())
-				return false;
-		return true;
-	}
-
-	void InvalidateBakedAnimation()
-	{
-		lastBakingRequestTime = Owner.GetWorld()->GetRealTimeSeconds();
-		for (int i = 0; i < BakedFramesPerLane.Num(); ++i)
-			BakedFramesPerLane[i]->MarkForUpdate();
-	}
-
-	void BakeAnimationIfNeeded(AdvViz::SDK::ISplinePtr Spline)
-	{
-		auto splineInst = Spline->GetRAutoLock();
-
-		if (BakedFramesPerLane.Num() > 0 // not first baking
-			&& (lastBakingRequestTime < 0 || Owner.GetWorld()->GetRealTimeSeconds() - lastBakingRequestTime < 5.f))
-			return; // avoid baking too often (e.g. when moving spline points)
-
-		auto pathProp = PathProp->GetAutoLock();
-		if (BakedFramesPerLane.Num() != pathProp->GetLaneCount())
-			BakedFramesPerLane.SetNum(pathProp->GetLaneCount());
-
-		for (int i = 0; i < BakedFramesPerLane.Num(); ++i) // TODO: add lane offset for crowd/traffic paths
-		{
-			if (!BakedFramesPerLane[i])
-				BakedFramesPerLane[i] = TStrongObjectPtr<UBakedAnimKeyFrames>(NewObject<UBakedAnimKeyFrames>(&Owner));
-			BakedFramesPerLane[i]->BakeSpline(Owner.GetWorld(), splineInst->GetId(), Owner.GetLaneSpeed(i));
-		}
-
-		lastBakingRequestTime = -1.f;
-	}
-
+	bool HasBakedAnimation() const;
+	void InvalidateBakedAnimation();
+	void BakeAnimationIfNeeded(AdvViz::SDK::ISplinePtr Spline);
+	UBakedAnimKeyFrames* GetBakedFrames(int laneIdx);
+	void UpdateBakedAnimationSpeed();
 
 private:
+	void UpdateLaneCountIfNeeded();
+
 	float lastBakingRequestTime = -1.f;
 };
 
+bool UITwinAnimPathHelper::FImpl::HasBakedAnimation() const
+{
+	if (lastBakingRequestTime > 0)
+		return false; // baking is requested and not yet processed
+	if (BakedFramesPerLane.Num() == 0 || BakedFramesPerLane.Num() != Owner.GetFullLaneCount())
+		return false;
+	for (int i = 0; i < BakedFramesPerLane.Num(); ++i)
+		if (!BakedFramesPerLane[i] || !BakedFramesPerLane[i]->IsReady())
+			return false;
+	return true;
+}
+
+bool UITwinAnimPathHelper::HasBakedAnimation() const
+{
+	return Impl->HasBakedAnimation();
+}
+
+void UITwinAnimPathHelper::FImpl::UpdateLaneCountIfNeeded()
+{
+	if (BakedFramesPerLane.Num() == Owner.GetFullLaneCount())
+		return;
+
+	BakedFramesPerLane.SetNum(Owner.GetFullLaneCount());
+	for (int i = 0; i < BakedFramesPerLane.Num(); ++i)
+	{
+		if (!BakedFramesPerLane[i].IsValid())
+			BakedFramesPerLane[i] = TStrongObjectPtr<UBakedAnimKeyFrames>(NewObject<UBakedAnimKeyFrames>(&Owner));
+	}
+}
+
+void UITwinAnimPathHelper::FImpl::UpdateBakedAnimationSpeed()
+{
+	for (int i = 0; i < BakedFramesPerLane.Num(); ++i)
+		if (BakedFramesPerLane[i].IsValid())
+			BakedFramesPerLane[i]->SetSpeed(Owner.GetLaneSpeed(i));
+}
+
+void UITwinAnimPathHelper::FImpl::InvalidateBakedAnimation()
+{
+	lastBakingRequestTime = Owner.GetWorld()->GetRealTimeSeconds();
+
+	UpdateLaneCountIfNeeded();
+
+	for (int i = 0; i < BakedFramesPerLane.Num(); ++i)
+		BakedFramesPerLane[i]->MarkForUpdate();
+}
+
+void UITwinAnimPathHelper::InvalidateBakedAnimation()
+{
+	Impl->InvalidateBakedAnimation();
+}
+
+void UITwinAnimPathHelper::FImpl::BakeAnimationIfNeeded(AdvViz::SDK::ISplinePtr Spline)
+{
+	auto splineInst = Spline->GetRAutoLock();
+	bool bFirstBaking(BakedFramesPerLane.Num() == 0);
+
+	UpdateLaneCountIfNeeded();
+
+	// Avoid baking too often (e.g. when moving spline points)
+	if (!bFirstBaking && (lastBakingRequestTime < 0 || Owner.GetWorld()->GetRealTimeSeconds() - lastBakingRequestTime < 5.f))
+		return;
+
+	for (int32 i = 0; i < BakedFramesPerLane.Num(); ++i)
+		BakedFramesPerLane[i]->BakeSpline(Owner.GetWorld(), splineInst->GetId(), Owner.GetLaneSpeed(i), i, Owner.GetLaneOffset(i, false));
+
+	lastBakingRequestTime = -1.f;
+}
+
+void UITwinAnimPathHelper::BakeAnimationIfNeeded()
+{
+	if (!ensure(SplineHelper.IsValid()) || SplineHelper->GetNumberOfSplinePoints() < 2)
+		return;
+	Impl->BakeAnimationIfNeeded(SplineHelper->GetAVizSpline());
+}
+
+UBakedAnimKeyFrames* UITwinAnimPathHelper::FImpl::GetBakedFrames(int laneIdx)
+{
+	if (BakedFramesPerLane.IsValidIndex(laneIdx))
+		return BakedFramesPerLane[laneIdx].Get();
+	return nullptr;
+}
+
 UBakedAnimKeyFrames* UITwinAnimPathHelper::GetBakedFrames(int laneIdx/* = 0*/)
 {
-	if (Impl->BakedFramesPerLane.IsValidIndex(laneIdx))
-		return Impl->BakedFramesPerLane[laneIdx].Get();
-	return nullptr;
+	return Impl->GetBakedFrames(laneIdx);
+}
+
+FTransform UITwinAnimPathHelper::GetStartTransform(int laneIdx/* = 0*/) const
+{
+	if (auto Frames = Impl->GetBakedFrames(laneIdx))
+		if (Frames->IsReady())
+			return Frames->GetTransform(0.f, IsInvDirLane(laneIdx));
+	return FTransform(SplineHelper->GetSplineComponent()->GetLocationAtDistanceAlongSpline(0.0, ESplineCoordinateSpace::World));
+}
+
+float UITwinAnimPathHelper::GetLaneLength(int laneIdx) const
+{
+	if (auto Frames = Impl->GetBakedFrames(laneIdx))
+		if (Frames->IsReady())
+			return Frames->GetTotalLength();
+	return SplineHelper->GetSplineComponent()->GetSplineLength();
 }
 
 void UITwinAnimPathHelper::Init(AITwinSplineHelper* InSplineHelper, AdvViz::SDK::IAnimationPathInfoPtr InPathProp)
@@ -126,32 +188,11 @@ void UITwinAnimPathHelper::UpdateSpline()
 
 void UITwinCrowdAnimPathHelper::UpdateSpline()
 {
-	UITwinAnimPathHelper::UpdateSpline();
-
-	if (SplineHelper.IsValid())
-		SplineHelper->SetFixedSplineWidth(GetRoadWidth());
-}
-
-float UITwinAnimPathHelper::GetRoadWidth() const
-{
-	return (IsOneWay() ? 1 : 2) * GetLaneCount() * GetLaneWidth() + GetSeparatorWidth();
-}
-
-bool UITwinAnimPathHelper::HasBakedAnimation() const
-{
-	return Impl->HasBakedAnimation();
-}
-
-void UITwinAnimPathHelper::InvalidateBakedAnimation()
-{
-	Impl->InvalidateBakedAnimation();
-}
-
-void UITwinAnimPathHelper::BakeAnimationIfNeeded()
-{
-	if (!ensure(SplineHelper.IsValid()) || SplineHelper->GetNumberOfSplinePoints() < 2)
+	if (!SplineHelper.IsValid())
 		return;
-	Impl->BakeAnimationIfNeeded(SplineHelper->GetAVizSpline());
+
+	SplineHelper->SetClosedLoop(IsLoop());
+	SplineHelper->SetFixedSplineWidth(GetRoadWidth());
 }
 
 const TArray<FString>& UITwinAnimPathHelper::Get3DObjectPaths() const
@@ -179,10 +220,11 @@ void UITwinAnimPathHelper::Set3DObjects(const TArray<FString>& Assets)
 	{
 		paths.push_back(TCHAR_TO_UTF8(*Asset));
 
-		TArray<FString> Parts;
-		Asset.ParseIntoArray(Parts, TEXT("###"), /*InCullEmpty=*/false);
-		if (Parts.Num() > 2)
-			Impl->Objects.Add(Parts[2]);
+		//TArray<FString> Parts;
+		//Asset.ParseIntoArray(Parts, TEXT("###"), /*InCullEmpty=*/false);
+		//if (Parts.Num() > 2)
+		//	Impl->Objects.Add(Parts[2]);
+		Impl->Objects.Add(Asset);
 	}
 	auto pathProp = Impl->PathProp->GetAutoLock();
 	pathProp->SetObjects(paths);
@@ -198,11 +240,47 @@ void UITwinAnimPathHelper::Set3DObjectsFromProps()
 	{
 		FString Asset(UTF8_TO_TCHAR(path.c_str()));
 
-		TArray<FString> Parts;
-		Asset.ParseIntoArray(Parts, TEXT("###"), /*InCullEmpty=*/false);
-		if (Parts.Num() > 2)
-			Impl->Objects.Add(Parts[2]);
+		//TArray<FString> Parts;
+		//Asset.ParseIntoArray(Parts, TEXT("###"), /*InCullEmpty=*/false);
+		//if (Parts.Num() > 2)
+		//	Impl->Objects.Add(Parts[2]);
+		Impl->Objects.Add(Asset);
 	}
+}
+
+FString UITwinAnimPathHelper::GetRandomObjectPath() const
+{
+	static FRandomStream RandomStream(reinterpret_cast<uintptr_t>(SplineHelper.Get()));
+	if (Impl->Objects.Num() == 0)
+		return FString();
+	if (!CanHaveMultipleObjects())
+	{
+		ensure(Impl->Objects.Num() == 1);
+		return Impl->Objects[0];
+	}
+	return Impl->Objects[RandomStream.RandRange(0, Impl->Objects.Num() - 1)];
+}
+
+bool UITwinAnimPathHelper::IsPaused() const
+{
+	return Impl->IsPaused;
+}
+
+void UITwinAnimPathHelper::SetPaused(bool bInIsPaused)
+{
+	Impl->IsPaused = bInIsPaused;
+}
+
+bool UITwinAnimPathHelper::IsVisible() const
+{
+	auto pathProp = Impl->PathProp->GetAutoLock();
+	return pathProp->IsEnabled();
+}
+
+void UITwinAnimPathHelper::SetVisible(bool bInIsVisible)
+{
+	auto pathProp = Impl->PathProp->GetAutoLock();
+	pathProp->SetIsEnabled(bInIsVisible);
 }
 
 bool UITwinAnimPathHelper::HasInvDirection() const
@@ -242,8 +320,7 @@ void UITwinObjectAnimPathHelper::SetSpeed(float InSpeed)
 {
 	auto pathProp = Impl->PathProp->GetAutoLock();
 	pathProp->SetSpeed(InSpeed);
-	for (int i = 0; i < Impl->BakedFramesPerLane.Num(); ++i)
-		Impl->BakedFramesPerLane[i]->SetSpeed(InSpeed);
+	Impl->UpdateBakedAnimationSpeed();
 }
 
 float UITwinObjectAnimPathHelper::GetDelay() const
@@ -289,8 +366,6 @@ void UITwinCrowdAnimPathHelper::SetOneWay(bool bInOneWay)
 {
 	auto pathProp = Impl->PathProp->GetAutoLock();
 	pathProp->SetOneWay(bInOneWay);
-	
-	InvalidateBakedAnimation();
 }
 
 int UITwinCrowdAnimPathHelper::GetLaneCount() const
@@ -303,8 +378,6 @@ void UITwinCrowdAnimPathHelper::SetLaneCount(int InLaneCount)
 {
 	auto pathProp = Impl->PathProp->GetAutoLock();
 	pathProp->SetLaneCount(InLaneCount);
-
-	InvalidateBakedAnimation();
 }
 
 float UITwinCrowdAnimPathHelper::GetLaneWidth() const
@@ -317,8 +390,6 @@ void UITwinCrowdAnimPathHelper::SetLaneWidth(float InLaneWidth)
 {
 	auto pathProp = Impl->PathProp->GetAutoLock();
 	pathProp->SetLaneWidth(InLaneWidth);
-
-	InvalidateBakedAnimation();
 }
 
 float UITwinCrowdAnimPathHelper::GetDensity() const
@@ -348,13 +419,11 @@ void UITwinTrafficAnimPathHelper::SetSeparatorWidth(float InSeparatorWidth)
 {
 	auto pathProp = Impl->PathProp->GetAutoLock();
 	pathProp->SetSepWidth(InSeparatorWidth);
-
-	InvalidateBakedAnimation();
 }
 
 float UITwinTrafficAnimPathHelper::GetSpeed() const
 {
-	return GetLaneSpeed(0);
+	return GetMaxSpeed();
 }
 
 void UITwinTrafficAnimPathHelper::SetSpeed(float InSpeed)
@@ -373,8 +442,7 @@ void UITwinTrafficAnimPathHelper::SetMinSpeed(float InMinSpeed)
 {
 	auto pathProp = Impl->PathProp->GetAutoLock();
 	pathProp->SetMinSpeed(InMinSpeed);
-
-	// TODO: rebuild traffic animation when min speed changes, as it can impact traffic density
+	Impl->UpdateBakedAnimationSpeed();
 }
 
 float UITwinTrafficAnimPathHelper::GetMaxSpeed() const
@@ -387,12 +455,103 @@ void UITwinTrafficAnimPathHelper::SetMaxSpeed(float InMaxSpeed)
 {
 	auto pathProp = Impl->PathProp->GetAutoLock();
 	pathProp->SetMaxSpeed(InMaxSpeed);
+	Impl->UpdateBakedAnimationSpeed();
+}
 
-	// TODO: rebuild traffic animation when max speed changes, as it can impact traffic density
+bool UITwinCrowdAnimPathHelper::IsSlowLane(int laneIdx) const
+{
+	int nbSlowLanes = std::max(IsOneWay() ? GetFullLaneCount() / 2 : GetFullLaneCount() / 4, 1);
+	if (IsOneWay())
+		return HasInvDirection() ? (laneIdx < nbSlowLanes) : (laneIdx >= GetFullLaneCount() - nbSlowLanes);
+	else
+		return laneIdx < nbSlowLanes || laneIdx >= GetFullLaneCount() - nbSlowLanes;
+}
+
+bool UITwinCrowdAnimPathHelper::IsInvDirLane(int laneIdx) const
+{
+	//if (hasAlternatingLanes && !IsOneWay())
+	//	return laneIdx % 2 == 1; // TODO: for pedestrian traffic
+	//else
+		return !IsOneWay() && ((HasInvDirection() && (laneIdx >= GetFirstRightLaneIndex())) || (!HasInvDirection() && (laneIdx < GetFirstRightLaneIndex())));
 }
 
 float UITwinTrafficAnimPathHelper::GetLaneSpeed(int laneIdx) const
 {
-	// TODO: compute per lane speed from density, max/min speeds and lane index
-	return GetSpeed();
+	// distribute the speed range among faster and slower lanes
+	float speed(GetMinSpeed());
+	float speedDelta(GetMaxSpeed() - GetMinSpeed());
+	if (speedDelta > 0.f)
+	{
+		if (IsOneWay())
+		{
+			if (GetLaneCount() > 1)
+			{
+				int laneID = HasInvDirection() ? laneIdx : GetLaneCount() - 1 - laneIdx; // laneID=0 - slowest lane, laneID=(nbLanes-l) - fastest lane
+				speed += speedDelta * laneID / (GetLaneCount() - 1);
+			}
+		}
+		else
+		{
+			if (laneIdx < GetFirstRightLaneIndex() && GetFirstRightLaneIndex() > 1)
+				speed += speedDelta * laneIdx / (GetFirstRightLaneIndex() - 1);
+			else if (laneIdx >= GetFirstRightLaneIndex() && GetFirstRightLaneIndex() < GetFullLaneCount() - 1)
+				speed += speedDelta * (GetFullLaneCount() - 1 - laneIdx) / (GetFullLaneCount() - GetFirstRightLaneIndex() - 1);
+		}
+	}
+
+	return speed;
 }
+
+float UITwinTrafficAnimPathHelper::GetLaneDensity(int laneIdx) const
+{
+	float laneDensity(GetDensity());
+
+	// Slightly increase density on slower lanes and decrease on faster ones if traffic is not intense.
+	// Lanes are numbered from left to write (laneIdx=0 corresponds to the leftmost lane).
+	if (laneDensity < 0.8f)
+	{
+		float coef(0.5f);
+		if (IsOneWay())
+		{
+			if (GetLaneCount() > 1)
+			{
+				coef = HasInvDirection() ? 1.f - laneIdx / (float)(GetLaneCount() - 1)
+					: laneIdx / (float)(GetLaneCount() - 1);
+			}
+		}
+		else
+		{
+			if (laneIdx < GetFirstRightLaneIndex() && GetFirstRightLaneIndex() > 1)
+				coef = 1.f - laneIdx / (float)(GetFirstRightLaneIndex() - 1);
+			else if (laneIdx >= GetFirstRightLaneIndex() && GetFirstRightLaneIndex() < GetFullLaneCount() - 1)
+				coef = 1.f - (GetFullLaneCount() - 1 - laneIdx) / (float)(GetFullLaneCount() - 1 - GetFirstRightLaneIndex());
+		}
+		laneDensity += 0.2f * coef - 0.1f;
+		if (GetDensity() <= 0.1f)
+			laneDensity = std::max(laneDensity, GetDensity());
+	}
+
+	return laneDensity;
+}
+
+float UITwinCrowdAnimPathHelper::GetLaneOffset(int laneIdx, bool bAddRandomVariation) const
+{
+	float posOffset = IsOneWay() ? (laneIdx + 0.5f - 0.5f * GetLaneCount()) * GetLaneWidth()
+		: (laneIdx + 0.5f - GetFirstRightLaneIndex()) * GetLaneWidth();
+	// Take into account separator width (if any)
+	if (!IsOneWay() && GetSeparatorWidth() > 0.f)
+		posOffset += (laneIdx < GetFirstRightLaneIndex()) ? -0.5f * GetSeparatorWidth() : 0.5f * GetSeparatorWidth();
+
+	if (bAddRandomVariation)
+	{
+		// Slightly shift each vehicle from the main axis to avoid the vehicles being strictly aligned
+		// (but leave at least 1.5m distance between the cars)
+		float vehicleWidth = 200; // TODO: taking 2m here but can also use real object width
+		float widthDiff(GetLaneWidth() - vehicleWidth - 1.5f);
+		if (widthDiff > KINDA_SMALL_NUMBER)
+			posOffset += (FMath::FRand() - 0.5f) * widthDiff;
+	}
+
+	return posOffset;
+}
+

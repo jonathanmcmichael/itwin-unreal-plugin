@@ -84,12 +84,17 @@ public:
 	// Update associated spline with current parameter values
 	virtual void UpdateSpline();
 
+	virtual bool CanHaveMultipleObjects() const { return false; }
+
 	UBakedAnimKeyFrames* GetBakedFrames(int laneIdx = 0);
 	bool HasBakedAnimation() const;
 	void InvalidateBakedAnimation();
 	void BakeAnimationIfNeeded();
-
-	float GetRoadWidth() const;
+	FTransform GetStartTransform(int laneIdx = 0) const;
+	float GetLaneLength(int laneIdx) const;
+	// Total number of lanes in both directions.
+	int GetFullLaneCount() const { return IsOneWay() ? GetLaneCount() : GetLaneCount() * 2; }
+	float GetRoadWidth() const { return GetFullLaneCount() * GetLaneWidth() + GetSeparatorWidth(); }
 
 	// Parameters common to all path animation types (object, crowd, traffic)
 
@@ -101,7 +106,16 @@ public:
 	void Set3DObjects(const TArray<FString>& Assets);
 	// Set only paths of the 3D objects associated to this animation path
 	void Set3DObjectsFromProps();
+	FString GetRandomObjectPath() const;
 
+	bool IsPaused() const;
+	void SetPaused(bool bInIsPaused);
+
+	bool IsVisible() const;
+	void SetVisible(bool bInIsVisible);
+
+	// Direction of the animation along the spline. If true, animation will go from end to start of the spline instead of from start to end.
+	// Note: in the context of traffic animation paths, inverse direction is interpreted as left-hand traffic.
 	bool HasInvDirection() const;
 	void SetInvDirection(bool bInInvDirection);
 
@@ -109,7 +123,7 @@ public:
 	void SetIsLoop(bool bInIsLoop);
 
 	// Other parameters that may not be relevant for all path animation types
-	virtual float GetLaneSpeed(int /*laneIdx*/) const { return GetSpeed(); }
+
 	virtual float GetSpeed() const { return 0.f; }
 	virtual void SetSpeed(float /*InSpeed*/) {}
 
@@ -125,7 +139,7 @@ public:
 	virtual int GetLaneCount() const { return 1; }
 	virtual void SetLaneCount(int /*InLaneCount*/) {}
 	
-	virtual float GetLaneWidth() const { return 300.f; }
+	virtual float GetLaneWidth() const { return 0.f; }
 	virtual void SetLaneWidth(float /*InLaneWidth*/) {}
 	
 	virtual float GetDensity() const { return 0.f; }
@@ -139,6 +153,18 @@ public:
 	
 	virtual float GetMaxSpeed() const { return GetSpeed(); }
 	virtual void SetMaxSpeed(float /*InMaxSpeed*/) {}
+
+	// Actual speed applied to the given lane
+	virtual float GetLaneSpeed(int /*laneIdx*/) const { return GetSpeed(); }
+	// Actual density used for the given lane
+	virtual float GetLaneDensity(int /*laneIdx*/) const { return GetDensity(); }
+	// Offset to apply to the lane compared to the center of the spline. When placing vehicles,
+	// variation can be added to avoid having all lanes perfectly aligned, which would look unnatural.
+	virtual float GetLaneOffset(int /*laneIdx*/, bool bAddRandomVariation) const { return 0.f; } 
+	// Whether the lane at the specified index is allowed to have trucks (traffic only).
+	virtual bool IsSlowLane(int laneIdx) const { return true; }
+	// Whether the lane at the specified index is in the opposite direction of the spline.
+	virtual bool IsInvDirLane(int laneIdx) const { return HasInvDirection(); }
 };
 
 UCLASS()
@@ -161,11 +187,14 @@ class UITwinCrowdAnimPathHelper : public UITwinAnimPathHelper
 {
 	GENERATED_BODY()
 public:
+	bool CanHaveMultipleObjects() const override { return true; }
+
 	virtual float GetSpeed() const override;
 
 	bool IsOneWay() const override;
 	void SetOneWay(bool bInOneWay) override;
 
+	// Number of lanes in one direction and corresponds to the value specified in UI.
 	int GetLaneCount() const override;
 	void SetLaneCount(int InLaneCount) override;
 
@@ -176,6 +205,15 @@ public:
 	void SetDensity(float InDensity) override;
 
 	virtual void UpdateSpline() override;
+
+	// TODO: use alternating lanes for characters as in LRT?	
+
+	float GetLaneOffset(int laneIdx, bool bAddRandomVariation) const override;
+	bool IsSlowLane(int laneIdx) const override;
+	bool IsInvDirLane(int laneIdx) const override;
+
+	// Index of the first opposite direction lane. Currently we can only have same number of lanes in each direction.
+	int GetFirstRightLaneIndex() const { return GetLaneCount(); }
 };
 
 UCLASS()
@@ -186,7 +224,6 @@ public:
 	float GetSeparatorWidth() const override;
 	void SetSeparatorWidth(float InSeparatorWidth) override;
 
-	float GetLaneSpeed(int laneIdx) const override;
 	float GetSpeed() const override;
 	void SetSpeed(float InSpeed) override;
 
@@ -195,4 +232,7 @@ public:
 
 	float GetMaxSpeed() const override;
 	void SetMaxSpeed(float InMaxSpeed) override;
+
+	float GetLaneSpeed(int laneIdx) const override;
+	float GetLaneDensity(int laneIdx) const override;
 };

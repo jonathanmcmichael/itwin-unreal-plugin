@@ -8,7 +8,6 @@
 
 #include "Population/ITwinPopulation.h"
 #include "Population/ITwinPopulation.inl"
-#include "Population/ITwinAnimPathManager.h"
 #include "Population/ITwinPopulationWithPathExt.h"
 #include <Clipping/ITwinClippingTool.h>
 #include <Helpers/WorldSingleton.h>
@@ -812,10 +811,6 @@ void AITwinPopulation::UpdateInstanceIndicesAfterRemoval(std::vector<int32_t> co
 			{
 				ueInst->instanceIndex_ = i;
 			}
-			if (auto animPathExt = inst->GetExtension<InstanceWithSplinePathExt>())
-			{
-				animPathExt->InstanceIdx_ = i;
-			}
 		}
 	}
 	BE_ASSERT(CheckInstanceIndices(GroupId));
@@ -833,15 +828,6 @@ bool AITwinPopulation::CheckInstanceIndices(AdvViz::SDK::RefID const& GroupId) c
 		{
 			BE_ASSERT(ueInst->population_ == this);
 			if (static_cast<size_t>(ueInst->instanceIndex_) != i)
-			{
-				return false;
-			}
-		}
-		if (auto animPathExt = inst->GetExtension<InstanceWithSplinePathExt const>())
-		{
-			BE_ASSERT(animPathExt->Population_ == this);
-			if (animPathExt->InstanceIdx_ < 0 ||
-				static_cast<size_t>(animPathExt->InstanceIdx_) != i)
 			{
 				return false;
 			}
@@ -1529,11 +1515,6 @@ void FITwinInstance::OnIndexChanged(const int32_t newIndex)
 	AdvViz::SDK::Instance::OnIndexChanged(newIndex);
 
 	instanceIndex_ = (newIndex >= 0) ? static_cast<std::uint32_t>(newIndex) : NotSet;
-
-	if (auto animPathExt = GetExtension<InstanceWithSplinePathExt>())
-	{
-		animPathExt->InstanceIdx_ = newIndex;
-	}
 }
 
 

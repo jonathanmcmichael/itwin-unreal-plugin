@@ -236,6 +236,9 @@ public:
 	UPROPERTY(Category = "Schedules Querying|Advanced", EditAnywhere)
 	uint64 ScheduleQueriesBindingsPagination = 50000;
 
+	UPROPERTY(Category = "Schedules Querying|Advanced", EditAnywhere)
+	uint64 IModelDataQueriesPagination = 32000;
+
 	/// Use the correct schedules' task but use random appearance profiles (color, opacity and growth
 	/// simulations) for visual debugging.
 	UPROPERTY(Category = "Schedules Querying|Debug",

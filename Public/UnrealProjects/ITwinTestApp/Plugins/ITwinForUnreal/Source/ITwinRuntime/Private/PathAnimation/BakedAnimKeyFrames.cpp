@@ -11,6 +11,8 @@
 #include <Components/SplineComponent.h>
 #include <Math/UEMathConversion.h>
 #include <EngineUtils.h> // for TActorIterator<>
+#include <ITwinIModel.h>
+#include <ITwinRealityData.h>
 
 #include <Compil/BeforeNonUnrealIncludes.h>
 #	include <BeHeaders/Compil/EnumSwitchCoverage.h>
@@ -19,11 +21,57 @@
 #include <Compil/AfterNonUnrealIncludes.h>
 
 
-namespace ITwin
-{
-	extern bool FindHeight(UWorld* World, const FVector& InPos, float& OutHeight, FVector& OutNormal, float maxHeight);
-}
 
+namespace
+{
+bool FindHeight(UWorld* World, const FVector& InPos, float& OutHeight, FVector& OutNormal, float maxHeight = 1000)
+{
+	// Raycast from above to below the point
+	FVector Start = InPos + FVector(0, 0, maxHeight); // start high above
+	FVector End = InPos - FVector(0, 0, 10000); // cast far below
+
+	FHitResult HitResult;
+	FCollisionQueryParams Params(NAME_None, false, nullptr);
+	Params.bReturnPhysicalMaterial = false;
+
+	bool bHit = World->LineTraceSingleByChannel(
+		HitResult,
+		Start,
+		End,
+		ECC_Visibility, // or create a custom channel if needed
+		Params
+	);
+
+#if 0//WITH_EDITOR
+	// Optional: visualize the trace in editor
+	DrawDebugLine(World, Start, End, FColor::Green, false, 2.0f, 0, 1.0f);
+	if (bHit)
+	{
+		DrawDebugPoint(World, HitResult.ImpactPoint, 12.0f, FColor::Red, false, 2.0f);
+	}
+#endif
+
+	if (bHit)
+	{
+		// Using GetOwner() because the hit actor is actually the cesium tileset
+		AActor* HitTilesetOwner = nullptr;
+		if (HitResult.HasValidHitObjectHandle())
+			if (AActor* HitTileset = HitResult.GetActor())
+				HitTilesetOwner = HitTileset->GetOwner(); // may be null or sth else than an iModel of course
+		if (Cast<AITwinIModel>(HitTilesetOwner) || Cast<AITwinRealityData>(HitTilesetOwner))
+		{
+			OutHeight = HitResult.ImpactPoint.Z;
+			OutNormal = HitResult.ImpactNormal.GetSafeNormal();
+			return true;
+		}
+	}
+
+	// Default fallback if nothing was hit
+	OutHeight = InPos.Z;
+	OutNormal = FVector::UpVector;
+	return false;
+}
+}
 
 void UBakedAnimKeyFrames::MarkForUpdate()
 {
@@ -45,13 +93,23 @@ float UBakedAnimKeyFrames::GetTotalTime() const
 	return TotalTime;
 }
 
+float UBakedAnimKeyFrames::GetTotalLength() const
+{
+	return TotalLength;
+}
+
+int32 UBakedAnimKeyFrames::GetLaneIndex() const
+{
+	return LaneIdx;
+}
+
 void UBakedAnimKeyFrames::SetSpeed(float InSpeed)
 {
 	if (InSpeed > 0.f)
 		TotalTime = TotalLength / InSpeed;
 }
 
-void UBakedAnimKeyFrames::BakeSpline(UWorld* World, const AdvViz::SDK::RefID& SplineId, float InSpeed)
+void UBakedAnimKeyFrames::BakeSpline(UWorld* World, const AdvViz::SDK::RefID& SplineId, float InSpeed, int32 InLaneIdx, std::optional<float> InOffset)
 {
 	Status = EBakedKeyFramesStatus::InProgress;
 	transforms.Empty();
@@ -75,22 +133,28 @@ void UBakedAnimKeyFrames::BakeSpline(UWorld* World, const AdvViz::SDK::RefID& Sp
 	BE_LOGI("App", "Processing animation spline of length " << TotalLength);
 	if (TotalLength < 0.01f)
 		return;
-	TotalTime = TotalLength / InSpeed;
+
+	LaneIdx = InLaneIdx;
 
 	float CurrentDistance = 0.0f;
-
+	FVector PrevLocation = UESpline->GetLocationAtDistanceAlongSpline(0.0f, ESplineCoordinateSpace::World);
+	float AccumulatedDistance = 0.0f;
 	while (CurrentDistance <= TotalLength)
 	{
 		// Position along spline at given distance
 		FVector SplineLocation = UESpline->GetLocationAtDistanceAlongSpline(CurrentDistance, ESplineCoordinateSpace::World);
 		FVector SplineTangent = UESpline->GetTangentAtDistanceAlongSpline(CurrentDistance, ESplineCoordinateSpace::World).GetSafeNormal();
+		FVector SplineRight = UESpline->GetRightVectorAtDistanceAlongSpline(CurrentDistance, ESplineCoordinateSpace::World);
+
+		if (InOffset.has_value())
+			SplineLocation = SplineLocation + SplineRight * InOffset.value();
 
 		// Ground height and normal
 		float GroundZ = 0.0f;
 		FVector GroundNormal = FVector::UpVector;
 
 		//FVector TracePosition = SplineLocation + FVector(0, 0, 500); // trace from above
-		if (ITwin::FindHeight(World, SplineLocation/*TracePosition*/, GroundZ, GroundNormal, 200)) // limit to 2m to avoid snapping to bridges
+		if (FindHeight(World, SplineLocation/*TracePosition*/, GroundZ, GroundNormal, 200)) // limit to 2m to avoid snapping to bridges
 		{
 			SplineLocation.Z = GroundZ;
 		}
@@ -112,8 +176,19 @@ void UBakedAnimKeyFrames::BakeSpline(UWorld* World, const AdvViz::SDK::RefID& Sp
 		FTransform Keyframe(FinalRotation, SplineLocation);
 		transforms.Add(Keyframe);
 
+		if (InOffset.has_value() && CurrentDistance > 0.0f)
+		{
+			AccumulatedDistance += FVector::Dist(PrevLocation, SplineLocation);
+			PrevLocation = SplineLocation;
+		}
+
 		CurrentDistance += DistanceStep;
 	}
+
+	// If offset is used, total path length might be different from the spline length
+	if (InOffset.has_value())
+		TotalLength = AccumulatedDistance;
+	TotalTime = TotalLength / InSpeed;
 
 	Status = transforms.Num() > 0 ? EBakedKeyFramesStatus::Ready : EBakedKeyFramesStatus::Invalid;
 }
@@ -138,7 +213,7 @@ FTransform UBakedAnimKeyFrames::GetTransform(float Time, bool bReverse/* = false
 	{
 		const FQuat Rot = outTransform.GetRotation();
 		const FVector Up = Rot.GetUpVector();
-		const FQuat FlipQuat(Up, PI); // 180° rotation around local up
+		const FQuat FlipQuat(Up, PI); // 180 degrees rotation around local up
 		FQuat NewRot = Rot * FlipQuat;
 		NewRot.Normalize();
 		outTransform = FTransform(NewRot, outTransform.GetLocation(), outTransform.GetScale3D());

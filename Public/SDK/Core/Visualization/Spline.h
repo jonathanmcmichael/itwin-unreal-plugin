@@ -32,9 +32,10 @@ MODULE_EXPORT namespace AdvViz::SDK
 		AnimPathTraffic = 2,
 		PopulationZone = 3,
 		PopulationPath = 4,
-		AnimPath = 5,
+		AnimPathObject = 5,
 		EdgeDisplayHelper = 6,
 		AnimPathCrowd = 7,
+		AnimPath = 8,
 	};
 
 	enum class ESplineTangentMode : uint8_t
@@ -129,7 +130,7 @@ MODULE_EXPORT namespace AdvViz::SDK
 	struct SplineLinkedModel
 	{
 		std::string modelType;
-		std::string modelId; // can be left empty for GlobalMapLayer (Google tileset)
+		std::string modelId;
 
 		bool operator==(SplineLinkedModel const& other) const {
 			return modelType == other.modelType && modelId == other.modelId;

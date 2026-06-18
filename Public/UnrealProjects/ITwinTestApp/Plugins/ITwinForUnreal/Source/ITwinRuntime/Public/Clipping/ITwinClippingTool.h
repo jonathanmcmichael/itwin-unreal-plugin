@@ -185,6 +185,9 @@ public:
 	/// Flip the effect of given type and index.
 	void FlipEffect(EITwinClippingPrimitiveType Type, int32 PrimitiveIndex);
 
+	/// Flip all effects of the given type.
+	void FlipAllEffectsOfType(EITwinClippingPrimitiveType Type);
+
 	bool GetInvertEffect(EITwinClippingPrimitiveType Type, int32 PrimitiveIndex) const;
 	void SetInvertEffect(EITwinClippingPrimitiveType Type, int32 PrimitiveIndex, bool bInvert);
 
@@ -248,14 +251,30 @@ public:
 	bool ShouldEffectInfluenceModel(EITwinClippingPrimitiveType EffectType, int32 EffectIndex,
 		const ITwin::ModelLink& ModelIdentifier) const;
 
+	/// Whether the influence of effects is defined by layer type (iModel, Reality data, etc.).
+	bool IsUsingPerLayerTypeInfluence() const;
+	/// Converts the influence of effects to be defined by layer instead of layer type (iModel, Reality data,
+	/// etc.).
+	/// \param InCurrentLayers The list of currently loaded layers, per model type, to initialize the new
+	/// per-layer influence settings. This is required to avoid losing the current influence settings during
+	/// the conversion.
+	void ConvertToPerLayerInfluence(const TMap<EITwinModelType, TSet<FString>>& InCurrentLayers);
+
 	/// Return whether the given effect should influence the given model type globally.
 	bool ShouldEffectInfluenceFullModelType(EITwinClippingPrimitiveType EffectType, int32 EffectIndex,
 		EITwinModelType ModelType) const;
 	void SetEffectInfluenceFullModelType(EITwinClippingPrimitiveType EffectType, int32 EffectIndex,
 		EITwinModelType ModelType, bool bAll);
 
-	void SetEffectInfluenceSpecificModel(EITwinClippingPrimitiveType EffectType, int32 EffectIndex,
+	void SetEffectInfluenceModel(EITwinClippingPrimitiveType EffectType, int32 EffectIndex,
 		const ITwin::ModelLink& ModelIdentifier, bool bInfluence);
+
+	bool DoesEffectInfluenceModel(EITwinClippingPrimitiveType EffectType, int32 EffectIndex,
+		const ITwin::ModelLink& ModelIdentifier) const;
+
+	TSet<FString> GetInfluencedSpecificModels(EITwinClippingPrimitiveType EffectType,
+		int32 EffectIndex,
+		EITwinModelType LayerType) const;
 
 	/// Returns the unique identifier of an effect from its index.
 	AdvViz::SDK::RefID GetEffectId(EITwinClippingPrimitiveType EffectType, int32 EffectIndex) const;
@@ -299,6 +318,7 @@ public:
 
 
 private:
+	UFUNCTION()
 	void BroadcastSelection();
 
 

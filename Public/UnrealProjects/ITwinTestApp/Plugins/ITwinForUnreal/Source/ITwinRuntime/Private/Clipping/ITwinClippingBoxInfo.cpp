@@ -20,12 +20,16 @@
 
 bool FITwinClippingBoxInfo::GetInvertEffect() const
 {
-	return BoxProperties->bInvertEffect;
+	// The default behavior was changed for LA-7: the box is now subtractive by default, meaning that it
+	// creates a hole in the layer. This is more intuitive when creating a box from scratch, and is more
+	// consistent with the way the cutout polygon works.
+	// See AzDev#2068178
+	return !BoxProperties->bIsSubtractive;
 }
 
 void FITwinClippingBoxInfo::DoSetInvertEffect(bool bInvert)
 {
-	BoxProperties->bInvertEffect = bInvert;
+	BoxProperties->bIsSubtractive = !bInvert;
 }
 
 void FITwinClippingBoxInfo::UpdateBoxProperties(glm::dmat3x3 const& BoxMatrix, glm::dvec3 const& BoxTranslation)
@@ -117,7 +121,7 @@ void FITwinClippingBoxInfo::UpdateEdgeSplinesTransform(FTransform const& Instanc
 	{
 		if (Spline)
 		{
-			Spline->SetActorTransform(InstanceTransform);
+			Spline->SetTransform(InstanceTransform, false /*bMarkSplineForSaving*/);
 		}
 	}
 }

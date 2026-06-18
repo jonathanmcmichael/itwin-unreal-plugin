@@ -58,7 +58,7 @@ public:
 	uint32 TilesetLoadedCount = 0;
 	uint32 TilesetFailedCount = 0;
 	FDelegateHandle OnTilesetLoadFailureHandle;
-	TStrongObjectPtr<UITwinClipping3DTilesetHelper> ClippingHelper;
+	TObjectPtr<UITwinClipping3DTilesetHelper> ClippingHelper;
 
 	struct FIdentifiers
 	{
@@ -194,12 +194,10 @@ AITwinRealityData::AITwinRealityData()
 
 AITwinRealityData::~AITwinRealityData()
 {
-	Impl->ClippingHelper.Reset();
 }
 
 void AITwinRealityData::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
-	Impl->ClippingHelper.Reset();
 	Super::EndPlay(EndPlayReason);
 }
 
@@ -479,8 +477,7 @@ bool AITwinRealityData::MakeClippingHelper()
 	if (RealityDataId.IsEmpty())
 		return false;
 
-	Impl->ClippingHelper =
-		TStrongObjectPtr<UITwinClipping3DTilesetHelper>(NewObject<UITwinClipping3DTilesetHelper>(this));
+	Impl->ClippingHelper = NewObject<UITwinClipping3DTilesetHelper>(this);
 	Impl->ClippingHelper->InitWith(FTilesetAccess(this));
 
 	ACesium3DTileset* Tileset = GetMutableTileset();

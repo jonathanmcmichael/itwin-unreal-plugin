@@ -43,6 +43,7 @@ namespace BeUtils
 
 
 	class SplineHelper;
+	class Spline2DProjector;
 
 	//=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
 	// Base class for all 2D population patterns.
@@ -81,8 +82,12 @@ namespace BeUtils
 		void SetOcclusionInfluence(double dInfl) { dInfluence_ = dInfl; }
 
 		virtual EPatternType GetType() const = 0;
-		virtual double GetMeanVelocity() const { return 0; }
-		virtual double GetMaxVelocity(double &splineLenEvaluation) const { splineLenEvaluation = 0.0; return 0.0; }
+		virtual double GetMeanVelocity(Spline2DProjector const& /*projector*/) const { return 0.; }
+		virtual double GetMaxVelocity(double& splineLenEvaluation, Spline2DProjector const& /*projector*/) const
+		{
+			splineLenEvaluation = 0.;
+			return 0.;
+		}
 
 		/// Baking 2D segments: see doc on #SplineHelper::ComputeSegments
 		virtual size_t Bake2DSegments(
@@ -90,13 +95,13 @@ namespace BeUtils
 			double dS,
 			double splineLen,
 			BoundingBox& bbox,
-			E2DProjection projection) const = 0;
+			Spline2DProjector const& projector) const = 0;
 		virtual size_t Bake2DSegmentsOnSpline(
 			std::vector<Segment_2D>& segments,
 			double dS,
 			double splineLen,
 			BoundingBox& bbox,
-			E2DProjection projection) const = 0;
+			Spline2DProjector const& projector) const = 0;
 
 	protected:
 		TransformHolder const& splineObject_; // needed to get world transformation.
@@ -117,11 +122,11 @@ namespace BeUtils
 			E2DProjection projection = E2DProjection::Z_Axis, float fQuality = 1.f);
 
 		SplineHelper const* GetSpline() const override { return &spline_; }
-		double GetMeanVelocity() const override;
+		double GetMeanVelocity(Spline2DProjector const& projector) const override;
 		size_t Bake2DSegmentsOnSpline(
 			std::vector<Segment_2D>& segments,
 			double dS, double splineLen, BoundingBox& bbox,
-			E2DProjection projection) const override;
+			Spline2DProjector const& projector) const override;
 
 	protected:
 		SplineHelper const& spline_;
@@ -137,10 +142,10 @@ namespace BeUtils
 			E2DProjection projection = E2DProjection::Z_Axis, float fQuality = 1.f);
 
 		EPatternType GetType() const override { return EPatternType::Enclosure; }
-		double GetMaxVelocity(double &splineLenEvaluation) const override;
+		double GetMaxVelocity(double& splineLenEvaluation, Spline2DProjector const& projector) const override;
 		size_t Bake2DSegments(
 			std::vector<Segment_2D>& segments,
 			double dS, double splineLen, BoundingBox& bbox,
-			E2DProjection projection) const override;
+			Spline2DProjector const& projector) const override;
 	};
 }

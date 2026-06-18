@@ -10,50 +10,12 @@
 #pragma once
 
 #include "SplineHelper.h"
-
-// MUST be included before EnumSwitchCoverage...
-#include <SDK/Core/Tools/Assert.h>
-#include <BeHeaders/Compil/EnumSwitchCoverage.h>
+#include <BeUtils/SplineSampling/Spline2DProjector.h>
 
 #include <glm/gtx/norm.hpp>
 
 namespace BeUtils
 {
-	struct Basic2DProjector
-	{
-		typedef SplineHelper::vector_type vector_type;
-		typedef SplineHelper::vec2_type vec2_type;
-
-		E2DProjection const proj_;
-
-		Basic2DProjector(E2DProjection proj)
-			: proj_(proj)
-		{
-		}
-
-		vec2_type operator()(vector_type const& pos) const
-		{
-			switch (proj_)
-			{
-			BE_UNCOVERED_ENUM_ASSERT_AND_FALLTHROUGH(case E2DProjection::None:)
-			case E2DProjection::X_Axis: return vec2_type(pos.y, pos.z);
-			case E2DProjection::Y_Axis: return vec2_type(pos.z, pos.x);
-			case E2DProjection::Z_Axis: return vec2_type(pos.x, pos.y);
-			}
-		}
-
-		[[nodiscard]] vector_type Project(vector_type const& pos) const
-		{
-			switch (proj_)
-			{
-			case E2DProjection::X_Axis: return vector_type(0.0, pos.y, pos.z);
-			case E2DProjection::Y_Axis: return vector_type(pos.x, 0.0, pos.z);
-			case E2DProjection::Z_Axis: return vector_type(pos.x, pos.y, 0.0);
-			case E2DProjection::None: return pos;
-			BE_NO_UNCOVERED_ENUM_ASSERT_AND_RETURN(pos);
-			}
-		}
-	};
 
 	struct SplinePointInfo
 	{
@@ -83,7 +45,7 @@ namespace BeUtils
 			value_type dCurveLen);
 
 		void Compute2dNormals(
-			Basic2DProjector const& projector,
+			Spline2DProjector const& projector,
 			double dU_delta,
 			SplineHelper const& splineHelper,
 			TransformHolder const& splineObj);

@@ -17,6 +17,7 @@
 
 #include <ITwinRuntime/Private/Compil/BeforeNonUnrealIncludes.h>
 #	include <SDK/Core/Tools/Assert.h>
+#	include <SDK/Core/Visualization/ConstantIDs.h>
 #include <ITwinRuntime/Private/Compil/AfterNonUnrealIncludes.h>
 
 //! A "model" designates any dataset that can be loaded by the plugin.
@@ -81,6 +82,20 @@ namespace ITwin
 	{
 		OutModelType = StrToModelType(str, false);
 		return OutModelType != EITwinModelType::Invalid;
+	}
+
+	// Instead of using an empty identifier as before, prefer using a constant one: this will avoid having
+	// to treat the empty string as a special case in some places, and will make it possible to add a new
+	// kind of global layer in the future.
+	[[nodiscard]] inline const TCHAR* GetGoogleLayerId() {
+		return TEXT( ADVVIZ_GOOGLE_LAYER_ID );
+	}
+
+	[[nodiscard]] inline ModelLink GetGoogleTilesetLink() {
+		return std::make_pair(
+			EITwinModelType::GlobalMapLayer,
+			FString(GetGoogleLayerId())
+		);
 	}
 
 }

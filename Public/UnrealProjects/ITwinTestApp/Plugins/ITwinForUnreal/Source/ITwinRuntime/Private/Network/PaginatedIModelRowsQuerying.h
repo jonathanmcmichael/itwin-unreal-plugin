@@ -22,8 +22,13 @@ class AITwinIModel;
 class FJsonObject;
 
 enum class EElementsMetadata : uint8 {
-	/// A single query now combines parent-child relationships, bounding boxes, Source ID's, and FederatedGuid's
+	/// A single query combining parent-child relationships, bounding boxes, Source ID's, and FederatedGuid's
 	Combined,
+	/// Same as Combined, without bounding boxes because of https://github.com/iTwin/itwinjs-backlog/issues/2146,
+	/// as it was witnessed that splitting the query this way "fixes" the query plan for the problematic models.
+	CombinedNoBBoxes,
+	/// Standalone query for bounding boxes, because of https://github.com/iTwin/itwinjs-backlog/issues/2146
+	StandaloneBBoxes,
 	/// Construction detailing Elements' parents need an different kind of request that must be executed separately
 	ConstructionDetailing
 };
@@ -38,7 +43,8 @@ public:
 	using FOnLoadProgressUpdated = std::function<void()>;
 
 	FPaginatedIModelRowsQueries(AITwinIModel& InIModel, EElementsMetadata InKindOfMetadata,
-		ITwinHttp::FMutex& InMutex, FOnLoadProgressUpdated InOnLoadProgressUpdated);
+		ITwinHttp::FMutex& InMutex, FOnLoadProgressUpdated InOnLoadProgressUpdated,
+		int InQueryRowCount, int InMaxNumPageInProgress);
 
 	void Cancel();
 	double PercentComplete() const;
@@ -70,18 +76,18 @@ private:
 	FJsonQueriesCache Cache;
 	ITwinHttp::FMutex& Mutex;
 	FOnLoadProgressUpdated OnLoadProgressUpdated;
+	/// Down from 50K to 32K to accommodate BBoxes in "Combined" metadata, because server reply is capped to 8MB!
+	int QueryRowCount = 32000;
 
 	EState State = EState::NotStarted;
 	EHttpResponseCodes::Type FirstErrorCode = EHttpResponseCodes::Ok;
 	FString FirstErrorString;
 	int QueryRowStart = 0, TotalRowsParsed = 0, TotalRowsExpected = -1;
 	HttpRequestID CurrentRequestID;
-	/// Down from 50K to 32K to accommodate BBoxes in "Combined" metadata, because server reply is capped to 8MB!
-	static constexpr int QueryRowCount = 32000;
 
 	int NumPageInProgress = 0;
 	size_t RequestsFromCache = 0, RequestsFromRemote = 0;
-	const int MaxNumPageInProgress = 4;
+	int MaxNumPageInProgress = 4;
 	bool lastPageReached = false;
 	bool bQueryTableCount = true;
 };

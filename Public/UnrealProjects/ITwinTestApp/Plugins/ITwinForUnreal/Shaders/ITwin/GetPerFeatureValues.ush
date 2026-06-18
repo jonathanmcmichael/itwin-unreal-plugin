@@ -15,7 +15,7 @@ bool bHas4DOpacity = false;
 static const float OriginalAlphaThreshold = 0.0051f;
 if (_czm_width == 1 || _czm_pixelY >= _czm_height)
 {
-	Combined_RGBA = float4(0, 0, 0, 1);
+	Combined_RGBA = float4(0, 0, 0, 0.0049f);
 }
 else
 {

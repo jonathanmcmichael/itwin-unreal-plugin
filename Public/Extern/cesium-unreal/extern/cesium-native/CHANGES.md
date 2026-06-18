@@ -1,11 +1,25 @@
 # Change Log
 
+### v0.61.0 - 2026-06-01
+
+##### Breaking Changes :mega:
+
+- `CesiumRasterOverlays::GeoJsonDocumentRasterOverlay` has been moved to the `CesiumVectorOverlays` library and namespace.
+
+##### Additions :tada:
+
+- Added support for [`EXT_mesh_primitive_edge_visibility`](https://github.com/KhronosGroup/glTF/pull/2479) in `CesiumGltf`, `CesiumGltfReader`, and `CesiumGltfWriter`.
+- Added support for [`3DTILES_content_conditional`](https://github.com/CesiumGS/3d-tiles/pull/834) in `Cesium3DTiles`, `Cesium3DTilesReader`, and `Cesium3DTilesWriter`.
+- Added `CesiumVectorOverlays::VectorTilesRasterOverlay` supporting vector data loaded from 3D Tiles tilesets.
+- `GeoJsonDocumentRasterOverlay` and `VectorTilesRasterOverlay` can now display points.
+- Added support for feature IDs in glTF translated from `MAXAR_content_geojson` tiles.
+
 ### v0.60.0 - 2026-05-01
 
 ##### Additions :tada:
 
 - Added `BoundingRegionBuilder::expandToIncludeBoundingRegion`.
-- Added support for 3D Tiles `MAXAR_tileset_geojson` extension, which allows GeoJSON files as tile content. The GeoJSON is translated to glTF. 
+- Added support for 3D Tiles `MAXAR_tileset_geojson` extension, which allows GeoJSON files as tile content. The GeoJSON is translated to glTF.
 
 ##### Fixes :wrench:
 

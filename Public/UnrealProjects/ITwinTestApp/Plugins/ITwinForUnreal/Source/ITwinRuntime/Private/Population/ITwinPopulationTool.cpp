@@ -17,8 +17,8 @@
 #include <Population/ITwinPopulation.h>
 #include <Population/ITwinPopulation.inl>
 #include <Spline/ITwinSplineHelper.h>
+#include <Spline/ITwinUESplineCurve.h>
 
-#include <Components/SplineComponent.h>
 #include <EngineUtils.h> // for TActorIterator<>
 #include <Engine/EngineTypes.h>
 #include <Engine/GameViewportClient.h>
@@ -122,55 +122,6 @@ namespace ITwin
 	}
 }
 
-
-FUESplineCurve::FUESplineCurve(USplineComponent const& InSpline)
-	: UESpline(InSpline)
-{}
-
-glm::dvec3 FUESplineCurve::GetPositionAtCoord(value_type const& u) const
-{
-	// Directly work in world coordinates
-	const float SplineTime = u * UESpline.Duration;
-	auto const Pos_World = UESpline.GetLocationAtTime(SplineTime, ESplineCoordinateSpace::World);
-	return {
-		Pos_World.X,
-		Pos_World.Y,
-		Pos_World.Z
-	};
-}
-
-glm::dvec3 FUESplineCurve::GetTangentAtCoord(value_type const& u) const
-{
-	const float SplineTime = u * UESpline.Duration;
-	auto const Tgte_World = UESpline.GetTangentAtTime(SplineTime, ESplineCoordinateSpace::World);
-	return {
-		Tgte_World.X,
-		Tgte_World.Y,
-		Tgte_World.Z
-	};
-}
-
-size_t FUESplineCurve::PointCount(const bool /*accountForCyclicity*/) const
-{
-	return static_cast<size_t>(UESpline.GetNumberOfSplinePoints());
-}
-
-glm::dvec3 FUESplineCurve::GetPositionAtIndex(size_t idx) const
-{
-	// Directly work in world coordinates
-	auto const Pos_World = UESpline.GetLocationAtSplinePoint(static_cast<int32>(idx),
-		ESplineCoordinateSpace::World);
-	return {
-		Pos_World.X,
-		Pos_World.Y,
-		Pos_World.Z
-	};
-}
-
-bool FUESplineCurve::IsCyclic() const
-{
-	return UESpline.IsClosedLoop();
-}
 
 namespace
 {
@@ -1764,7 +1715,7 @@ uint32 AITwinPopulationTool::FImpl::PopulateSpline(AITwinSplineHelper const& Tar
 		Population->RemoveAllInstances();
 	}
 
-	FUESplineCurve const Curve(*TargetSpline.GetSplineComponent());
+	FITwinUESplineCurve const Curve(*TargetSpline.GetSplineComponent());
 
 	BeUtils::SplineSamplingParameters SamplingParams;
 	SamplingParams.samplingMode = (TargetSpline.GetUsage() == EITwinSplineUsage::PopulationZone)

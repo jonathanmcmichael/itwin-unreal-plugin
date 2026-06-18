@@ -85,7 +85,7 @@ public:
 	TUniquePtr<FITwinTilesetAccess> MakeTilesetAccess();
 
 	ITwin::ModelLink GetModelLink() const {
-		return std::make_pair(EITwinModelType::GlobalMapLayer, FString());
+		return ITwin::GetGoogleTilesetLink();
 	}
 
 	//! Scale the credits appearing on the bottom.

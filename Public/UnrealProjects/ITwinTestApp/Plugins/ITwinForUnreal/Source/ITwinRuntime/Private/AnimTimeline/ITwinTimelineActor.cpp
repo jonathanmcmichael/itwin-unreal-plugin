@@ -2020,7 +2020,7 @@ void AITwinTimelineActor::OnLoad()
 	Impl->OnLoad();
 	OnTimelineLoaded.Broadcast();
 	//when loading , the timeline is up to date
-	Impl->timeline_->SetShouldSave(false);
+	Impl->timeline_->SetShouldSaveRecursive(false);
 }
 
 void AITwinTimelineActor::ReinitPlayer()

@@ -54,12 +54,12 @@ void UITwin2DAnnotationWidgetImpl::SetLabelOnly(bool on)
 	UpdateComponentsVisibility();
 }
 
-bool UITwin2DAnnotationWidgetImpl::IsLabelShown()
+bool UITwin2DAnnotationWidgetImpl::IsLabelShown() const
 {
 	return bLabelShown;
 }
 
-FText UITwin2DAnnotationWidgetImpl::GetText()
+FText UITwin2DAnnotationWidgetImpl::GetText() const
 {
 	return content->GetText();
 }
@@ -70,7 +70,7 @@ void UITwin2DAnnotationWidgetImpl::SetBackgroundColor(const FLinearColor& inColo
 	Pin->SetBrushColor(inColor);
 }
 
-FLinearColor UITwin2DAnnotationWidgetImpl::GetBackgroundColor()
+FLinearColor UITwin2DAnnotationWidgetImpl::GetBackgroundColor() const
 {
 	return Label->GetBrushColor();
 }
@@ -81,7 +81,7 @@ void UITwin2DAnnotationWidgetImpl::SetTextColor(const FLinearColor& inColor)
 	Image->SetColorAndOpacity(inColor);
 }
 
-FLinearColor UITwin2DAnnotationWidgetImpl::GetTextColor()
+FLinearColor UITwin2DAnnotationWidgetImpl::GetTextColor() const
 {
 	return Image->GetColorAndOpacity();
 }

@@ -10,7 +10,9 @@
 #pragma once
 
 #include <BeUtils/SplineSampling/ControlledCurve.h>
+#include <BeUtils/SplineSampling/Spline2DProjector.h>
 
+#include <memory>
 #include <optional>
 
 namespace BeUtils
@@ -39,11 +41,26 @@ namespace BeUtils
 		bool forceAligned = false;
 		bool forbidOverlap = false;
 		std::optional<glm::dvec2> fixedSpacing; // use 'x' coordinate for 1-D case
+		std::unique_ptr<Spline2DProjector> customProjector;
 
 		uint32_t randSeed = 0xbac1981;
 	};
 
-	//! Sample a spline.
+	//! Sample a spline interior (Fill mode).
+	void SampleSplineInterior(SplineCurve const& spline,
+		TransformHolder const& transform,
+		BoundingBox const& samplingBox_World,
+		glm::dvec3 const& averageInstanceDims_World,
+		SplineSamplingParameters const& params,
+		std::vector<SplineCurve::vector_type>& outPositions);
+
+	//! Sample a spline path (Stroke mode).
+	void SampleSplinePath(SplineCurve const& spline,
+		TransformHolder const& transform,
+		SplineSamplingParameters const& params,
+		std::vector<SplineCurve::vector_type>& outPositions);
+
+	//! Sample a spline (either interior or path, depending on params.samplingMode).
 	void SampleSpline(SplineCurve const& spline,
 		TransformHolder const& transform,
 		BoundingBox const& samplingBox_World,

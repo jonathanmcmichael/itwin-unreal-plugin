@@ -318,12 +318,13 @@ FITwinScheduleTimeline const& FITwinSynchro4DSchedulesInternals::GetTimeline() c
 void FITwinSynchro4DSchedulesInternals::SetScheduleTimeRangeIsKnown()
 {
 	// NOT Owner.GetDateRange(), which relies on ScheduleTimeRangeIsKnownAndValid set below!
-	auto const& DateRange = GetTimeline().GetDateRange();
-	if (DateRange != FDateRange())
+	auto const& TimelineRange = GetTimeline().GetDateRange();
+	if (TimelineRange != FDateRange())
 	{
 		ScheduleTimeRangeIsKnownAndValid = true;
-		Owner.OnScheduleTimeRangeKnown.Broadcast(DateRange.GetLowerBoundValue(),
-												 DateRange.GetUpperBoundValue());
+		// Now we can call Owner.GetDateRange(), which handles rounding
+		auto const& DateRange = Owner.GetDateRange();
+		Owner.OnScheduleTimeRangeKnown.Broadcast(DateRange.GetLowerBoundValue(), DateRange.GetUpperBoundValue());
 	}
 	else
 	{
@@ -1064,7 +1065,9 @@ UITwinSynchro4DSchedules::~UITwinSynchro4DSchedules()
 FDateRange UITwinSynchro4DSchedules::GetDateRange() const
 {
 	if (Impl->Internals.ScheduleTimeRangeIsKnownAndValid && *Impl->Internals.ScheduleTimeRangeIsKnownAndValid)
-		return Impl->Internals.GetTimeline().GetDateRange();
+		// Round to nearest second, because keyframes can be present slightly outside the original schedule's
+		// timerange. This is compensated by the snapping to the schedule's start/end times in SetScheduleTime.
+		return ITwin::Time::ToNearestSecond(Impl->Internals.GetTimeline().GetDateRange());
 	else
 		return FDateRange();
 }
@@ -1462,6 +1465,13 @@ FDateTime UITwinSynchro4DSchedules::GetScheduleTime() const
 void UITwinSynchro4DSchedules::SetScheduleTime(FDateTime NewScheduleTime)
 {
 	//if (ScheduleTime != NewScheduleTime) <== don't: see PostEditChangeProperty
+	auto const& TimeRange = Impl->Internals.GetTimeline().GetTimeRange();
+	// Clamp but also snap to range boundaries to compensate for the rounding in SetScheduleTimeRangeIsKnown and not
+	// affect the 4D animation's initial and final aspects, which usually rely on keyframes only spaced by some epsilon
+	if ((ITwin::Time::FromDateTime(NewScheduleTime) - TimeRange.first) < 0.5/*second*/)
+		NewScheduleTime = ITwin::Time::ToDateTime(TimeRange.first);
+	else if ((ITwin::Time::FromDateTime(NewScheduleTime) - TimeRange.second) > (-0.5)/*second*/)
+		NewScheduleTime = ITwin::Time::ToDateTime(TimeRange.second);
 	ScheduleTime = NewScheduleTime;
 	SetNeedForcedShadowUpdate(GetOwner());
 	// This call used to call TickAnimation, in effect applying the new time right away! This could be a
@@ -1596,6 +1606,7 @@ void UITwinSynchro4DSchedules::PostEditChangeProperty(FPropertyChangedEvent& Pro
 		Settings->Synchro4DMaxTimelineUpdateMilliseconds = MaxTimelineUpdateMilliseconds;
 		Settings->Synchro4DQueriesDefaultPagination = ScheduleQueriesServerPagination;
 		Settings->Synchro4DQueriesBindingsPagination = ScheduleQueriesBindingsPagination;
+		Settings->IModelDataQueriesPagination = IModelDataQueriesPagination;
 		Settings->Synchro4DGlTFTranslucencyRule = GlTFTranslucencyRule;
 		Settings->bSynchro4DDisableColoring = bDisableColoring;
 		Settings->bSynchro4DDisableVisibilities = bDisableVisibilities;

@@ -34,7 +34,8 @@ enum class EITwinSplineUsage : uint8
 	AnimPathTraffic = 2,
 	PopulationZone = 3,
 	PopulationPath = 4,
-	AnimPath = 5,
+	AnimPathObject = 5,
 	EdgeDisplayHelper = 6,
 	AnimPathCrowd = 7,
+	AnimPath = 8, // common type for all path animations (used only for selection by spline tool, should never be assigned to a spline itself)
 };

@@ -387,17 +387,40 @@ MODULE_EXPORT namespace AdvViz::SDK
 	enum class GeoServiceStatus
 	{
 		Success = 0,
-		IMODEL_ERROR_BASE = 0x10000,
-		GEOSERVICESTATUS_BASE = 0x24000,
-		NoGeoLocation = IMODEL_ERROR_BASE + 66,
-		// Following errors are mapped from 'GeoCoordStatus'
-		OutOfUsefulRange = GEOSERVICESTATUS_BASE + 1,
-		OutOfMathematicalDomain = GEOSERVICESTATUS_BASE + 2,
-		NoDatumConverter = GEOSERVICESTATUS_BASE + 3,
-		VerticalDatumConvertError = GEOSERVICESTATUS_BASE + 4,
-		CSMapError = GEOSERVICESTATUS_BASE + 5,
-		Pending = GEOSERVICESTATUS_BASE + 6,
+		// Apparently the codes we obtain already have the GEOSERVICESTATUS_BASE part subtracted...
+		// (confirmed on a user project for which OutOfUsefulRange was returned as 1, by testing with 
+		// developer.bentley.com/apis/imodel-query/operations/convert-imodel-coordinates-to-geographic-coordinates/
+		// using head commit on branch ghis/WIP/new-geoconv-api-techpreview)
+		//	IMODEL_ERROR_BASE = 0x10000, GEOSERVICESTATUS_BASE = 0x24000, NoGeoLocation = IMODEL_ERROR_BASE + 66,
+		OutOfUsefulRange = 1,
+		OutOfMathematicalDomain = 2,
+		NoDatumConverter = 3,
+		VerticalDatumConvertError = 4,
+		CSMapError = 5,
+		Pending = 6,
 	};
+	inline std::string toString(GeoServiceStatus status)
+	{
+		switch (status)
+		{
+		case GeoServiceStatus::Success:
+			return "success";
+		case GeoServiceStatus::OutOfUsefulRange:
+			return "out of useful range";
+		case GeoServiceStatus::OutOfMathematicalDomain:
+			return "out of mathematical domain";
+		case GeoServiceStatus::NoDatumConverter:
+			return "no datum converter";
+		case GeoServiceStatus::VerticalDatumConvertError:
+			return "vertical datum convert error";
+		case GeoServiceStatus::CSMapError:
+			return "CS map error";
+		case GeoServiceStatus::Pending:
+			return "pending";
+		default:
+			return "unrecognized error";
+		}
+	}
 	struct GeoCoordsConverted
 	{
 		std::array<double, 3> p = { 0, 0, 0 };

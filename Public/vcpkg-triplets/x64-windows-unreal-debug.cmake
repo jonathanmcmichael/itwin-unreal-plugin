@@ -5,3 +5,5 @@ include("${CMAKE_CURRENT_LIST_DIR}/../Extern/cesium-unreal/extern/vcpkg-overlays
 # building both Release and Debug :/
 # Let's force it here for the time being...
 set(VCPKG_BUILD_TYPE "debug")
+
+include("${CMAKE_CURRENT_LIST_DIR}/vcpkgToolChainWinX64.cmake")

@@ -49,6 +49,8 @@ namespace QueriesCache
 		case ESubtype::DEPRECATED_ElementsSourceIDs:	SubtypeFolder = TEXT("ElemSrcID"); break;
 		case ESubtype::MaterialMLPrediction:			SubtypeFolder = TEXT("MaterialMLPrediction"); break;
 		case ESubtype::ElementsMetadataCombined:		SubtypeFolder = TEXT("ElemMetadata"); break;
+		case ESubtype::ElementsMetadataNoBBoxes:		SubtypeFolder = TEXT("ElemMetadataNoBBoxes"); break;
+		case ESubtype::ElementsMetadataBBoxes:			SubtypeFolder = TEXT("ElemMetadataBBoxes"); break;
 		case ESubtype::ConstructionDetailing:			SubtypeFolder = TEXT("ConstrDetailing"); break;
 		default: ensure(false); return {};
 		}
@@ -118,6 +120,8 @@ public:
 			QueriesCache::GetCacheFolder(QueriesCache::ESubtype::Schedules, Env, {}, {}, {}),
 			//QueriesCache::GetCacheFolder(QueriesCache::ESubtype::MaterialMLPrediction, Env, {}, {}, {}),
 			QueriesCache::GetCacheFolder(QueriesCache::ESubtype::ElementsMetadataCombined, Env, {}, {}, {}),
+			QueriesCache::GetCacheFolder(QueriesCache::ESubtype::ElementsMetadataNoBBoxes, Env, {}, {}, {}),
+			QueriesCache::GetCacheFolder(QueriesCache::ESubtype::ElementsMetadataBBoxes, Env, {}, {}, {}),
 			QueriesCache::GetCacheFolder(QueriesCache::ESubtype::ConstructionDetailing, Env, {}, {}, {}),
 		};
 		for (FString const& Dir : SubcacheFolders)

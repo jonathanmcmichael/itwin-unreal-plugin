@@ -17,6 +17,14 @@ if (EXISTS "${CMAKE_SOURCE_DIR}/Private/AGENTS.md")
 	file (CREATE_LINK "${CMAKE_SOURCE_DIR}/Private/AGENTS.md" "${CMAKE_BINARY_DIR}/AGENTS.md" SYMBOLIC)
 endif ()
 
+# Symlink .vscode directory for AI configuration optimization
+if (EXISTS "${CMAKE_SOURCE_DIR}/Private/.vscode")
+	if (EXISTS "${CMAKE_BINARY_DIR}/.vscode" OR IS_SYMLINK "${CMAKE_BINARY_DIR}/.vscode")
+		file (REMOVE_RECURSE "${CMAKE_BINARY_DIR}/.vscode")
+	endif ()
+	file (CREATE_LINK "${CMAKE_SOURCE_DIR}/Private/.vscode" "${CMAKE_BINARY_DIR}/.vscode" SYMBOLIC)
+endif ()
+
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/Public/CMake")
 include ("Public/SDK/cmake/HandleVCPKG.cmake")
 set(HAS_INCLUDED_HANDLEVCPKG ON)

@@ -35,7 +35,7 @@ class UCesiumGlobeAnchorComponent;
 class ACesiumCartographicPolygon;
 class ACesiumGeoreference;
 class FITwinTilesetAccess;
-
+class UITwinSplineHelper2DWidgetImpl;
 
 //! This class is used to edit a spline.
 //! It handles the synchronization of points between a USplineComponent (to which instances
@@ -47,6 +47,8 @@ class ITWINRUNTIME_API AITwinSplineHelper : public AActor
 	GENERATED_BODY()
 
 public:
+	static bool Is2DDrawingEnabled();
+
 	// Quick workaround to pass SplineUsage parameter to the constructor
 	struct [[nodiscard]] FSpawnContext
 	{
@@ -56,6 +58,8 @@ public:
 
 	AITwinSplineHelper();
 
+	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void SetActorHiddenInGame(bool bNewHidden) override;
 	virtual void Tick(float DeltaTime) override;
 
@@ -88,8 +92,24 @@ public:
 	//! points.
 	void Initialize(USplineComponent* splineComp, AdvViz::SDK::ISplinePtr spline);
 
+	//! Returns true if the spline is currently being created in interactive mode (i.e. the user is adding
+	//! points one by one, and the spline is not finished yet).
+	UFUNCTION(Category = "iTwin Spline",
+		BlueprintCallable)
+	bool IsInteractiveCreationInProgress() const;
+
+	//! Set whether the spline is currently being created in interactive mode.
+	UFUNCTION(Category = "iTwin Spline",
+		BlueprintCallable)
+	void SetInteractiveCreationInProgress(bool bInProgress);
+
 	//! Returns the spline's usage.
 	EITwinSplineUsage GetUsage() const;
+
+	//! Returns true if the spline is editable, i.e. if the user can modify its points and insert new points.
+	UFUNCTION(Category = "iTwin Spline",
+		BlueprintCallable)
+	bool IsPointEditionAllowed() const;
 
 	//! Returns the model(s) linked to this spline, if any.
 	std::set<ITwin::ModelLink> GetLinkedModels() const;
@@ -101,15 +121,49 @@ public:
 	//! It does nothing for the Custom mode, which should be set for points individually.
 	void SetTangentMode(const EITwinTangentMode mode);
 
+	//! Return the last point mesh component, if any.
+	UStaticMeshComponent* GetLastPointMeshComponent() const;
+
 	//! Given a mesh component (obtained by a line tracing operation after a user click for example), return
 	//! the associated point index in this spline, if any (else return INDEX_NONE).
 	int32 FindPointIndexFromMeshComponent(UStaticMeshComponent* MeshComp) const;
 
-	//! Return the mesh component for the given spline point, if any.
-	UStaticMeshComponent* GetPointMeshComponent(int32 PointIndex) const;
-
-	//! Set the visibility of all point mesh components.
+	//! Set the visibility of all points (3D point mesh components and 2D pins).
 	void SetPointsHiddenInGame(bool bNewHidden) const;
+
+
+	//! Set the visibility of all 3D point mesh components.
+	void Set3DPointsHiddenInGame(bool bNewHidden) const;
+
+	//! Set the visibility of all 3D spline mesh components.
+	void Set3DSplinesHiddenInGame(bool bNewHidden) const;
+
+	//! Turn on/off the visibility of the (3D) spline mesh components (the ribbon).
+	UFUNCTION(Category = "iTwin Spline",
+		BlueprintCallable)
+	void SetDraw3DRibbon(bool bInDraw3DRibbon);
+
+	//! Turn on/off the visibility of the 3D point mesh components (legacy mode).
+	UFUNCTION(Category = "iTwin Spline",
+		BlueprintCallable)
+	void SetDraw3DPoints(bool bInDraw3DPoints);
+
+
+	//! Turn on/off the visibility of the widget representing the spline in 2D.
+	UFUNCTION(Category = "iTwin Spline",
+		BlueprintCallable)
+	void SetDraw2DElements(bool bInDraw2DElements);
+
+	//! Set thickness of 2D representation of the spline.
+	UFUNCTION(Category = "iTwin Spline",
+		BlueprintCallable)
+	void Set2DThickness(float InThickness);
+
+	//! Returns whether the 2D elements should be updated.
+	bool NeedsUpdate2DElements() const;
+
+	//! Sets whether the 2D elements should be updated.
+	void SetNeedsUpdate2DElements(bool bNeedsUpdate);
 
 	//! Given a spline mesh component (obtained by a line tracing operation after a user click for example),
 	//! return the associated segment index in this spline, if any (else return INDEX_NONE).
@@ -207,11 +261,15 @@ public:
 	//! Returns the index of the selected control point, if any, or -1 if none is selected.
 	int32 GetSelectedPointIndex() const;
 
+	bool IsUsedForPathAnim() const;
+
 	//! The globe anchor is a constraint ensuring that the spline helper is correctly
 	//! placed on the earth surface.
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Cesium")
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "iTwin Spline")
 	UCesiumGlobeAnchorComponent* GlobeAnchor;
 
+private:
+	void Update2DWidgetVisibility();
 
 private:
 	struct FImpl;
@@ -235,4 +293,26 @@ private:
 	// Per geo-reference cartographic polygons (only relevant for cut-out usage).
 	UPROPERTY()
 	TMap< TSoftObjectPtr<ACesiumGeoreference>, TObjectPtr<ACesiumCartographicPolygon> > PerGeorefPolygonMap;
+
+	//! Whether we draw the 3D ribbon (spline mesh components). Useful when the ribbon width has a physical
+	//! meaning (e.g. route width), but can be turned off when only the spline shape matters.
+	UPROPERTY(Category = "iTwin Spline",
+		VisibleAnywhere,
+		BlueprintSetter = SetDraw3DRibbon)
+	bool bDraw3DRibbon = false;
+
+	//! Whether we draw the spline's point as 3D elements (legacy mode).
+	UPROPERTY(Category = "iTwin Spline",
+		VisibleAnywhere,
+		BlueprintSetter = SetDraw3DPoints)
+	bool bDraw3DPoints = false;
+
+	//! Whether the spline is drawn with 2D elements (widgets displayed in screen-space).
+	UPROPERTY(Category = "iTwin Spline",
+		VisibleAnywhere,
+		BlueprintSetter = SetDraw2DElements)
+	bool bDraw2DElements = true;
+
+	UPROPERTY()
+	TObjectPtr<UITwinSplineHelper2DWidgetImpl> OnScreen2DWidget;
 };

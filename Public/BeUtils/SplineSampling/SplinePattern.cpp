@@ -34,18 +34,18 @@ namespace BeUtils
 		spline_(spline)
 	{}
 
-	double SplineBase2DPattern::GetMeanVelocity() const
+	double SplineBase2DPattern::GetMeanVelocity(Spline2DProjector const& projector) const
 	{
-		return spline_.GetMeanVelocity(splineObject_);
+		return spline_.GetMeanVelocity(splineObject_, projector);
 	}
 
 	size_t SplineBase2DPattern::Bake2DSegmentsOnSpline(
 		std::vector<Segment_2D>& segments,
 		double dS, double splineLen,
 		BoundingBox& bbox,
-		E2DProjection projection /*= Pr2D_Z_Axis*/) const
+		Spline2DProjector const& projector) const
 	{
-		return spline_.ComputeSegments(segments, dS, splineLen, bbox, splineObject_, projection);
+		return spline_.ComputeSegments(segments, dS, splineLen, bbox, splineObject_, projector);
 	}
 
 	//-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
@@ -58,18 +58,18 @@ namespace BeUtils
 	:	SplineBase2DPattern(splineObject, spline, projection, fQuality)
 	{}
 
-	double SplinePattern::GetMaxVelocity(double &splineLenEvaluation) const
+	double SplinePattern::GetMaxVelocity(double& splineLenEvaluation, Spline2DProjector const& projector) const
 	{
-		return spline_.EvalMaxVelocity(splineObject_, splineLenEvaluation, projection_);
+		return spline_.EvalMaxVelocity(splineObject_, splineLenEvaluation, projector);
 	}
 
 	size_t SplinePattern::Bake2DSegments(
 		std::vector<Segment_2D>& segments,
 		double dS, double splineLen,
 		BoundingBox& bbox,
-		E2DProjection projection /*= Pr2D_Z_Axis*/) const
+		Spline2DProjector const& projector) const
 	{
-		return spline_.ComputeSegments(segments, dS, splineLen, bbox, splineObject_, projection);
+		return spline_.ComputeSegments(segments, dS, splineLen, bbox, splineObject_, projector);
 	}
 }
 

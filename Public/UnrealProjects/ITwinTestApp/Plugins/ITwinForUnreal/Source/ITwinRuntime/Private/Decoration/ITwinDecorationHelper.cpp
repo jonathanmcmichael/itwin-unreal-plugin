@@ -35,7 +35,6 @@
 #include <Population/ITwinKeyframePath.h>
 #include <Population/ITwinPopulation.h>
 #include <Population/ITwinPopulationWithPathExt.h>
-#include <Population/ITwinAnimPathManager.h>
 #include <Spline/ITwinSplineHelper.h>
 #include <Spline/ITwinSplineTool.h>
 #include <PathAnimation/ITwinPathAnimTool.h>
@@ -680,9 +679,8 @@ void AITwinDecorationHelper::FImpl::AsyncLoadScene()
 
 					// Chain to LoadMaterials
 					This->LoadMaterialsStep();
-					// Chain to LoadPopulations
-					This->LoadPopulationsStep(); // will also load Splines & Animations
-
+					// Chain to LoadSplines
+					This->LoadSplinesStep(); // will also load Populations & Animations
 					// Chain to LoadAnnotations
 					This->LoadAnnotationsStep();
 				});
@@ -744,24 +742,27 @@ void AITwinDecorationHelper::FImpl::LoadSplinesStep()
 				{
 					if (!ownerPtr.IsValid())
 						return;
+					bool bHasLoadedSplines = false;
 					auto& This(ownerPtr.Get()->Impl);
 					if (!exp)
 					{
 						BE_LOG_LOAD_UNEXP("splines", exp);
-						This->FinishedALoadingTask();
-						return;
 					}
-					// Chain to LoadPathAnimations
-					This->LoadPathAnimationsStep();
+					else
+					{
+						bHasLoadedSplines = true;
+					}
+					// Chain to LoadPopulations
+					This->LoadPopulationsStep();
 
 					AsyncTask(ENamedThreads::GameThread,
-						[ownerPtr]()
+						[ownerPtr, bHasLoadedSplines]()
 						{
 							if (!ownerPtr.IsValid())
 								return;
 							auto& This(ownerPtr.Get()->Impl);
 							ON_SCOPE_EXIT{ This->FinishedALoadingTask(); };
-							This->LoadSplinesInGame(true);
+							This->LoadSplinesInGame(bHasLoadedSplines);
 						});
 				}
 			);
@@ -820,9 +821,8 @@ void AITwinDecorationHelper::FImpl::LoadPopulationsStep()
 					return;
 				auto& This(ownerPtr.Get()->Impl);
 
-				// Start loading splines (even though the populations failed to load: remember that most of
-				// splines are unrelated to populations...)
-				This->LoadSplinesStep();
+				// Chain to LoadPathAnimations
+				This->LoadPathAnimationsStep();
 
 				// Be careful with new scenes, where the population will fail to load, but we should still
 				// enable future population creation => we will distinguish a "real" failure case from a
@@ -1256,28 +1256,6 @@ void AITwinDecorationHelper::FImpl::CreateOrRefreshPopulationInGame(
 			else
 			{
 				BE_LOGW("keyframeAnim", "animation keyframe: " << gp->GetName() << " not found");
-			}
-		}
-	}
-
-	auto& pathAnimManager(DecorationIO->pathAnimManager);
-	if (pathAnimManager)
-	{
-		const AdvViz::SDK::SharedInstVect& instances =
-			instancesManager->GetInstancesByObjectRef(ITwin::ConvertToStdString(assetPath), groupId);
-		for (size_t i = 0; i < instances.size(); ++i)
-		{
-			AdvViz::SDK::IInstancePtr instPtr = instances[i];
-			auto inst = instPtr->GetAutoLock();
-			if (inst->GetAnimPathId())
-			{
-				auto AnimPathInfoPtr = pathAnimManager->GetAnimationPathInfo(inst->GetAnimPathId().value());
-				if (!AnimPathInfoPtr)
-					continue;
-				auto AnimPathInfo = AnimPathInfoPtr->GetAutoLock();
-				std::shared_ptr<InstanceWithSplinePathExt> animPathExt = std::make_shared<InstanceWithSplinePathExt>(AnimPathInfoPtr, population, i);
-				inst->AddExtension(animPathExt);
-				AnimPathInfo->AddExtension(animPathExt);
 			}
 		}
 	}
@@ -2412,11 +2390,6 @@ void AITwinDecorationHelper::ConnectPathAnimToolToPathManager(AITwinPathAnimTool
 {
 	pathAnimTool->SetPathAnimManager(Impl->DecorationIO->GetPathAnimManager());
 }
-
-//void AITwinDecorationHelper::ConnectPathAnimManager(AITwinAnimPathManager* manager)
-//{
-//	manager->SetPathAnimManager(Impl->DecorationIO->GetPathAnimManager());
-//}
 
 void AITwinDecorationHelper::SetDecoGeoreference(const FVector& latLongHeight)
 {

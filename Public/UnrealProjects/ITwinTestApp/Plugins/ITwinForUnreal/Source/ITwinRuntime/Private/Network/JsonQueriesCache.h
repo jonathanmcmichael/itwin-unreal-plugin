@@ -34,6 +34,8 @@ namespace QueriesCache
 		DEPRECATED_ElementsSourceIDs,
 		MaterialMLPrediction,
 		ElementsMetadataCombined,
+		ElementsMetadataNoBBoxes,
+		ElementsMetadataBBoxes,
 		ConstructionDetailing,
 	};
 

@@ -3,19 +3,28 @@
 
 	"configurePresets": [
 	{
-		"name": "win64static"
-		,"displayName": "Windows 64 Static"
-		,"description": "Default build using Visual Studio generator"
+		"name": "windows-x64-base"
+		,"hidden": true
+		,"description": "Common Windows x64 configuration with Visual Studio 2022"
 		,"generator": "Visual Studio 17 2022"
-		,"binaryDir": "${sourceDir}/../build/${presetName}"
 		,"architecture": "x64"
 		,"cacheVariables": {
 			"CMAKE_TOOLCHAIN_FILE": "${dollar}<VCPKG_ROOT>/scripts/buildsystems/vcpkg.cmake"
-			,"VCPKG_TARGET_TRIPLET": "x64-windows-static-md"
-			,"CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
-			,"SELECTED_PRESET": "${presetName}"
 		}
 		,"toolset": { "value": "host=x64,version=14.44.35207" }
+	}
+	,{
+	"name": "win64static"
+	,"inherits": "windows-x64-base"
+	,"displayName": "Windows 64 Static"
+	,"description": "Default build using Visual Studio generator"
+		,"binaryDir": "${sourceDir}/../../../Build/AdvvizSDK"
+		,"cacheVariables": {
+			"VCPKG_TARGET_TRIPLET": "x64-windows-static-md"
+			,"CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+			,"VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vcpkg-triplets"
+			,"SELECTED_PRESET": "${presetName}"
+		 }
 	}
 	,{
 		"name": "dll_win64static"
@@ -25,15 +34,13 @@
 			,"CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
 			,"VCPKG_TARGET_TRIPLET": "x64-windows-static-md"
 		}
-		,"toolset": { "value": "host=x64,version=14.44.35207" }
 	}
 	,{
 		"name": "win64Unreal"
+		,"inherits": "windows-x64-base"
 		,"displayName": "Windows 64 Unreal"
 		,"description": "Uses cesium-unreal's custom tailored triplet: statically linked, dynamic CRT, Release-only build using Visual Studio generator"
-		,"generator": "Visual Studio 17 2022"
 		,"binaryDir": "${sourceDir}/../build/${presetName}"
-		,"architecture": "x64"
 		,"$comment": [
 			" TODO_GCO: ",
 			"   revert the commit containing this: the Debug configuration (for UE from source) was made to use release",
@@ -54,41 +61,39 @@
 			"    ,\"VCPKG_BUILD_TYPE\": \"Release\""
 		]
 		,"cacheVariables": {
-			"CMAKE_TOOLCHAIN_FILE": "${dollar}<VCPKG_ROOT>/scripts/buildsystems/vcpkg.cmake"
-			,"VCPKG_TARGET_TRIPLET": "x64-windows-unreal-release"
+			"VCPKG_TARGET_TRIPLET": "x64-windows-unreal-release"
 			,"VCPKG_HOST_TRIPLET": "x64-windows-unreal-release"
 			,"CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreadedDLL"
 			,"VIZSDK_BUILD_CONTEXT":"Unreal"
 			,"SELECTED_PRESET": "${presetName}"
 		}
-		,"toolset": { "value": "host=x64,version=14.44.35207" }
 	}
-	,{
-	  "name": "macosXcodeX64"
+  ,{
+    "name": "macosXcodeX64"
       ,"displayName": "mac os Xcode x64"
       ,"description": "Default using xcode"
       ,"generator": "Xcode"
-	  ,"binaryDir": "${sourceDir}/../build/${presetName}"
+    ,"binaryDir": "${sourceDir}/../build/${presetName}"
       ,"cacheVariables": {
 		"CMAKE_TOOLCHAIN_FILE": "${dollar}<VCPKG_ROOT>/scripts/buildsystems/vcpkg.cmake"
-		,"VCPKG_TARGET_TRIPLET": "x64-osx"
-		,"VIZSDK_BUILD_CONTEXT":"Unreal"
-		,"SELECTED_PRESET": "${presetName}"
+    ,"VCPKG_TARGET_TRIPLET": "x64-osx"
+    ,"VIZSDK_BUILD_CONTEXT":"Unreal"
+    ,"SELECTED_PRESET": "${presetName}"
       }
     }
-	,{
-	  "name": "macosXcodeARM"
+  ,{
+    "name": "macosXcodeARM"
       ,"displayName": "mac os Xcode ARM"
       ,"description": "Default using xcode ARM"
       ,"generator": "Xcode"
-	  ,"binaryDir": "${sourceDir}/../build/${presetName}"
+    ,"binaryDir": "${sourceDir}/../build/${presetName}"
       ,"cacheVariables": {
 		  "CMAKE_TOOLCHAIN_FILE": "${dollar}<VCPKG_ROOT>/scripts/buildsystems/vcpkg.cmake"
-		  ,"VCPKG_TARGET_TRIPLET": "arm64-osx"
-		  ,"VIZSDK_BUILD_CONTEXT":"Unreal"
-		  ,"SELECTED_PRESET": "${presetName}"
-		  ,"CMAKE_CROSSCOMPILING": "OFF"
+      ,"VCPKG_TARGET_TRIPLET": "arm64-osx"
+      ,"VIZSDK_BUILD_CONTEXT":"Unreal"
+      ,"SELECTED_PRESET": "${presetName}"
+      ,"CMAKE_CROSSCOMPILING": "OFF"
       }
     }
-	]
+  ]
 }

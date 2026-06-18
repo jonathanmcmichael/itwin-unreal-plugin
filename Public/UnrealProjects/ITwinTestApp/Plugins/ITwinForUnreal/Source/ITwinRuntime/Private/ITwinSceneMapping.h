@@ -948,13 +948,18 @@ public:
 	[[nodiscard]] FITwinElement* GetElementForSLOW(ITwinElementID const KnownElementId,
 												   ITwinScene::ElemIdx* Rank = nullptr);
 	[[nodiscard]] bool FindElementIDForGUID(FGuid const& ElementGuid, ITwinElementID& Found) const;
+	// For dev - Won't work unless emptying SourceElementIDs is commented out in FinishedParsingIModelMetadata:
+	[[nodiscard]] bool FindElementIDForSourceID(FString const& SourceID, ITwinElementID& Found) const;
 	[[nodiscard]] bool FindGUIDForElement(ITwinScene::ElemIdx const Rank, FGuid& Found) const;
 	[[nodiscard]] bool FindGUIDForElement(ITwinElementID const Elem, FGuid& Found) const;
 	void ReserveIModelMetadata(int TotalElements);
-	void FinishedParsingIModelMetadata();
-	static int ParseIModelMetadata(TSceneMappingPtr sceneMappingPtr, TArray<TSharedPtr<FJsonValue>> const& JsonRows);
-	static bool CheckParentChildGraph(TSceneMappingPtr sceneMappingPtr);
-	int ParseConstructionDetailingParentIDs(TArray<TSharedPtr<FJsonValue>> const& JsonRows);
+	void FinishedParsingIModelMetadata(bool bFinishedElemIDs, bool bFinishedBBoxes);
+	static int ParseIModelMetadata(TSceneMappingPtr SceneMappingPtr, TArray<TSharedPtr<FJsonValue>> const& JsonRows,
+								   bool const WithBBoxes);
+	static int ParseStandaloneBoundingBoxes(TSceneMappingPtr SceneMappingPtr,
+											TArray<TSharedPtr<FJsonValue>> const& JsonRows);
+	static int ParseConstructionDetailingParentIDs(TSceneMappingPtr SceneMappingPtr,
+												   TArray<TSharedPtr<FJsonValue>> const& JsonRows);
 	FDuplicateElementsVec const& GetDuplicateElements(ITwinElementID const ElemID) const;
 	std::vector<ITwinScene::ElemIdx> const& GetConstructionDetailingParentsToHide() const;
 	FString ToString() const;
@@ -1115,9 +1120,10 @@ public:
 		uint64_t ITwinMaterialID);
 
 private:
+	bool CheckParentChildGraph();
 	template<typename TSomeID, typename TMapByRank>
 	bool ParseSomeElementIdentifier(TMapByRank& OutIDMap, ITwinScene::ElemIdx const ElemIdx,
-		TSharedPtr<FJsonValue> const& Entry, int& GoodEntry, int& EmptyEntry);
+		TSharedPtr<FJsonValue> const& Entry, int& GoodEntry, int& EmptyEntry, bool bHandleDuplicates);
 	void ApplySelectingAndHiding(const TITwinSceneTilePtr& SceneTilePtr);
 	static bool ParseElementBBox(TSharedPtr<FJsonValue> const& BBoxLow,
 								 TSharedPtr<FJsonValue> const& BBoxHigh, FBox& ElemBBox);

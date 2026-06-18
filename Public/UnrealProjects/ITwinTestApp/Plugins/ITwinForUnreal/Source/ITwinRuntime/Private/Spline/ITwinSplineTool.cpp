@@ -52,6 +52,20 @@ namespace ITwin
 		AITwinSplineTool::TilesetAccessArray& OutArray,
 		AdvViz::SDK::ISplinePtr const& Spline,
 		const UWorld* World);
+
+	void TriggerCursorUpdate()
+	{
+		// Quick fix to make the new cursor appear.
+		// from https://forums.unrealengine.com/t/mouse-cursor-not-changing-until-moved/290523/25
+		auto& App = FSlateApplication::Get();
+		App.SetAllUserFocusToGameViewport();
+		App.QueryCursor();
+	}
+}
+
+namespace ITwinSpline
+{
+	extern bool IsPathAnim(const EITwinSplineUsage Usage);
 }
 
 class AITwinSplineTool::FImpl
@@ -88,7 +102,7 @@ public:
 	// Implementation of AITwinSplineTool functions
 	AITwinSplineHelper* GetSelectedSpline() const;
 	void SetSelectedSpline(AITwinSplineHelper* splineHelper, bool bHasJustDeletedSelectedSpline = false);
-	void SetSelectedPointIndex(int32 pointIndex);
+	void SetSelectedPointIndex(int32 pointIndex, bool bBroadcastPointSelection = false);
 	int32 GetSelectedPointIndex() const;
 	bool HasSelection() const;
 	void DeleteSelection();
@@ -98,6 +112,7 @@ public:
 	bool CanDeletePoint() const;
 	void DeleteSelectedPoint();
 	void DuplicateSelectedPoint();
+	bool InsertPointAt(AITwinSplineHelper* Spline, int32 PointIndex, FVector const& NewWorldPosition);
 	void EnableDuplicationWhenMovingPoint(bool value);
 	FTransform GetSelectionTransform() const;
 	void SetSelectionTransform(const FTransform& transform);
@@ -136,6 +151,7 @@ public:
 
 	EITwinSplineUsage GetUsage() const { return ToolUsage; }
 	void SetUsage(EITwinSplineUsage NewUsage) { ToolUsage = NewUsage; }
+	bool HasSameUsageAs(AITwinSplineHelper const* SplineHelper) const;
 
 	EITwinTangentMode GetTangentMode() const;
 	void SetTangentMode(EITwinTangentMode TangentMode);
@@ -212,7 +228,7 @@ void AITwinSplineTool::FImpl::SetSelectedSpline(AITwinSplineHelper* splineHelper
 		{
 			for (TActorIterator<AITwinSplineHelper> SplineIter(owner.GetWorld()); SplineIter; ++SplineIter)
 			{
-				if ((*SplineIter)->GetUsage() == this->GetUsage())
+				if (HasSameUsageAs(*SplineIter))
 					SplineIter->SetActorHiddenInGame(!SplineIter->IsSelected());
 			}
 		}
@@ -228,7 +244,7 @@ void AITwinSplineTool::FImpl::SetSelectedSpline(AITwinSplineHelper* splineHelper
 			{
 				if (bHasJustDeletedSelectedSpline && previouslySelected == (*SplineIter))
 					continue;
-				if ((*SplineIter)->GetUsage() == this->GetUsage())
+				if (HasSameUsageAs(*SplineIter))
 					SplineIter->SetActorHiddenInGame(!bShowProxies);
 			}
 		}
@@ -242,13 +258,18 @@ void AITwinSplineTool::FImpl::SetSelectedSpline(AITwinSplineHelper* splineHelper
 	}
 }
 
-void AITwinSplineTool::FImpl::SetSelectedPointIndex(int32 PointIndex)
+void AITwinSplineTool::FImpl::SetSelectedPointIndex(int32 PointIndex, bool bBroadcastPointSelection /*= false*/)
 {
 	if (selectedSplineHelper)
 	{
 		selectedSplineHelper->SetSelectedPointIndex(PointIndex);
 
 		owner.SplineEditionEvent.Broadcast();
+
+		if (bBroadcastPointSelection)
+		{
+			owner.SplinePointSelectedEvent.Broadcast();
+		}
 	}
 }
 
@@ -534,18 +555,50 @@ void AITwinSplineTool::FImpl::BuildListOfActorsToExcludeForPointInsertion()
 	}, owner.GetWorld());
 }
 
+bool AITwinSplineTool::FImpl::InsertPointAt(AITwinSplineHelper* Spline, int32 PointIndex, FVector const& WorldPosition)
+{
+	if (!ensure(Spline != nullptr))
+	{
+		return false;
+	}
+	// Select the spline if not already selected, to make sure the new point gets properly selected and the
+	// relevant events are triggered.
+	if (Spline != selectedSplineHelper)
+	{
+		SetSelectedSpline(Spline);
+	}
+	const int32 NewPointIndex = Spline->InsertPointAt(PointIndex, WorldPosition);
+	if (NewPointIndex != INDEX_NONE)
+	{
+		SetSelectedPointIndex(NewPointIndex, /*bBroadcastPointSelection*/true);
+		owner.SplineSelectionEvent.Broadcast();
+		owner.InteractiveCreationCompletedEvent.Broadcast(/*bTriggeredFromITS*/false);
+		return true;
+	}
+	else
+	{
+		return false;
+	}
+}
+
+bool AITwinSplineTool::FImpl::HasSameUsageAs(AITwinSplineHelper const* SplineHelper) const
+{
+	return this->GetUsage() == SplineHelper->GetUsage()
+		|| owner.IsUsedForPathAnim() && SplineHelper->IsUsedForPathAnim();
+}
+
 bool AITwinSplineTool::FImpl::DoMouseClickAction()
 {
 	// During interactive creation, we should ignore the last point, which always follows the mouse and thus
-	// could "hide" the last validated spline point, preventing us from stopping the polygon though a
+	// could "hide" the last validated spline point, preventing us from stopping the polygon through a
 	// double-click or click on last point.
 	TArray<UPrimitiveComponent*> ComponentsToIgnore;
 	if (GetMode() == EITwinSplineToolMode::InteractiveCreation && HasSelection())
 	{
-		const int32 NumPoints = selectedSplineHelper->GetNumberOfSplinePoints();
-		if (NumPoints > 0)
+		UStaticMeshComponent* Last3DPoint = selectedSplineHelper->GetLastPointMeshComponent();
+		if (Last3DPoint)
 		{
-			ComponentsToIgnore.Push(selectedSplineHelper->GetPointMeshComponent(NumPoints - 1));
+			ComponentsToIgnore.Push(Last3DPoint);
 		}
 	}
 
@@ -566,6 +619,8 @@ bool AITwinSplineTool::FImpl::DoMouseClickAction()
 
 	if (GetMode() == EITwinSplineToolMode::InteractiveCreation)
 	{
+		BE_ASSERT(!selectedSplineHelper || selectedSplineHelper->IsInteractiveCreationInProgress());
+
 		if (hitActor)
 		{
 			if (!HasSelection())
@@ -578,9 +633,8 @@ bool AITwinSplineTool::FImpl::DoMouseClickAction()
 					auto HitTileset = ITwin::GetTilesetAccess(hitActor);
 					if (HitTileset)
 					{
-						// Currently, cutout influences work per layer type, so if we hit an iModel, we
-						// should target *all* iModels in scene:
-						ITwin::GatherTilesetsOfModelType(Targets, HitTileset->GetModelType(), owner.GetWorld());
+						// We now use per layer influence: only the picked tileset will be cut.
+						Targets.Push(std::move(HitTileset));
 					}
 					owner.SetCutoutTargets(std::move(Targets));
 
@@ -588,16 +642,19 @@ bool AITwinSplineTool::FImpl::DoMouseClickAction()
 				}
 				AITwinSplineHelper* NewSplineHelper = CreateSpline(ToolUsage, hitResult.ImpactPoint, {});
 				SetSelectedSpline(NewSplineHelper);
-
-				if (owner.IsUsedForPathAnim())
-				{
-					NewSplineHelper->SetTangentMode(EITwinTangentMode::Smooth);
-					NewSplineHelper->SetClosedLoop(false);
-				}
-
-				// Select the last point of the created spline
 				if (NewSplineHelper)
 				{
+					// Mark the spline as being interactively created, so that it can adapt its behavior
+					// accordingly (e.g. for point validation and selection, or display of control points).
+					NewSplineHelper->SetInteractiveCreationInProgress(true);
+
+					if (owner.IsUsedForPathAnim())
+					{
+						NewSplineHelper->SetTangentMode(EITwinTangentMode::Smooth);
+						NewSplineHelper->SetClosedLoop(false);
+					}
+
+					// Select the last point of the created spline
 					SetSelectedPointIndex(NewSplineHelper->GetNumberOfSplinePoints() - 1);
 				}
 			}
@@ -636,7 +693,9 @@ bool AITwinSplineTool::FImpl::DoMouseClickAction()
 		if (hitActor && hitActor->IsA(AITwinSplineHelper::StaticClass()))
 		{
 			NewlySelectedSpline = Cast<AITwinSplineHelper>(hitActor);
-			if (NewlySelectedSpline && NewlySelectedSpline->GetUsage() != this->GetUsage())
+			// Note: in case of path animation, path spline and spline tool might have mismatching usages (in particular, in selection mode, when spline tool corresponds
+			// to path animation in general and the spline - to a particular path type)
+			if (NewlySelectedSpline && !HasSameUsageAs(NewlySelectedSpline))
 			{
 				NewlySelectedSpline = nullptr;
 			}
@@ -658,17 +717,14 @@ bool AITwinSplineTool::FImpl::DoMouseClickAction()
 				if (hitResult.GetComponent()->IsA(USplineMeshComponent::StaticClass()))
 				{
 					// Insert new point when clicking on an existing segment.
-					const int32 HitSegmentIndex = splineHelper->FindSegmentIndexFromSplineComponent(
-						Cast<USplineMeshComponent>(hitResult.GetComponent()));
+					// Same remark as in #ActionOnTick regarding 2D drawing.
+					const int32 HitSegmentIndex = AITwinSplineHelper::Is2DDrawingEnabled()
+						? INDEX_NONE
+						: splineHelper->FindSegmentIndexFromSplineComponent(
+							Cast<USplineMeshComponent>(hitResult.GetComponent()));
 					if (HitSegmentIndex != INDEX_NONE)
 					{
-						int32 NewPointIndex = splineHelper->InsertPointAt(HitSegmentIndex + 1, hitResult.ImpactPoint);
-						if (NewPointIndex != INDEX_NONE)
-						{
-							SetSelectedPointIndex(NewPointIndex);
-							owner.SplinePointSelectedEvent.Broadcast();
-							owner.InteractiveCreationCompletedEvent.Broadcast(/*bTriggeredFromITS*/false);
-						}
+						InsertPointAt(splineHelper, HitSegmentIndex + 1, hitResult.ImpactPoint);
 					}
 				}
 				else if (hitResult.GetComponent()->IsA(UStaticMeshComponent::StaticClass()))
@@ -678,8 +734,7 @@ bool AITwinSplineTool::FImpl::DoMouseClickAction()
 
 					if (pointIndex != INDEX_NONE)
 					{
-						SetSelectedPointIndex(pointIndex);
-						owner.SplinePointSelectedEvent.Broadcast();
+						SetSelectedPointIndex(pointIndex, /*bBroadcastPointSelection*/true);
 					}
 				}
 			}
@@ -690,8 +745,7 @@ bool AITwinSplineTool::FImpl::DoMouseClickAction()
 		// cartographic polygons...)
 		for (TActorIterator<AITwinSplineHelper> SplineIter(owner.GetWorld()); SplineIter; ++SplineIter)
 		{
-			if (SplineIter->GetUsage() == this->GetUsage()
-				&& !SplineIter->IsHidden())
+			if (HasSameUsageAs(*SplineIter)	&& !SplineIter->IsHidden())
 			{
 				if (SplineIter->DoesLineIntersectSplinePolygon(PickingResult.TraceStart, PickingResult.TraceEnd))
 				{
@@ -722,7 +776,9 @@ bool AITwinSplineTool::FImpl::ActionOnTick(float DeltaTime)
 {
 	if (GetMode() != EITwinSplineToolMode::InteractiveCreation)
 	{
-		if (IsEnabled())
+		// N.B. In 2D mode, point insertion is managed by the Unreal widget
+		// (see UITwinSplineHelper2DWidgetImpl).
+		if (IsEnabled() && !AITwinSplineHelper::Is2DDrawingEnabled())
 		{
 			// Change the cursor if the mouse is hovering one spline segment (in this case, a click will
 			// insert a point).
@@ -733,9 +789,9 @@ bool AITwinSplineTool::FImpl::ActionOnTick(float DeltaTime)
 				&& HitResult.GetComponent()
 				&& HitResult.GetComponent()->IsA(USplineMeshComponent::StaticClass()))
 			{
-				// AzDev#1967146: point insertion is now only possible for the selected polygon.
+				// Check if point insertion is allowed for the spline.
 				AITwinSplineHelper const* SplineHelper = Cast<AITwinSplineHelper const>(HitActor);
-				if (SplineHelper->IsSelected())
+				if (SplineHelper->IsPointEditionAllowed())
 				{
 					HitSegmentIndex = SplineHelper->FindSegmentIndexFromSplineComponent(
 						Cast<USplineMeshComponent>(HitResult.GetComponent()));
@@ -755,11 +811,8 @@ bool AITwinSplineTool::FImpl::ActionOnTick(float DeltaTime)
 				}
 				if (OldCursor != PlayerController->CurrentMouseCursor)
 				{
-					// Quick fix to make the new cursor appear.
-					// from https://forums.unrealengine.com/t/mouse-cursor-not-changing-until-moved/290523/25
-					auto& App = FSlateApplication::Get();
-					App.SetAllUserFocusToGameViewport();
-					App.QueryCursor();
+					// Make sure the new cursor appears.
+					ITwin::TriggerCursorUpdate();
 				}
 			}
 		}
@@ -1597,6 +1650,10 @@ bool AITwinSplineTool::FImpl::ToggleInteractiveCreationMode(bool bTriggeredFromI
 		// (AzDev#1943807)
 		SetSelectedPointIndex(-1);
 
+		// The new spline is now fully created, we can exit the interactive creation mode.
+		ensure(NewSpline->IsInteractiveCreationInProgress());
+		NewSpline->SetInteractiveCreationInProgress(false);
+
 		// End of the creation of a spline in interactive mode => refresh scene and broadcast creation event.
 		RefreshScene(NewSpline.Get());
 
@@ -1779,9 +1836,9 @@ void AITwinSplineTool::SetSelectedSpline(AITwinSplineHelper* splineHelper)
 	Impl->SetSelectedSpline(splineHelper);
 }
 
-void AITwinSplineTool::SetSelectedPointIndex(int32 pointIndex)
+void AITwinSplineTool::SetSelectedPointIndex(int32 PointIndex, bool bBroadcastPointSelection /*= false*/)
 {
-	Impl->SetSelectedPointIndex(pointIndex);
+	Impl->SetSelectedPointIndex(PointIndex, bBroadcastPointSelection);
 }
 
 int32 AITwinSplineTool::GetSelectedPointIndex() const
@@ -1837,6 +1894,11 @@ void AITwinSplineTool::DuplicateSelectedPoint()
 void AITwinSplineTool::EnableDuplicationWhenMovingPoint(bool value)
 {
 	Impl->EnableDuplicationWhenMovingPoint(value);
+}
+
+bool AITwinSplineTool::InsertPointAt(AITwinSplineHelper* Spline, int32 PointIndex, FVector const& WorldPosition)
+{
+	return Impl->InsertPointAt(Spline, PointIndex, WorldPosition);
 }
 
 FTransform AITwinSplineTool::GetSelectionTransformImpl() const
@@ -1900,7 +1962,7 @@ void AITwinSplineTool::SetUsedForPathAnimImpl(bool bForPathAnim)
 
 bool AITwinSplineTool::IsUsedForPathAnimImpl() const
 {
-	return GetUsage() == EITwinSplineUsage::AnimPath || GetUsage() == EITwinSplineUsage::AnimPathTraffic || GetUsage() == EITwinSplineUsage::AnimPathCrowd;
+	return ITwinSpline::IsPathAnim(GetUsage());
 }
 
 AITwinSplineHelper* AITwinSplineTool::AddSpline(FVector const& Position,
@@ -2447,6 +2509,16 @@ TSharedPtr<AITwinInteractiveTool::FToolDisabler> AITwinSplineTool::MakeToolDisab
 
 namespace ITwin
 {
+	AITwinSplineTool* GetSplineTool(const UWorld* World)
+	{
+		AActor* Tool = UGameplayStatics::GetActorOfClass(World, AITwinSplineTool::StaticClass());
+		if (IsValid(Tool))
+		{
+			return Cast<AITwinSplineTool>(Tool);
+		}
+		return nullptr;
+	}
+
 	void EnableSplineTool(UObject* WorldContextObject, bool bEnable, EITwinSplineUsage Usage,
 		AITwinSplineTool::TilesetAccessArray&& CutoutTargets /*= {}*/,
 		bool bAutomaticCutoutTarget /*= false*/)
@@ -2454,10 +2526,9 @@ namespace ITwin
 		ensureMsgf(!bEnable || Usage != EITwinSplineUsage::MapCutout || !CutoutTargets.IsEmpty() || bAutomaticCutoutTarget,
 			TEXT("Cut-out mode requires to provide target tileset(s)"));
 
-		AActor* Tool = UGameplayStatics::GetActorOfClass(WorldContextObject, AITwinSplineTool::StaticClass());
-		if (IsValid(Tool))
+		AITwinSplineTool* SplineTool = GetSplineTool(WorldContextObject->GetWorld());
+		if (SplineTool)
 		{
-			AITwinSplineTool* SplineTool = Cast<AITwinSplineTool>(Tool);
 			if (bEnable && Usage != EITwinSplineUsage::Undefined)
 			{
 				// Usage must be filled before enabling the tool, in order to show only the splines matching the
@@ -2476,6 +2547,87 @@ namespace ITwin
 			{
 				SplineTool->ResetToDefault();
 			}
+		}
+	}
+
+	TWeakObjectPtr<AITwinSplineTool> ActivateSplineTool(UWorld* World,
+														EITwinSplineUsage Usage,
+														TWeakObjectPtr<AITwinSplineTool> const& InSplineTool /*= {}*/)
+	{
+		TWeakObjectPtr<AITwinSplineTool> SplineTool = InSplineTool;
+		if (!SplineTool.IsValid())
+		{
+			SplineTool = GetSplineTool(World);
+		}
+		if (ensure(SplineTool.IsValid()))
+		{
+			bool bNeedEnableSplineTool = false;
+			if (SplineTool->IsEnabled())
+			{
+				bNeedEnableSplineTool = SplineTool->GetUsage() != Usage;
+			}
+			else
+			{
+				AITwinInteractiveTool::DisableAll(World);
+				bNeedEnableSplineTool = true;
+			}
+			if (bNeedEnableSplineTool)
+			{
+				EnableSplineTool(World, true, Usage, {},
+					Usage == EITwinSplineUsage::MapCutout/*bAutomaticCutoutTarget*/);
+			}
+		}
+		return SplineTool;
+	}
+
+	void SelectSpline(AITwinSplineHelper* SplineHelper,
+					  int32 SelectedPointIndex,
+					  UWorld* World,
+					  TWeakObjectPtr<AITwinSplineTool> const& InSplineTool /*= {}*/)
+	{
+		TWeakObjectPtr<AITwinSplineTool> SplineTool = InSplineTool;
+		if (!SplineTool.IsValid())
+		{
+			SplineTool = GetSplineTool(World);
+		}
+		if (!ensure(SplineTool.IsValid()))
+		{
+			return;
+		}
+		if (SplineTool->IsInteractiveCreationMode())
+		{
+			// Don't change selection while creating a new spline, as it would interfere with the creation
+			// process.
+			return;
+		}
+		if (SplineHelper)
+		{
+			if (!SplineTool->IsEnabled())
+			{
+				AITwinInteractiveTool::DisableAll(World);
+			}
+			AITwinSplineTool::TilesetAccessArray CutoutTargets;
+			if (SplineHelper->GetUsage() == EITwinSplineUsage::MapCutout)
+			{
+				GetLinkedTilesets(CutoutTargets, SplineHelper->GetAVizSpline(), World);
+			}
+			EnableSplineTool(World, true, SplineHelper->GetUsage(), std::move(CutoutTargets));
+			SplineTool->SetSelectedSpline(SplineHelper);
+			SplineTool->SetSelectedPointIndex(SelectedPointIndex, true/*bBroadcastPointSelection*/);
+
+			// Make sure the selection gizmo will point at the newly selected point.
+			SplineTool->SplineSelectionEvent.Broadcast();
+
+			if (SelectedPointIndex != INDEX_NONE && SplineHelper->GetUsage() == EITwinSplineUsage::MapCutout)
+			{
+				// When a cut-out point is selected, broadcast the event to the AITwinClippingTool.
+				SplineTool->CutoutPolygonSelectedEvent.Broadcast();
+			}
+		}
+		else
+		{
+			// Deselect
+			SplineTool->SetSelectedSpline(nullptr);
 		}
 	}
 }

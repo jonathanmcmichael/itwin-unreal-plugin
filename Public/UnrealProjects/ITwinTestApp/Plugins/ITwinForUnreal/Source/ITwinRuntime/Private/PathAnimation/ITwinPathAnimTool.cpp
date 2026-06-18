@@ -21,6 +21,8 @@
 #include <ITwinUtilityLibrary.h>
 #include <Decoration/ITwinDecorationHelper.h>
 #include <Math/UEMathConversion.h>
+#include "Math/BoxSphereBounds.h"
+#include "Math/Box.h"
 #include <Population/ITwinPopulation.h>
 #include <Population/ITwinPopulationTool.h>
 #include <Spline/ITwinSplineHelper.h>
@@ -37,9 +39,6 @@
 #include <Compil/BeforeNonUnrealIncludes.h>
 #	include <BeHeaders/Compil/EnumSwitchCoverage.h>
 #	include <Core/Tools/Log.h>
-#	include <glm/matrix.hpp>
-#	include <glm/gtc/matrix_access.hpp>
-#	include <glm/gtx/compatibility.hpp>
 #	include <BeUtils/SplineSampling/SplineSampling.h>
 #	include <SDK/Core/Visualization/Instance.h>
 #	include <SDK/Core/Visualization/InstancesGroup.h>
@@ -50,17 +49,20 @@
 #	include <SDK/Core/Tools/Log.h>
 #	include <SDK/Core/Tools/TypeId.h>
 #	include <SDK/Core/Tools/Extension.h>
+#	include "SDK/Core/Tools/DelayedCall.h"
 #include <Compil/AfterNonUnrealIncludes.h>
 
+
+namespace ITwinSpline
+{
+	extern bool IsPathAnim(const EITwinSplineUsage Usage);
+}
 
 namespace
 {
 	bool IsSplineUsedForPathAnim(AITwinSplineHelper* SplineHelper)
 	{
-		return SplineHelper &&
-			(SplineHelper->GetUsage() == EITwinSplineUsage::AnimPath
-			|| SplineHelper->GetUsage() == EITwinSplineUsage::AnimPathTraffic
-			|| SplineHelper->GetUsage() == EITwinSplineUsage::AnimPathCrowd);
+		return SplineHelper && ITwinSpline::IsPathAnim(SplineHelper->GetUsage());
 	}
 
 	EITwinSplineUsage GetSplineUsageFromAnimPathType(EITwinAnimPathType PathType)
@@ -68,7 +70,7 @@ namespace
 		switch (PathType)
 		{
 		case EITwinAnimPathType::Object:
-			return EITwinSplineUsage::AnimPath;
+			return EITwinSplineUsage::AnimPathObject;
 		case EITwinAnimPathType::Traffic:
 			return EITwinSplineUsage::AnimPathTraffic;
 		case EITwinAnimPathType::Crowd:
@@ -83,7 +85,7 @@ namespace
 	{
 		switch (SplineUsage)
 		{
-		case EITwinSplineUsage::AnimPath:
+		case EITwinSplineUsage::AnimPathObject:
 			return EITwinAnimPathType::Object;
 		case EITwinSplineUsage::AnimPathTraffic:
 			return EITwinAnimPathType::Traffic;
@@ -102,19 +104,23 @@ typedef AdvViz::SDK::IInstancePtr SharedInstance;
 class InstanceWithAnimPathExt : public AdvViz::SDK::Tools::Extension, public AdvViz::SDK::Tools::TypeId<InstanceWithAnimPathExt>, public std::enable_shared_from_this<InstanceWithAnimPathExt>
 {
 public:
-	InstanceWithAnimPathExt(FTransform InitTransform) : initTransform_(InitTransform), lastTransform_(InitTransform) {};
+	InstanceWithAnimPathExt(FTransform StartTransform) : initTransform_(StartTransform), lastTransform_(StartTransform) {};
 
 	using AdvViz::SDK::Tools::TypeId<InstanceWithAnimPathExt>::GetTypeId;
 
-	FTransform GetTransform(float DeltaTime, EITwinAnimPathRepeatMode repeatMode, bool bReverse)
+	FTransform GetTransform(float DeltaTime, EITwinAnimPathRepeatMode repeatMode, bool bReverse, float Delay, bool bTimelineMode)
 	{
 		if (!keyFrames_.IsValid() || keyFrames_->NeedsUpdate())
 			return initTransform_;
 		
-		curTime_ += DeltaTime;
-		
-		if (isPaused || curTime_ < 0)
-			return lastTransform_;
+		// When camera timeline is open, DeltaTime is actually current timeline time
+		if (bTimelineMode)
+			curTime_ = DeltaTime + startTime_ - Delay;
+		else
+			curTime_ += DeltaTime;
+
+		if (curTime_ < 0)
+			return initTransform_;
 
 		float animTime(curTime_);
 		float duration(keyFrames_->GetTotalTime());
@@ -123,7 +129,6 @@ public:
 			if (curTime_ > duration)
 			{
 				animTime = duration;
-				//isPaused = true;
 			}
 		}
 		else if (curTime_ > duration)
@@ -146,24 +151,30 @@ public:
 		curTime_ = 0.f;
 	}
 
-	void SetPaused(bool bPaused)
+	void ResetAnimation(float Delay, std::optional<float> StartTime = std::nullopt, std::optional<FTransform> StartTransform = std::nullopt)
 	{
-		isPaused = bPaused;
+		if (StartTime.has_value())
+			startTime_ = StartTime.value();
+		if (StartTransform.has_value())
+			initTransform_ = StartTransform.value();
+
+		curTime_ = startTime_ - Delay;
+		lastTransform_ = initTransform_;
 	}
 
-	void ResetAnimation(float InDelay)
+	int32 GetLaneIndex() const
 	{
-		curTime_ = -InDelay;
-		lastTransform_ = initTransform_;
+		if (keyFrames_.IsValid())
+			return keyFrames_->GetLaneIndex();
+		return 0;
 	}
 
 private:
 	FTransform initTransform_;
 	FTransform lastTransform_;
 	TWeakObjectPtr<UBakedAnimKeyFrames> keyFrames_;
-	float curTime_ = 0.f; // TODO
-	float delay_ = 0.f; // TODO
-	bool isPaused = false;
+	float curTime_ = 0.f;
+	float startTime_ = 0.f; // per instance start time (used to distribute objects on the path, for example)
 };
 
 
@@ -210,16 +221,21 @@ public:
 	void ResetAnimation(FAnimPathIdentifier PathHandle);
 	void PlayAnimation(FAnimPathIdentifier PathHandle, bool bPlay);
 
-	bool PopulatePathObjects(UITwinAnimPathHelper* PathHelper, bool bClearPrevious = false);
-	bool PopulatePathObjects(FAnimPathIdentifier PathHandle, bool bClearPrevious = false);
+	void PopulatePathObjects(UITwinAnimPathHelper* PathHelper, bool bOnSceneLoad, bool bClearPrevious = false);
+
 	void RemovePathObjects(UITwinAnimPathHelper* PathHelper);
 	void RemovePathObjects(FAnimPathIdentifier PathHandle);
+
+	void HidePathAndObjects(UITwinAnimPathHelper* PathHelper, bool bHide);
 
 	// Make the Spline Tool the active tool, with usage restricted to the creation of the given type of animation path
 	TWeakObjectPtr<AITwinSplineTool> ActivateSplineTool(UWorld* World, EITwinAnimPathType PathType);
 
 	// Select a spline, or reset selection if InSplineHelper is null
 	void SelectSpline(AITwinSplineHelper* InSplineHelper, UWorld* World);
+
+	void OnActivatePicking(bool bActivate);
+	bool DoMouseClickPicking(bool& bOutSelectionGizmoNeeded);
 
 	void OnSplineEditedInTool();
 
@@ -261,12 +277,17 @@ public:
 	void BakeAnimation(FAnimPathIdentifier PathHandle);
 	void BakeAnimation();
 
-	void UpdateAnimatedObjects(FAnimPathIdentifier PathHandle, float DeltaTime);
-	void Tick(float DeltaTime);
+	void UpdateAnimatedObjects(FAnimPathIdentifier PathHandle, float DeltaTime, bool bTimelineMode);
+	void UpdateAllAnimatedObjects(float DeltaTime);
+
+	// Verifies whether the populations for the path assets are fully loaded.
+	// If called when loading a scene, it also checks whether the path asset instances have finished loading.
+	bool ArePopulationsFullyLoaded(UITwinAnimPathHelper* PathHelper, bool bOnSceneLoad);
 
 private:
 	FAnimPathIdentifier GetPathIdentifierFromSpline(AdvViz::SDK::RefID const& RefID) const;
 	UITwinAnimPathHelper* CreatePath(EITwinAnimPathType PathType);
+	void DoPopulatePathObjects(UITwinAnimPathHelper* PathHelper);
 };
 
 /*
@@ -329,42 +350,14 @@ void AITwinPathAnimTool::FImpl::DeleteSelectedPopulationInstance()
 
 TWeakObjectPtr<AITwinSplineTool> AITwinPathAnimTool::FImpl::ActivateSplineTool(UWorld* World, EITwinAnimPathType PathType)
 {
-	if (ensure(SplineTool.IsValid()))
-	{
-		bool bNeedEnableSplineTool = false;
-		if (SplineTool->IsEnabled())
-		{
-			bNeedEnableSplineTool = SplineTool->GetUsage() != GetSplineUsageFromAnimPathType(PathType);
-		}
-		else
-		{
-			AITwinInteractiveTool::DisableAll(World);
-			bNeedEnableSplineTool = true;
-		}
-		if (bNeedEnableSplineTool)
-		{
-			ITwin::EnableSplineTool(World, true, GetSplineUsageFromAnimPathType(PathType));
-		}
-	}
-	return SplineTool;
+	ensure(SplineTool.IsValid());
+	return ITwin::ActivateSplineTool(World, GetSplineUsageFromAnimPathType(PathType), SplineTool);
 }
 
 void AITwinPathAnimTool::FImpl::SelectSpline(AITwinSplineHelper* SplineHelper, UWorld* World)
 {
-	if (!ensure(SplineTool.IsValid()))
-		return;
-	if (SplineHelper)
-	{
-		AITwinInteractiveTool::DisableAll(World);
-
-		ITwin::EnableSplineTool(World, true, SplineHelper->GetUsage());
-		SplineTool->SetSelectedSpline(SplineHelper);
-	}
-	else
-	{
-		// Deselect
-		SplineTool->SetSelectedSpline(nullptr);
-	}
+	ensure(SplineTool.IsValid());
+	ITwin::SelectSpline(SplineHelper, INDEX_NONE, World, SplineTool);
 }
 
 
@@ -380,10 +373,6 @@ AITwinPathAnimTool::AITwinPathAnimTool()
 void AITwinPathAnimTool::ConnectPopulationTool(AITwinPopulationTool* PopulationTool)
 {
 	Impl->PopulationTool = PopulationTool;
-	//if (PopulationTool)
-	//{
-	//	PopulationTool->InteractiveCreationAbortedEvent.AddUniqueDynamic(this, &AITwinPathAnimTool::OnItemCreationAbortedInTool);
-	//}
 }
 
 void AITwinPathAnimTool::ConnectSplineTool(AITwinSplineTool* SplineTool)
@@ -396,7 +385,7 @@ void AITwinPathAnimTool::ConnectSplineTool(AITwinSplineTool* SplineTool)
 		SplineTool->SplineBeforeRemovedEvent.AddUniqueDynamic(this, &AITwinPathAnimTool::OnSplineHelperRemoved);
 		SplineTool->InteractiveCreationAbortedEvent.AddUniqueDynamic(this, &AITwinPathAnimTool::OnItemCreationAbortedInTool);
 		SplineTool->SplineEditionEvent.AddUniqueDynamic(this, &AITwinPathAnimTool::OnSplineEditedInTool);
-		//SplineTool->SplinePointMovedEvent.AddUniqueDynamic(this, &AITwinPathAnimTool::OnSplineEditedInTool);
+		SplineTool->SplinePointMovedEvent.AddUniqueDynamic(this, &AITwinPathAnimTool::OnSplinePointMovedInTool);
 	}
 }
 
@@ -438,7 +427,7 @@ void AITwinPathAnimTool::FImpl::LoadAnimationPaths()
 				if (assets.size() > 0)
 				{
 					PathHelper->Set3DObjectsFromProps();
-					PopulatePathObjects(PathHelper, false);
+					PopulatePathObjects(PathHelper, true/*bOnSceneLoad*/);
 				}
 			}
 		}
@@ -488,56 +477,358 @@ void AITwinPathAnimTool::FImpl::RemovePathObjects(FAnimPathIdentifier PathHandle
 	RemovePathObjects(GetMutableAnimPathHelper(PathHandle));
 }
 
-bool AITwinPathAnimTool::FImpl::PopulatePathObjects(UITwinAnimPathHelper* PathHelper, bool bClearPrevious/* = false*/)
+void AITwinPathAnimTool::FImpl::HidePathAndObjects(UITwinAnimPathHelper* PathHelper, bool bHide)
+{
+	if (!PathHelper)
+		return;
+	for (auto Population : PathHelper->Populations)
+	{
+		if (!Population.IsValid())
+			continue;
+		Population->SetHiddenInGame(bHide);
+	}
+	if (PathHelper->SplineHelper.IsValid())
+		PathHelper->SplineHelper->SetActorHiddenInGame(bHide);
+}
+
+bool AITwinPathAnimTool::FImpl::ArePopulationsFullyLoaded(UITwinAnimPathHelper* PathHelper, bool bOnSceneLoad)
+{
+	auto InstGroupId = DecorationHelper->GetInstancesGroupIdForSpline(*(PathHelper->SplineHelper));
+	auto Assets = PathHelper->Get3DObjectPaths();
+	for (auto asset : Assets)
+	{
+		AITwinPopulation* Population = DecorationHelper->GetPopulation(asset, InstGroupId);
+		if (!Population || Population->GetNumberOfInstances() == 0)
+			return false;
+	}
+	return true;
+}
+
+namespace {
+	float GetMinInterObjectDistance(float fSpeed, bool bDrive = false)
+	{
+		// Minimum allowed distance between objects is proportional to object speed;
+		// it's set to 30cm for speed <=1km/h and to 10m (initial object placement)
+		// or 5m (when driving a vehicle) for speed >=130km/h
+		float speed = std::clamp(0.036f * fSpeed, 1.f, 130.f); // fSpeed is in cm/s
+		float lowSpeedDistance(30.f);
+		float highSpeedDistance(bDrive ? 500.f : 1000.f);
+		return (highSpeedDistance * (speed - 1.f) + lowSpeedDistance * (130.f - speed)) / 129.f;
+	}
+
+	bool PopulationCanBeAnimated(AITwinPopulation* Population)
+	{
+		// TODO: move filter to UI and support other types of objects if needed
+		return (Population->GetObjectType() == EITwinInstantiatedObjectType::Character
+			|| Population->GetObjectType() == EITwinInstantiatedObjectType::Vehicle
+			|| Population->GetObjectType() == EITwinInstantiatedObjectType::Crane);
+	}
+
+	class AssetSelector
+	{
+	public:
+		AssetSelector(uintptr_t Seed)
+		{
+			RandomStream = FRandomStream(Seed);
+		}
+
+		void AddAsset(FString InAsset, FBox InBBox)
+		{
+			if (InBBox.GetSize().Y <= 0.f || InBBox.GetSize().Y > 5000.f)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("Asset %s has invalid bounding box size. Please check that the asset's bounding box is correctly set up."), *InAsset);
+				return;
+			}
+
+			if (AssetToSizeMap.Contains(InAsset))
+				return;
+
+			BE_LOGI("App", "Adding asset " << TCHAR_TO_UTF8(*InAsset) << ": x=" << InBBox.GetSize().X << ", y=" << InBBox.GetSize().Y << ", z=" << InBBox.GetSize().Z);
+
+			AssetToSizeMap.Add(InAsset, InBBox);
+			if (InBBox.GetSize().Y < 800.f)
+				StandardAssetsOnly.Add(InAsset);
+			else
+				LongAssetsOnly.Add(InAsset);
+		}
+
+		FString GetRandomAsset(bool bIncludeLongAssets)
+		{
+			if (AssetToSizeMap.Num() == 0)
+				return FString();
+			if (bIncludeLongAssets && LongAssetsOnly.Num() > 0 && FMath::FRand() <= LongAssetFactor || StandardAssetsOnly.Num() == 0)
+				return LongAssetsOnly.Array()[RandomStream.RandRange(0, LongAssetsOnly.Num() - 1)];
+			else
+				return StandardAssetsOnly.Array()[RandomStream.RandRange(0, StandardAssetsOnly.Num() - 1)];
+		}
+
+		float GetAssetLength(FString InAsset)
+		{
+			if (AssetToSizeMap.Contains(InAsset))
+			{
+				return AssetToSizeMap[InAsset].GetSize().Y;
+			}
+			return 0.f;
+		}
+
+		FVector2D GetAssetRange(FString InAsset)
+		{
+			if (AssetToSizeMap.Contains(InAsset))
+			{
+				return FVector2D(AssetToSizeMap[InAsset].Min.Y, AssetToSizeMap[InAsset].Max.Y);
+			}
+			return FVector2D::ZeroVector;
+		}
+
+	private:
+		FRandomStream RandomStream;
+		TMap<FString, FBox> AssetToSizeMap;
+		TSet<FString> StandardAssetsOnly;
+		TSet<FString> LongAssetsOnly;
+		float LongAssetFactor = 0.3f; // TODO: add this parameter to UI?
+	};
+}
+
+void AITwinPathAnimTool::FImpl::DoPopulatePathObjects(UITwinAnimPathHelper* PathHelper)
+{
+	// Let's keep track of the existing population instances created for this path and try to reuse them when possible.
+	TMap<TWeakObjectPtr<AITwinPopulation>, int32> ReusedPopulationInstancesMap; // map population to number of instances that are reused in current path configuration
+	for (auto Population : PathHelper->Populations)
+	{
+		if (Population.IsValid())
+			ReusedPopulationInstancesMap.Add(Population, 0);
+	}
+	PathHelper->Populations.Empty();
+
+	auto InstGroupId = DecorationHelper->GetInstancesGroupIdForSpline(*(PathHelper->SplineHelper));
+	auto Assets = PathHelper->Get3DObjectPaths();
+
+	if (!PathHelper->CanHaveMultipleObjects())
+	{
+		// Case of animation paths having only one object
+		ensure(Assets.Num() == 1 && PathHelper->Populations.Num() <= 1);
+		AITwinPopulation* Population = DecorationHelper->GetPopulation(Assets[0], InstGroupId);
+		if (!ensure(Population))
+			return;
+		if (!PopulationCanBeAnimated(Population))
+			return;
+		// If path has already been populated with a different asset, remove corresponding instance
+		if (PathHelper->Populations.Num() > 0 && PathHelper->Populations.Array()[0] != Population)
+			RemovePathObjects(PathHelper); // note that it won't delete existing populations when loading the scene as PathHelper->Populations hasn't been initialized yet
+		PathHelper->Populations.Add(Population);
+		auto StartTransform = PathHelper->GetStartTransform(0);
+		int32 instIdx(0);
+		if (Population->GetNumberOfInstances() == 0)
+			instIdx = Population->AddInstance(StartTransform);
+		if (!ensure(instIdx != INDEX_NONE))
+			return;
+		if (auto InstancePtr = Population->GetAVizInstance(instIdx))
+		{
+			std::shared_ptr<InstanceWithAnimPathExt> animPathExt = std::make_shared<InstanceWithAnimPathExt>(StartTransform);
+			animPathExt->SetKeyFrames(PathHelper->GetBakedFrames());
+			auto Instance = InstancePtr->GetAutoLock();
+			Instance->SetAnimPathId(PathHelper->GetPathRefID());
+			Instance->AddExtension(animPathExt);
+		}
+	}
+	else
+	{
+		// Case of animation paths that can have multiple objects (crowds, traffic)
+		AssetSelector Selector(reinterpret_cast<uintptr_t>(PathHelper->SplineHelper.Get()));
+		for (auto asset : Assets)
+		{
+			AITwinPopulation* Population = DecorationHelper->GetPopulation(asset, InstGroupId);
+			if (!ensure(Population))
+				continue;
+			if (!PopulationCanBeAnimated(Population))
+				continue;
+			PathHelper->Populations.Add(Population);
+			// Population instances related to the given assets can already exist in the scene even if PathHelper->Populations
+			// was empty (in particular, when loading a scene), so we add them to the reused instances map as well.
+			ReusedPopulationInstancesMap.Add(Population, 0);
+			Selector.AddAsset(asset, Population->GetMasterMeshBoundingBox());
+		}
+		for (int32 lane(0); lane < PathHelper->GetFullLaneCount(); ++lane)
+		{
+			std::vector<AdvViz::SDK::IInstancePtr> laneInstances;
+			int32 nbInstances(0);
+			int32 nbAttempts(0);
+			float laneOffset = PathHelper->GetLaneOffset(lane, false);
+			float laneSpeed = PathHelper->GetLaneSpeed(lane);
+			float laneLength = PathHelper->GetLaneLength(lane);
+			float minInterObjectDist = GetMinInterObjectDistance(laneSpeed);
+			float targetObjectLength = laneLength * PathHelper->GetLaneDensity(lane);
+			float totalObjectLength = 0.f;
+			auto startTransform = PathHelper->GetStartTransform(lane);
+			// Create instances to populate the lane by randomly picking up assets
+			// and taking into account their dimensions to approximately respect the lane density
+			while(totalObjectLength < laneLength)
+			{
+				if (laneInstances.size() > laneLength * 0.03f) // normally more than 3 instances per 1m indicate some issue
+				{
+					// Triggered once due to 'nan' Y dimension of an asset when rebuilding traffic, needs to be investigated 
+					UE_LOG(LogTemp, Warning, TEXT("Number of instances (%d) is too high for lane %d of path %s. Stopping population for this lane. Please check that the assets bounding boxes are correct."), laneInstances.size(), lane, *PathHelper->GetPathName());
+					break;
+				}
+				if (nbInstances == laneInstances.size()) // avoid infinite loop in case of repeated failure to pick up a suitable asset
+				{
+					if (++nbAttempts > 100)
+					{
+						UE_LOG(LogTemp, Warning, TEXT("Too many attempts to populate lane %d of path %s. Stopping population for this lane. Please check that the assets bounding boxes are correct."), lane, *PathHelper->GetPathName());
+						break;
+					}
+				}
+				else
+				{
+					nbAttempts = 0;
+					++nbInstances;
+				}
+
+				FString asset = Selector.GetRandomAsset(PathHelper->IsSlowLane(lane));
+				if (asset.IsEmpty())
+					continue;
+
+				AITwinPopulation* Population = DecorationHelper->GetPopulation(asset, InstGroupId);
+				float objectLength = Selector.GetAssetLength(asset) + minInterObjectDist;
+				if (totalObjectLength + objectLength > targetObjectLength)
+					break;
+				int32 instIdx(INDEX_NONE);
+				if (ReusedPopulationInstancesMap.Contains(Population) && Population->GetNumberOfInstances() > ReusedPopulationInstancesMap[Population])
+				{
+					instIdx = ReusedPopulationInstancesMap[Population];
+					ReusedPopulationInstancesMap[Population]++;
+				}
+				else
+					instIdx = Population->AddInstance(startTransform);
+
+				if (!ensure(instIdx != INDEX_NONE))
+					break;
+
+				if (auto InstancePtr = Population->GetAVizInstance(instIdx))
+				{
+					std::shared_ptr<InstanceWithAnimPathExt> animPathExt = std::make_shared<InstanceWithAnimPathExt>(startTransform);
+					animPathExt->SetKeyFrames(PathHelper->GetBakedFrames(lane));
+					auto Instance = InstancePtr->GetAutoLock();
+					Instance->SetAnimPathId(PathHelper->GetPathRefID());
+					if (Instance->HasExtension<InstanceWithAnimPathExt>())
+						Instance->RemoveExtension<InstanceWithAnimPathExt>();
+					Instance->AddExtension(animPathExt);
+					laneInstances.push_back(InstancePtr);
+				}
+				totalObjectLength += objectLength;
+			}
+			if (laneInstances.size() == 0)
+				continue;
+
+			// Once instances are created, compute the actual inter-object distance to distribute them evenly on the lane
+			float interObjectDist = (laneLength - totalObjectLength) / laneInstances.size();			
+			interObjectDist += minInterObjectDist; // since totalObjectLength incorporates min inter-object distance, we need to add it as well
+
+			// Actually distribute objects on the lane by applying a time offset to each instance animation extension,
+			// taking into account the object dimensions to avoid overlaps
+			float initPosOffsetPrev = 0.f;
+			FString assetPrev;
+			for (auto InstancePtr : laneInstances)
+			{
+				auto Instance = InstancePtr->GetAutoLock();
+				FString asset = UTF8_TO_TCHAR(Instance->GetObjectRef().c_str());
+				float initPosOffset = 0.f;
+				if (InstancePtr == laneInstances[0])
+				{
+					// Shift slightly the first object to avoid first row of objects on all the lanes being aligned
+					// (the remaining objects will be distributed unevenly due to slight fluctuations of density between lanes)
+					initPosOffset = std::min(0.5f * interObjectDist, 30.f + FMath::FRandRange(0.f, 200.f));
+				}
+				else
+				{
+					// Ignore the eventual shift of the first object
+					initPosOffset = (InstancePtr == laneInstances[1]) ? 0.f : initPosOffsetPrev;
+					// Add average inter-vehicle distance for this lane
+					initPosOffset += interObjectDist;
+					// Take into account vehicle dimensions
+					auto assetRange = Selector.GetAssetRange(asset);
+					auto assetRangePrev = Selector.GetAssetRange(assetPrev);
+					initPosOffset += FMath::Abs(assetRange.Y) + FMath::Abs(assetRangePrev.X);
+					ensure(initPosOffset < laneLength); // usually indicates a problem with a bounding box
+				}
+				//if (GetItemType() == BRW_LRTCharacters)
+				//{
+				//	//compute random variation
+				//	float randomness = (float)std::fmod(randomGen.RandFloat() * 10.f, 1.f);
+				//	randomOffset = (lane.interVehicleDist + vehicleInfoPrev.distToNextNoGap) * (0.4f * (float)glm::sin(randomness * 2 * PI) + 0.1f);
+				//}
+				// Compute final time shift that will be used by the animation system to actually distribute vehicles on the lane
+				float initTimeOffset = (initPosOffset/* + randomOffset*/) / laneSpeed;
+				if (auto animPathExt = Instance->GetExtension<InstanceWithAnimPathExt>())
+				{
+					auto startTransformWithOffset = animPathExt->GetTransform(initTimeOffset, PathHelper->GetRepeatMode(), PathHelper->IsInvDirLane(lane), PathHelper->GetDelay(), true/*bTimelineMode*/);
+					animPathExt->ResetAnimation(PathHelper->GetDelay(), initTimeOffset, startTransformWithOffset);
+				}
+				assetPrev = asset;
+				initPosOffsetPrev = initPosOffset;
+			}
+		} // for each lane
+
+		// Now we should remove the excess instances that were potentially remaining from previous traffic and were not reused.
+		for (auto& [Population, NextIdx] : ReusedPopulationInstancesMap)
+		{
+			while (Population->GetNumberOfInstances() > NextIdx)
+			{
+				Population->RemoveInstance(Population->GetNumberOfInstances() - 1);
+			}
+		}
+	}
+}
+
+void AITwinPathAnimTool::FImpl::PopulatePathObjects(UITwinAnimPathHelper* PathHelper, bool bOnSceneLoad, bool bClearPrevious/* = false*/)
 {
 	if (!PathHelper || !PathHelper->SplineHelper.IsValid())
-		return false;
+		return;
 	if (!ensure(PopulationTool.IsValid() && DecorationHelper.IsValid()))
-		return false;
+		return;
 
 	if (bClearPrevious && PathHelper->Populations.Num() > 0)
 	{
 		RemovePathObjects(PathHelper);
 	}
 
-	// TODO: create multiple instances for crowd and traffic depending on density and asset dimensions (for traffic only)
-	FVector Pos = PathHelper->SplineHelper->GetSplineComponent()->GetLocationAtDistanceAlongSpline(0.0, ESplineCoordinateSpace::World);
 	auto InstGroupId = DecorationHelper->GetInstancesGroupIdForSpline(*(PathHelper->SplineHelper));
 	auto Assets = PathHelper->Get3DObjectPaths();
-	if (Assets.Num() > 0) // TODO: adapt to multiple objects (traffic and crowd)
+	if (Assets.Num() > 0)
 	{
 		PathHelper->BakeAnimationIfNeeded();
 
-		AITwinPopulation* Population = DecorationHelper->GetOrCreatePopulation(Assets[0], InstGroupId);
-		//AITwinPopulation* Population = PopulationTool->PreLoadPopulation(Assets[0]);
-		if (Population)
+		bool bAllAssetsLoaded = true;
+		for (auto asset : Assets)
 		{
-			PathHelper->Populations.Add(Population);
-			int32 instIdx(0);
-			if (Population->GetNumberOfInstances() == 0)
-				instIdx = Population->AddInstance(FTransform(Pos));
-			if (instIdx >= 0)
-			{
-				std::shared_ptr<InstanceWithAnimPathExt> animPathExt = std::make_shared<InstanceWithAnimPathExt>(FTransform(Pos));
-				animPathExt->SetKeyFrames(PathHelper->GetBakedFrames());
-
-				if (auto InstancePtr = Population->GetAVizInstance(instIdx))
-				{
-					auto Instance = InstancePtr->GetAutoLock();
-					Instance->SetAnimPathId(PathHelper->GetPathRefID());
-					Instance->AddExtension(animPathExt);
-				}
-			}
-			return true;
+			// We do not want to trigger new population creation when loading an existing scene, just wait for all populations to load and then create the link
+			AITwinPopulation* Population = bOnSceneLoad ? DecorationHelper->GetPopulation(asset, InstGroupId) : DecorationHelper->GetOrCreatePopulation(asset, InstGroupId);
+			if (!Population)
+				bAllAssetsLoaded = false;
 		}
+
+		if (bAllAssetsLoaded)
+			return DoPopulatePathObjects(PathHelper);
+
+		// Delay adding objects to path until all items have been completely loaded from the component center.
+		TWeakObjectPtr<AITwinPathAnimTool> weakOwner(&Owner);
+		std::string const delayedCallId = "RetryPopulatePath_" + std::to_string(reinterpret_cast<uintptr_t>(PathHelper));
+		AdvViz::SDK::UniqueDelayedCall(delayedCallId,
+			[weakOwner, PathHelper, bOnSceneLoad]() -> AdvViz::SDK::DelayedCall::EReturnedValue
+			{
+				if (!weakOwner.IsValid())
+					return AdvViz::SDK::DelayedCall::EReturnedValue::Done;
+
+				if (weakOwner->Impl->ArePopulationsFullyLoaded(PathHelper, bOnSceneLoad))
+				{
+					weakOwner->Impl->DoPopulatePathObjects(PathHelper);
+					return AdvViz::SDK::DelayedCall::EReturnedValue::Done;
+				}
+
+				return AdvViz::SDK::DelayedCall::EReturnedValue::Repeat;
+			},
+			0.25f);
 	}
-
-	return false;
-}
-
-bool AITwinPathAnimTool::FImpl::PopulatePathObjects(FAnimPathIdentifier PathHandle, bool bClearPrevious/* = false*/)
-{
-	return PopulatePathObjects(GetMutableAnimPathHelper(PathHandle), bClearPrevious);
 }
 
 //FString AITwinPathAnimTool::GetName(FAnimPathIdentifier PathHandle) const
@@ -567,7 +858,49 @@ void AITwinPathAnimTool::Set3DObjects(FAnimPathIdentifier PathHandle, const TArr
 	if (!PathHelper)
 		return;
 	PathHelper->Set3DObjects(Assets);
-	Impl->PopulatePathObjects(PathHelper, true); // add new objects and clear previous one if any (TODO: refactor)
+	Impl->PopulatePathObjects(PathHelper, false/*bOnSceneLoad*/);
+}
+
+bool AITwinPathAnimTool::IsVisible(FAnimPathIdentifier PathHandle) const
+{
+	if (auto PathHelper = Impl->GetAnimPathHelper(PathHandle))
+		return PathHelper->IsVisible();
+	return false;
+}
+
+void AITwinPathAnimTool::SetVisible(FAnimPathIdentifier PathHandle, bool isVisible)
+{
+	if (auto PathHelper = Impl->GetMutableAnimPathHelper(PathHandle))
+	{
+		PathHelper->SetVisible(isVisible);
+		Impl->HidePathAndObjects(PathHelper, !isVisible);
+	}
+}
+
+void AITwinPathAnimTool::SetAllVisible(bool isVisible)
+{
+	for (EITwinAnimPathType PathType : {
+		EITwinAnimPathType::Object,
+		EITwinAnimPathType::Traffic,
+		EITwinAnimPathType::Crowd })
+	{
+		for (int32 Index(0); Index < NumPaths(PathType); ++Index)
+		{
+			SetVisible(FAnimPathIdentifier(PathType, Index), isVisible);
+		}
+	}
+}
+
+void AITwinPathAnimTool::TriggerRebake(UITwinAnimPathHelper* PathHelper, bool bMultiObjectOnly)
+{
+	if (!bMultiObjectOnly || PathHelper->CanHaveMultipleObjects())
+		PathHelper->InvalidateBakedAnimation();
+}
+
+void AITwinPathAnimTool::TriggerRepopulate(UITwinAnimPathHelper* PathHelper, bool bMultiObjectOnly)
+{
+	if (!bMultiObjectOnly || PathHelper->CanHaveMultipleObjects())
+		Impl->PopulatePathObjects(PathHelper, false/*bOnSceneLoad*/);
 }
 
 bool AITwinPathAnimTool::HasInvDirection(FAnimPathIdentifier PathHandle) const
@@ -580,7 +913,11 @@ bool AITwinPathAnimTool::HasInvDirection(FAnimPathIdentifier PathHandle) const
 void AITwinPathAnimTool::SetInvDirection(FAnimPathIdentifier PathHandle, bool bInvDirection)
 {
 	if (auto PathHelper = Impl->GetMutableAnimPathHelper(PathHandle))
+	{
 		PathHelper->SetInvDirection(bInvDirection);
+		TriggerRebake(PathHelper, true);
+		TriggerRepopulate(PathHelper, true);
+	}
 }
 
 bool AITwinPathAnimTool::IsLoop(FAnimPathIdentifier PathHandle) const
@@ -595,8 +932,9 @@ void AITwinPathAnimTool::SetIsLoop(FAnimPathIdentifier PathHandle, bool isLoop)
 	if (auto PathHelper = Impl->GetMutableAnimPathHelper(PathHandle))
 	{
 		PathHelper->SetIsLoop(isLoop);
-		if (PathHelper->SplineHelper.IsValid())
-			PathHelper->SplineHelper->SetClosedLoop(isLoop);
+		PathHelper->UpdateSpline();
+		TriggerRebake(PathHelper, false);
+		TriggerRepopulate(PathHelper, true);
 	}
 }
 
@@ -612,7 +950,10 @@ void AITwinPathAnimTool::SetSpeed(FAnimPathIdentifier PathHandle, float Speed)
 {
 	//ensure(PathHandle.PathType == EITwinAnimPathType::Object);
 	if (auto PathHelper = Impl->GetMutableAnimPathHelper(PathHandle))
+	{
 		PathHelper->SetSpeed(Speed);
+		TriggerRepopulate(PathHelper, true);
+	}
 }
 
 float AITwinPathAnimTool::GetDelay(FAnimPathIdentifier PathHandle) const
@@ -627,8 +968,10 @@ void AITwinPathAnimTool::SetDelay(FAnimPathIdentifier PathHandle, float Delay)
 {
 	ensure(PathHandle.PathType == EITwinAnimPathType::Object);
 	if (auto PathHelper = Impl->GetMutableAnimPathHelper(PathHandle))
+	{
 		PathHelper->SetDelay(Delay);
-	Impl->ResetAnimation(PathHandle);
+		Impl->ResetAnimation(PathHandle);
+	}
 }
 
 EITwinAnimPathRepeatMode AITwinPathAnimTool::GetRepeatMode(FAnimPathIdentifier PathHandle) const
@@ -643,8 +986,10 @@ void AITwinPathAnimTool::SetRepeatMode(FAnimPathIdentifier PathHandle, EITwinAni
 {
 	ensure(PathHandle.PathType == EITwinAnimPathType::Object);
 	if (auto PathHelper = Impl->GetMutableAnimPathHelper(PathHandle))
+	{
 		PathHelper->SetRepeatMode(RepeatMode);
-	Impl->ResetAnimation(PathHandle);
+		Impl->ResetAnimation(PathHandle);
+	}
 }
 
 bool AITwinPathAnimTool::IsOneWay(FAnimPathIdentifier PathHandle) const
@@ -662,6 +1007,8 @@ void AITwinPathAnimTool::SetOneWay(FAnimPathIdentifier PathHandle, bool bOneWay)
 	{
 		PathHelper->SetOneWay(bOneWay);
 		PathHelper->UpdateSpline();
+		TriggerRebake(PathHelper, true);
+		TriggerRepopulate(PathHelper, true);
 	}
 }
 
@@ -680,6 +1027,8 @@ void AITwinPathAnimTool::SetLaneCount(FAnimPathIdentifier PathHandle, int LaneCo
 	{
 		PathHelper->SetLaneCount(LaneCount);
 		PathHelper->UpdateSpline();
+		TriggerRebake(PathHelper, true);
+		TriggerRepopulate(PathHelper, true);
 	}
 }
 
@@ -698,6 +1047,7 @@ void AITwinPathAnimTool::SetLaneWidth(FAnimPathIdentifier PathHandle, float Lane
 	{
 		PathHelper->SetLaneWidth(LaneWidth);
 		PathHelper->UpdateSpline();
+		TriggerRebake(PathHelper, true);
 	}
 }
 
@@ -715,7 +1065,7 @@ void AITwinPathAnimTool::SetDensity(FAnimPathIdentifier PathHandle, float Densit
 	if (auto PathHelper = Impl->GetMutableAnimPathHelper(PathHandle))
 	{
 		PathHelper->SetDensity(Density);
-		// TODO: repopulate
+		TriggerRepopulate(PathHelper, true);
 	}
 }
 
@@ -734,6 +1084,7 @@ void AITwinPathAnimTool::SetSeparatorWidth(FAnimPathIdentifier PathHandle, float
 	{
 		PathHelper->SetSeparatorWidth(SeparatorWidth);
 		PathHelper->UpdateSpline();
+		TriggerRebake(PathHelper, true);
 	}
 }
 
@@ -749,7 +1100,10 @@ void AITwinPathAnimTool::SetMinSpeed(FAnimPathIdentifier PathHandle, float MinSp
 {
 	ensure(PathHandle.PathType == EITwinAnimPathType::Traffic);
 	if (auto PathHelper = Impl->GetMutableAnimPathHelper(PathHandle))
+	{
 		PathHelper->SetMinSpeed(MinSpeed);
+		TriggerRepopulate(PathHelper, true);
+	}
 }
 
 float AITwinPathAnimTool::GetMaxSpeed(FAnimPathIdentifier PathHandle) const
@@ -764,7 +1118,13 @@ void AITwinPathAnimTool::SetMaxSpeed(FAnimPathIdentifier PathHandle, float MaxSp
 {
 	ensure(PathHandle.PathType == EITwinAnimPathType::Traffic);
 	if (auto PathHelper = Impl->GetMutableAnimPathHelper(PathHandle))
+	{
+		float prevMaxSpeed = PathHelper->GetMaxSpeed();
 		PathHelper->SetMaxSpeed(MaxSpeed);
+		// Avoid unnecessary repopulation (TODO: add min/max check directly in the UI)
+		if (prevMaxSpeed != MaxSpeed && (MaxSpeed > PathHelper->GetMinSpeed() || prevMaxSpeed > PathHelper->GetMinSpeed()))
+			TriggerRepopulate(PathHelper, true);
+	}
 }
 
 bool AITwinPathAnimTool::StartInteractiveCreation(EITwinAnimPathType PathType)
@@ -873,7 +1233,7 @@ bool AITwinPathAnimTool::FImpl::UnregisterAnimPathSpline(AITwinSplineHelper* Spl
 	auto const SelectedBefore = GetSelectedPath();
 
 	auto PathHandle = GetPathIdentifierFromSpline(SplineBeingRemoved->GetAVizSplineId());
-	if (ensure(PathHandle.IsValid(NumPaths(PathHandle.PathType))))
+	if (PathHandle.IsValid(NumPaths(PathHandle.PathType))) // path handle can be invalid if the spline creation was cancelled (and therefore the path isn't registered yet)
 	{
 		PathAnimManager->RemoveAnimationPathInfo(GetAnimPathHelper(PathHandle)->GetPathRefID());
 		switch (PathHandle.PathType)
@@ -924,6 +1284,11 @@ void AITwinPathAnimTool::FImpl::OnSplineEditedInTool()
 {
 	if (!SplineTool.IsValid() || !SplineTool->IsUsedForPathAnim() || !SplineTool->GetSelectedSpline())
 		return;
+	if (SplineTool->IsInteractiveCreationMode())
+	{
+		// Path not yet created, no need to invalidate anything.
+		return;
+	}
 	auto PathHandle = GetPathIdentifierFromSpline(SplineTool->GetSelectedSpline()->GetAVizSplineId());
 	if (auto PathHelper = GetMutableAnimPathHelper(PathHandle))
 	{
@@ -932,6 +1297,12 @@ void AITwinPathAnimTool::FImpl::OnSplineEditedInTool()
 }
 
 void AITwinPathAnimTool::OnSplineEditedInTool()
+{
+	// TODO: this is triggered even on spline point selection - find another solution to avoid unnecessary invalidation of baked animation 
+	Impl->OnSplineEditedInTool();
+}
+
+void AITwinPathAnimTool::OnSplinePointMovedInTool(bool bTriggeredFromITS)
 {
 	Impl->OnSplineEditedInTool();
 }
@@ -950,6 +1321,19 @@ inline int32 AITwinPathAnimTool::FImpl::NumPaths(EITwinAnimPathType PathType) co
 int32 AITwinPathAnimTool::NumPaths(EITwinAnimPathType PathType) const
 {
 	return Impl->NumPaths(PathType);
+}
+
+int32 AITwinPathAnimTool::NumPaths() const
+{
+	int32 totalPaths(0);
+	for (EITwinAnimPathType PathType : {
+		EITwinAnimPathType::Object,
+		EITwinAnimPathType::Traffic,
+		EITwinAnimPathType::Crowd })
+	{
+		totalPaths += NumPaths(PathType);
+	}
+	return totalPaths;
 }
 
 inline UITwinAnimPathHelper* AITwinPathAnimTool::FImpl::GetMutableAnimPathHelper(FAnimPathIdentifier PathHandle)
@@ -1083,10 +1467,12 @@ void AITwinPathAnimTool::DeSelectAll(bool bExitIsolationMode)
 	BroadcastSelection();
 }
 
-void AITwinPathAnimTool::FImpl::UpdateAnimatedObjects(FAnimPathIdentifier PathHandle, float DeltaTime)
+void AITwinPathAnimTool::FImpl::UpdateAnimatedObjects(FAnimPathIdentifier PathHandle, float DeltaTime, bool bTimelineMode)
 {
 	if (auto PathHelper = GetMutableAnimPathHelper(PathHandle))
 	{
+		if (!PathHelper->IsVisible() || PathHelper->IsPaused())
+			return;
 		if (!PathHelper->HasBakedAnimation())
 		{
 			PathHelper->BakeAnimationIfNeeded();
@@ -1104,7 +1490,7 @@ void AITwinPathAnimTool::FImpl::UpdateAnimatedObjects(FAnimPathIdentifier PathHa
 					auto inst = InstancePtr->GetRAutoLock();
 					if (auto animPathExt = inst->GetExtension<InstanceWithAnimPathExt>())
 					{
-						auto transform = animPathExt->GetTransform(DeltaTime, PathHelper->GetRepeatMode(), PathHelper->HasInvDirection());
+						auto transform = animPathExt->GetTransform(DeltaTime, PathHelper->GetRepeatMode(), PathHelper->IsInvDirLane(animPathExt->GetLaneIndex()), PathHelper->GetDelay(), bTimelineMode);
 						Population->SetInstanceTransformUEOnly(instIdx, transform);
 					}
 				}
@@ -1113,8 +1499,19 @@ void AITwinPathAnimTool::FImpl::UpdateAnimatedObjects(FAnimPathIdentifier PathHa
 	}
 }
 
-void AITwinPathAnimTool::FImpl::Tick(float DeltaTime)
+void AITwinPathAnimTool::FImpl::UpdateAllAnimatedObjects(float DeltaTime)
 {
+	bool bTimelineMode(false);
+	if (Owner.GetTimelineFixedTime.IsBound())
+	{
+		auto TimelineFixedTime = Owner.GetTimelineFixedTime.Execute();
+		if (TimelineFixedTime.IsSet())
+		{
+			bTimelineMode = true;
+			DeltaTime = TimelineFixedTime.GetValue();
+		}
+	}
+
 	for (EITwinAnimPathType PathType : {
 		EITwinAnimPathType::Object,
 		EITwinAnimPathType::Traffic,
@@ -1122,7 +1519,7 @@ void AITwinPathAnimTool::FImpl::Tick(float DeltaTime)
 	{
 		for (int32 Index(0); Index < NumPaths(PathType); ++Index)
 		{
-			UpdateAnimatedObjects(FAnimPathIdentifier(PathType, Index), DeltaTime);
+			UpdateAnimatedObjects(FAnimPathIdentifier(PathType, Index), DeltaTime, bTimelineMode);
 		}
 	}
 }
@@ -1176,29 +1573,8 @@ void AITwinPathAnimTool::ResetAnimation(FAnimPathIdentifier PathHandle)
 
 void AITwinPathAnimTool::FImpl::PlayAnimation(FAnimPathIdentifier PathHandle, bool bPlay)
 {
-	if (!ensure(PathHandle.IsValid(NumPaths(PathHandle.PathType))))
-		return;
-
-	auto PathHelper = GetAnimPathHelper(PathHandle);
-	if (!PathHelper)
-		return;
-	for (auto Population : PathHelper->Populations)
-	{
-		if (!Population.IsValid())
-			continue;
-
-		for (int32 instIdx(0); instIdx < Population->GetNumberOfInstances(); instIdx++)
-		{
-			if (auto InstancePtr = Population->GetAVizInstance(instIdx))
-			{
-				auto inst = InstancePtr->GetRAutoLock();
-				if (auto animPathExt = inst->GetExtension<InstanceWithAnimPathExt>())
-				{
-					animPathExt->SetPaused(!bPlay);
-				}
-			}
-		}
-	}
+	if (auto PathHelper = GetMutableAnimPathHelper(PathHandle))
+		PathHelper->SetPaused(!bPlay);
 }
 
 void AITwinPathAnimTool::PlayAnimation(FAnimPathIdentifier PathHandle, bool bPlay)
@@ -1214,7 +1590,8 @@ void AITwinPathAnimTool::FImpl::SetAnimPathProxyVisibility(EITwinAnimPathType Pa
 		if (PathHelper && PathHelper->SplineHelper.IsValid())
 		{
 			const bool bShowSpline = bVisibleInGame
-				&& (!bIsolationMode || PathHelper->SplineHelper->IsSelected());
+				&& (!bIsolationMode || PathHelper->SplineHelper->IsSelected())
+				&& PathHelper->IsVisible();
 			PathHelper->SplineHelper->SetActorHiddenInGame(!bShowSpline);
 		}
 	}
@@ -1254,10 +1631,10 @@ void AITwinPathAnimTool::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
 
-	Impl->Tick(DeltaTime);
+	Impl->UpdateAllAnimatedObjects(DeltaTime);
 }
 
-void AITwinPathAnimTool::OnActivatePicking(bool bActivate)
+void AITwinPathAnimTool::FImpl::OnActivatePicking(bool bActivate)
 {
 	if (bActivate)
 	{
@@ -1266,63 +1643,63 @@ void AITwinPathAnimTool::OnActivatePicking(bool bActivate)
 		// mode.
 		auto const CurrentSelection = GetSelectedPath();
 		if (CurrentSelection)
-			Impl->ShowOnlyAnimPathProxiesOfType(CurrentSelection->PathType, true);
+			ShowOnlyAnimPathProxiesOfType(CurrentSelection->PathType, true);
 		else
-			Impl->SetAllAnimPathProxiesVisibility(true);
+		{
+			if (!SplineTool->IsEnabled() || !SplineTool->IsUsedForPathAnim())
+				ITwin::ActivateSplineTool(Owner.GetWorld(), EITwinSplineUsage::AnimPath, SplineTool);
+			SetAllAnimPathProxiesVisibility(true);
+		}
 	}
 	else
 	{
-		Impl->HideAllAnimPathProxies();
+		HideAllAnimPathProxies();
 	}
+}
+
+void AITwinPathAnimTool::OnActivatePicking(bool bActivate)
+{
+	Impl->OnActivatePicking(bActivate);
+}
+
+bool AITwinPathAnimTool::FImpl::DoMouseClickPicking(bool& bOutSelectionGizmoNeeded)
+{
+	bOutSelectionGizmoNeeded = false;
+
+	if (ensure(SplineTool.IsValid()))
+	{
+		// Spline tool should already be activated when path selection mode is set (see AITwinPathAnimTool::FImpl::OnActivatePicking)
+		ensure(SplineTool->IsEnabled() && SplineTool->IsUsedForPathAnim());
+
+		if (SplineTool->DoMouseClickAction())
+		{
+			bOutSelectionGizmoNeeded = SplineTool->HasSelection();
+			return true;
+		}
+	}
+
+	return false;
 }
 
 bool AITwinPathAnimTool::DoMouseClickPicking(bool& bOutSelectionGizmoNeeded)
 {
 	bool bRelevantAction = false;
-	bOutSelectionGizmoNeeded = false;
-	UWorld* World = GetWorld();
-	if (!World)
-		return false;
-
-	auto const OldSelection = GetSelectedPath();
-
-	if (Impl->ObjectAnimPaths.Num() > 0) // TODO: add support for other path types
-	{
-		auto SplineTool = Impl->ActivateSplineTool(World, EITwinAnimPathType::Object);
-		if (SplineTool.IsValid())
-		{
-			// Quick fix for point selection/insertion: we need to restore the initial selection, if a
-			// polygon was selected, as point operations are only allowed on the selected spline (and
-			// the selection is lost when the spline tool is disabled through ActivatePopulationTool...)
-			if (OldSelection
-				&& OldSelection->PathType == EITwinAnimPathType::Object
-				&& OldSelection->PathIndex >= 0
-				&& OldSelection->PathIndex < Impl->ObjectAnimPaths.Num())
-			{
-				SplineTool->SetSelectedSpline(Impl->ObjectAnimPaths[OldSelection->PathIndex]->SplineHelper.Get());
-			}
-			bRelevantAction = SplineTool->DoMouseClickAction();
-			if (bRelevantAction)
-				bOutSelectionGizmoNeeded = SplineTool->HasSelection();
-		}
-	}
+	if (NumPaths() > 0)
+		bRelevantAction = Impl->DoMouseClickPicking(bOutSelectionGizmoNeeded);
 
 	auto const NewSelection = GetSelectedPath();
 	if (NewSelection)
 	{
 		// Isolation of the selected item, if any.
-		if (!OldSelection || OldSelection->PathType != NewSelection->PathType)
-		{
-			Impl->ShowOnlyAnimPathProxiesOfType(NewSelection->PathType, true);
-		}
+		Impl->ShowOnlyAnimPathProxiesOfType(NewSelection->PathType, true);
 	}
-	else if (OldSelection)
+	else
 	{
 		// End of isolation mode.
 		Impl->SetAllAnimPathProxiesVisibility(true);
 	}
 
-	// Notify new selection. If nothing is selected, notify it as well (using -1 as index).
+	// Notify new selection. If nothing is selected, notify it as well
 	BroadcastSelection();
 
 	return bRelevantAction;

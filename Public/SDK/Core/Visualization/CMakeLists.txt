@@ -10,6 +10,7 @@ add_library(Visualization ${libtype}
 		Decoration.cpp
 		Config.h
 		Config.cpp
+		ConstantIDs.h
 		Instance.h
 		Instance.cpp
 		InstancesGroup.h

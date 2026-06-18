@@ -27,11 +27,11 @@ struct FITwinClippingInfluenceInfo
 
 	void SetInfluenceNone();
 
-	/// Whether the effect applies to all items of the given type.
+	/// Whether the effect applies to all layers of the given type.
 	UPROPERTY()
-	bool bInfluenceAll = true;
+	bool bInfluenceAll = false;
 
-	/// Set of influenced items. Only relevant when bInfluenceAll is false.
+	/// Set of influenced layers. Only relevant when bInfluenceAll is false.
 	UPROPERTY()
 	TSet<FString> SpecificIDs;
 };
@@ -59,6 +59,14 @@ struct FITwinClippingInfoBase
 	/// Note that if the effect is disabled, this will always return false.
 	/// (Google 3D tilesets use EITwinModelType::GlobalMapLayer as model type).
 	bool ShouldInfluenceModel(const ITwin::ModelLink& ModelIdentifier) const;
+
+	/// Whether the influence of this effect is defined by layer type (iModel, Reality data, etc.).
+	bool IsUsingPerLayerTypeInfluence() const;
+	/// Converts the influence of this effect to be defined by layer instead of layer type.
+	/// \param InCurrentLayers The list of currently loaded layers, per layer type, to initialize the new
+	/// per-layer influence settings. This is required to avoid losing the current influence settings during
+	/// the conversion.
+	void ConvertToPerLayerInfluence(const TMap<EITwinModelType, TSet<FString>>& InCurrentLayers);
 
 	bool ShouldInfluenceFullModelType(EITwinModelType ModelType) const;
 	void SetInfluenceFullModelType(EITwinModelType ModelType, bool bAll);

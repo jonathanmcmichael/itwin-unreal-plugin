@@ -101,7 +101,7 @@ public:
 	AITwinDecorationHelper* PersistenceMgr = nullptr;
 	bool bHasLoadedGeoLocationFromDeco = false;
 	bool bEnableGeoRefEdition = true; // Geo-location can be imposed by outside - when the loaded imodels/reality-data are geo-located
-	TStrongObjectPtr<UITwinClipping3DTilesetHelper> ClippingHelper;
+	TObjectPtr<UITwinClipping3DTilesetHelper> ClippingHelper;
 	std::optional<float> CustomCreditsFontScale;
 	bool bNeedsUpdateCreditsWidget = false;
 
@@ -440,7 +440,6 @@ AITwinGoogle3DTileset::AITwinGoogle3DTileset()
 
 AITwinGoogle3DTileset::~AITwinGoogle3DTileset()
 {
-	Impl->ClippingHelper.Reset();
 }
 
 void AITwinGoogle3DTileset::Tick(float DeltaTime)
@@ -461,7 +460,6 @@ void AITwinGoogle3DTileset::Tick(float DeltaTime)
 
 void AITwinGoogle3DTileset::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
-	Impl->ClippingHelper.Reset();
 	Super::EndPlay(EndPlayReason);
 }
 
@@ -540,8 +538,7 @@ UITwinClipping3DTilesetHelper* AITwinGoogle3DTileset::GetClippingHelper() const
 
 bool AITwinGoogle3DTileset::MakeClippingHelper()
 {
-	Impl->ClippingHelper =
-		TStrongObjectPtr<UITwinClipping3DTilesetHelper>(NewObject<UITwinClipping3DTilesetHelper>(this));
+	Impl->ClippingHelper = NewObject<UITwinClipping3DTilesetHelper>(this);
 	Impl->ClippingHelper->InitWith(FTilesetAccess(this));
 
 	// Connect mesh creation callback
@@ -565,7 +562,7 @@ TUniquePtr<FITwinTilesetAccess> AITwinGoogle3DTileset::FTilesetAccess::Clone() c
 
 ITwin::ModelDecorationIdentifier AITwinGoogle3DTileset::FTilesetAccess::GetDecorationKey() const
 {
-	return std::make_pair(EITwinModelType::GlobalMapLayer, FString());
+	return ITwin::GetGoogleTilesetLink();
 }
 
 AITwinDecorationHelper* AITwinGoogle3DTileset::FTilesetAccess::GetDecorationHelper() const

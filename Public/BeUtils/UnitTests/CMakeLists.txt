@@ -2,6 +2,7 @@ add_executable (BeUtils_UnitTests
 	Main.cpp
 	TestGltfTuner.cpp
 	TestMiscUtils.cpp
+	TestSplineSampling.cpp
 )
 if (MSVC)
 	# We should probably use find_package(fmt REQUIRED) instead because this compilation flag

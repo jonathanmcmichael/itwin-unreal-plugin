@@ -190,13 +190,22 @@ public:
 	/// Return whether the given effect should influence the given model.
 	bool ShouldEffectInfluenceModel(EITwinClippingPrimitiveType EffectType, int32 EffectIndex,
 		const ITwin::ModelLink& ModelIdentifier) const;
+
+	bool IsUsingPerLayerTypeInfluence() const;
+	void ConvertToPerLayerInfluence(const TMap<EITwinModelType, TSet<FString>>& InCurrentLayers);
+
 	/// Return whether the given effect should influence the given model type globally.
 	bool ShouldEffectInfluenceFullModelType(EITwinClippingPrimitiveType EffectType, int32 EffectIndex,
 		EITwinModelType ModelType) const;
 	void SetEffectInfluenceFullModelType(EITwinClippingPrimitiveType EffectType, int32 EffectIndex,
 		EITwinModelType ModelType, bool bAll);
-	void SetEffectInfluenceSpecificModel(EITwinClippingPrimitiveType EffectType, int32 EffectIndex,
+	void SetEffectInfluenceModel(EITwinClippingPrimitiveType EffectType, int32 EffectIndex,
 		const ITwin::ModelLink& ModelIdentifier, bool bInfluence);
+	bool DoesEffectInfluenceModel(EITwinClippingPrimitiveType EffectType, int32 EffectIndex,
+		const ITwin::ModelLink& ModelIdentifier) const;
+	TSet<FString> GetInfluencedSpecificModels(EITwinClippingPrimitiveType EffectType,
+		int32 EffectIndex,
+		EITwinModelType LayerType) const;
 
 	/// Retrieve the Material Parameter Collection for clipping.
 	UMaterialParameterCollection* GetMPCClipping();
@@ -204,6 +213,9 @@ public:
 
 	bool GetInvertEffect(EITwinClippingPrimitiveType Type, int32 PrimitiveIndex) const;
 	void SetInvertEffect(EITwinClippingPrimitiveType Type, int32 PrimitiveIndex, bool bInvert);
+
+	void FlipEffect(EITwinClippingPrimitiveType Type, int32 PrimitiveIndex);
+	void FlipAllEffectsOfType(EITwinClippingPrimitiveType Type);
 
 	bool EncodeFlippingInMPC(EITwinClippingPrimitiveType Type);
 
@@ -470,45 +482,14 @@ void AITwinClippingTool::FImpl::DeleteSelectedPopulationInstance()
 
 TWeakObjectPtr<AITwinSplineTool> AITwinClippingTool::FImpl::ActivateSplineTool(UWorld* World)
 {
-	if (ensure(SplineTool.IsValid()))
-	{
-		bool bNeedEnableSplineTool = false;
-		if (SplineTool->IsEnabled())
-		{
-			bNeedEnableSplineTool = SplineTool->GetUsage() != EITwinSplineUsage::MapCutout;
-		}
-		else
-		{
-			AITwinInteractiveTool::DisableAll(World);
-			bNeedEnableSplineTool = true;
-		}
-		if (bNeedEnableSplineTool)
-		{
-			ITwin::EnableSplineTool(World, true, EITwinSplineUsage::MapCutout, {}, true/*bAutomaticCutoutTarget*/);
-		}
-	}
-	return SplineTool;
+	ensure(SplineTool.IsValid());
+	return ITwin::ActivateSplineTool(World, EITwinSplineUsage::MapCutout, SplineTool);
 }
 
 void AITwinClippingTool::FImpl::SelectSpline(AITwinSplineHelper* SplineHelper, UWorld* World)
 {
-	if (!ensure(SplineTool.IsValid()))
-		return;
-	if (SplineHelper)
-	{
-		AITwinInteractiveTool::DisableAll(World);
-
-		AITwinSplineTool::TilesetAccessArray CutoutTargets;
-		ITwin::GetLinkedTilesets(CutoutTargets, SplineHelper->GetAVizSpline(), World);
-
-		ITwin::EnableSplineTool(World, true, EITwinSplineUsage::MapCutout, std::move(CutoutTargets));
-		SplineTool->SetSelectedSpline(SplineHelper);
-	}
-	else
-	{
-		// Deselect
-		SplineTool->SetSelectedSpline(nullptr);
-	}
+	ensure(SplineTool.IsValid());
+	ITwin::SelectSpline(SplineHelper, INDEX_NONE, World, SplineTool);
 }
 
 AITwinClippingTool::FImpl::FSelectionChangeDetector::FSelectionChangeDetector(FImpl& InImpl,
@@ -564,6 +545,24 @@ void AITwinClippingTool::FImpl::SetTransformationMode(ETransformationMode Mode)
 	}
 }
 
+void AITwinClippingTool::FImpl::FlipEffect(EITwinClippingPrimitiveType Type, int32 PrimitiveIndex)
+{
+	SetInvertEffect(Type, PrimitiveIndex, !GetInvertEffect(Type, PrimitiveIndex));
+}
+
+void AITwinClippingTool::FImpl::FlipAllEffectsOfType(EITwinClippingPrimitiveType Type)
+{
+	const int32 NumEff = NumEffects(Type);
+	for (int32 i(0); i < NumEff; ++i)
+	{
+		FlipEffect(Type, i);
+	}
+}
+
+
+// ======================================================================================
+//	                             AITwinClippingTool
+// ======================================================================================
 
 AITwinClippingTool::AITwinClippingTool()
 	: Impl(MakePimpl<FImpl>(*this))
@@ -604,6 +603,7 @@ void AITwinClippingTool::ConnectSplineTool(AITwinSplineTool* SplineTool)
 		SplineTool->SplineAddedEvent.AddUniqueDynamic(this, &AITwinClippingTool::OnSplineHelperAdded);
 		SplineTool->SplineBeforeRemovedEvent.AddUniqueDynamic(this, &AITwinClippingTool::OnSplineHelperRemoved);
 		SplineTool->InteractiveCreationAbortedEvent.AddUniqueDynamic(this, &AITwinClippingTool::OnItemCreationAbortedInTool);
+		SplineTool->CutoutPolygonSelectedEvent.AddUniqueDynamic(this, &AITwinClippingTool::BroadcastSelection);
 	}
 }
 
@@ -1557,52 +1557,12 @@ bool AITwinClippingTool::FImpl::RegisterCutoutSpline(AITwinSplineHelper* SplineH
 		FITwinClippingCartographicPolygonInfo& PolygonInfo = ClippingPolygonInfos.AddDefaulted_GetRef();
 		PolygonInfo.SplineHelper = SplineHelper;
 		PolygonInfo.SetInvertEffect(SplineHelper->IsInvertedCutoutEffect());
-		// Simplified UX for linked models: handle influence per model type only.
-		// Internally, we already support influence per model, but it will be finalized only when we switch
-		// to SceneAPI, so for now we do not save the "influence all" flag in the decoration service.
-		// That's why we just detect "partial" influence in development version, just to debug the feature.
-		// TODO_JDE modify this when we switch to SceneAPI
-		std::array<bool, static_cast<size_t>(EITwinModelType::Count)> PerModelTypePartialInfluence;
-		PerModelTypePartialInfluence.fill(false);
 
 		std::set<ITwin::ModelLink> const Links = SplineHelper->GetLinkedModels();
-
-#ifndef RELEASE_CONFIG
-		// Detect partial influence per model type for debugging purposes.
-		std::array<int32, static_cast<size_t>(EITwinModelType::Count)> PerModelTypeTilesetCount;
-		PerModelTypeTilesetCount.fill(-1);
-		std::array<int32, static_cast<size_t>(EITwinModelType::Count)> PerModelTypeLinkCount;
-		PerModelTypeLinkCount.fill(0);
 		for (ITwin::ModelLink const& Link : Links)
 		{
-			int32& NumTilesetsOfType = PerModelTypeTilesetCount[static_cast<size_t>(Link.first)];
-			if (NumTilesetsOfType == -1)
-			{
-				NumTilesetsOfType = ITwin::CountTilesetsOfModelType(Link.first, Owner.GetWorld());
-			}
-			PerModelTypeLinkCount[static_cast<size_t>(Link.first)]++;
-		}
-		for (size_t ModelTypeIndex = 0; ModelTypeIndex < PerModelTypeLinkCount.size(); ++ModelTypeIndex)
-		{
-			if (PerModelTypeLinkCount[ModelTypeIndex] > 0)
-			{
-				PerModelTypePartialInfluence[ModelTypeIndex] = PerModelTypeLinkCount[ModelTypeIndex] < PerModelTypeTilesetCount[ModelTypeIndex];
-			}
-		}
-#endif // !RELEASE_CONFIG
+			PolygonInfo.SetInfluenceSpecificModel(Link, true);
 
-		PolygonInfo.SetInfluenceNone();
-		for (ITwin::ModelLink const& Link : Links)
-		{
-			bool const bPartialInfluence = PerModelTypePartialInfluence[static_cast<size_t>(Link.first)];
-			if (bPartialInfluence)
-			{
-				PolygonInfo.SetInfluenceSpecificModel(Link, true);
-			}
-			else
-			{
-				PolygonInfo.SetInfluenceFullModelType(Link.first, true);
-			}
 			auto TilesetAccessPtr = ITwin::GetTilesetAccessFromModelLink(Link, Owner.GetWorld());
 			if (TilesetAccessPtr)
 			{
@@ -1811,6 +1771,33 @@ namespace
 		TUniquePtr<AITwinInteractiveTool::IActiveStateRecord> PopToolStateRecord;
 		TUniquePtr<AITwinInteractiveTool::ISelectionRecord> PopToolSelectionRecord;
 	};
+
+
+	template <EITwinClippingPrimitiveType T>
+	struct TClippingPrimitiveShaderAdapter
+	{
+	};
+
+	template <>
+	struct TClippingPrimitiveShaderAdapter<EITwinClippingPrimitiveType::Plane>
+	{
+		inline static bool GetFlipFlag(bool bInvert)
+		{
+			return bInvert;
+		}
+	};
+
+	template <>
+	struct TClippingPrimitiveShaderAdapter<EITwinClippingPrimitiveType::Box>
+	{
+		inline static bool GetFlipFlag(bool bInvert)
+		{
+			// The shader GetBoxClipping.ush was written with the convention that the flipping of a box makes
+			// it subtractive, whereas we now changed the logic. To avoid changing the shader and potentially
+			// introducing bugs, we just invert the flipping flag for boxes when sending it to the shader.
+			return !bInvert;
+		}
+	};
 }
 
 bool AITwinClippingTool::RemoveEffect(EITwinClippingPrimitiveType Type, int32 PrimitiveIndex, bool bTriggeredFromITS)
@@ -1831,19 +1818,21 @@ bool AITwinClippingTool::RemoveEffect(EITwinClippingPrimitiveType Type, int32 Pr
 template <typename PrimitiveInfo, EITwinClippingPrimitiveType PrimitiveType>
 bool AITwinClippingTool::FImpl::TEncodeFlippingInMPC(TArray<PrimitiveInfo> const& ClippingInfos)
 {
+	using ClippingShaderAdapter = TClippingPrimitiveShaderAdapter<PrimitiveType>;
+
 	// We encode the inversion of primitives on float, per groups of 16.
 	// inspired by https://theinstructionlimit.com/encoding-boolean-flags-into-a-float-in-hlsl
 
 	int FlipFlags_0_15 = 0;
 	for (int32 i = 0; i < std::min(16, ClippingInfos.Num()); i++)
 	{
-		if (ClippingInfos[i].GetInvertEffect())
+		if (ClippingShaderAdapter::GetFlipFlag(ClippingInfos[i].GetInvertEffect()))
 			FlipFlags_0_15 |= (1 << i);
 	}
 	int FlipFlags_16_31 = 0;
 	for (int32 i = 0; i < std::min(16, ClippingInfos.Num() - 16); i++)
 	{
-		if (ClippingInfos[16 + i].GetInvertEffect())
+		if (ClippingShaderAdapter::GetFlipFlag(ClippingInfos[16 + i].GetInvertEffect()))
 			FlipFlags_16_31 |= (1 << i);
 	}
 
@@ -1930,7 +1919,12 @@ void AITwinClippingTool::SetInvertEffect(EITwinClippingPrimitiveType Type, int32
 
 void AITwinClippingTool::FlipEffect(EITwinClippingPrimitiveType Type, int32 PrimitiveIndex)
 {
-	SetInvertEffect(Type, PrimitiveIndex, !GetInvertEffect(Type, PrimitiveIndex));
+	Impl->FlipEffect(Type, PrimitiveIndex);
+}
+
+void AITwinClippingTool::FlipAllEffectsOfType(EITwinClippingPrimitiveType Type)
+{
+	Impl->FlipAllEffectsOfType(Type);
 }
 
 bool AITwinClippingTool::FImpl::SelectEffect(EITwinClippingPrimitiveType Type, int32 PrimitiveIndex,
@@ -3556,6 +3550,44 @@ bool AITwinClippingTool::ShouldEffectInfluenceModel(EITwinClippingPrimitiveType 
 	return Impl->ShouldEffectInfluenceModel(EffectType, EffectIndex, ModelIdentifier);
 }
 
+bool AITwinClippingTool::FImpl::IsUsingPerLayerTypeInfluence() const
+{
+	for (EITwinClippingPrimitiveType Type : TEnumRange<EITwinClippingPrimitiveType>())
+	{
+		const int32 NumEff = NumEffects(Type);
+		for (int32 i(0); i < NumEff; ++i)
+		{
+			if (GetClippingEffect(Type, i).IsUsingPerLayerTypeInfluence())
+			{
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+bool AITwinClippingTool::IsUsingPerLayerTypeInfluence() const
+{
+	return Impl->IsUsingPerLayerTypeInfluence();
+}
+
+void AITwinClippingTool::FImpl::ConvertToPerLayerInfluence(const TMap<EITwinModelType, TSet<FString>>& InCurrentLayers)
+{
+	for (EITwinClippingPrimitiveType Type : TEnumRange<EITwinClippingPrimitiveType>())
+	{
+		const int32 NumEff = NumEffects(Type);
+		for (int32 i(0); i < NumEff; ++i)
+		{
+			GetMutableClippingEffect(Type, i).ConvertToPerLayerInfluence(InCurrentLayers);
+		}
+	}
+}
+
+void AITwinClippingTool::ConvertToPerLayerInfluence(const TMap<EITwinModelType, TSet<FString>>& InCurrentLayers)
+{
+	Impl->ConvertToPerLayerInfluence(InCurrentLayers);
+}
+
 bool AITwinClippingTool::FImpl::ShouldEffectInfluenceFullModelType(EITwinClippingPrimitiveType EffectType, int32 EffectIndex,
 	EITwinModelType ModelType) const
 {
@@ -3593,7 +3625,7 @@ void AITwinClippingTool::SetEffectInfluenceFullModelType(EITwinClippingPrimitive
 	Impl->SetEffectInfluenceFullModelType(EffectType, EffectIndex, ModelType, bAll);
 }
 
-void AITwinClippingTool::FImpl::SetEffectInfluenceSpecificModel(EITwinClippingPrimitiveType EffectType, int32 EffectIndex,
+void AITwinClippingTool::FImpl::SetEffectInfluenceModel(EITwinClippingPrimitiveType EffectType, int32 EffectIndex,
 	const ITwin::ModelLink& ModelIdentifier, bool bInfluence)
 {
 	if (ensure(EffectIndex < NumEffects(EffectType)))
@@ -3608,10 +3640,44 @@ void AITwinClippingTool::FImpl::SetEffectInfluenceSpecificModel(EITwinClippingPr
 	}
 }
 
-void AITwinClippingTool::SetEffectInfluenceSpecificModel(EITwinClippingPrimitiveType EffectType, int32 EffectIndex,
+void AITwinClippingTool::SetEffectInfluenceModel(EITwinClippingPrimitiveType EffectType, int32 EffectIndex,
 	const ITwin::ModelLink& ModelIdentifier, bool bInfluence)
 {
-	Impl->SetEffectInfluenceSpecificModel(EffectType, EffectIndex, ModelIdentifier, bInfluence);
+	Impl->SetEffectInfluenceModel(EffectType, EffectIndex, ModelIdentifier, bInfluence);
+}
+
+TSet<FString> AITwinClippingTool::FImpl::GetInfluencedSpecificModels(EITwinClippingPrimitiveType EffectType,
+	int32 EffectIndex,
+	EITwinModelType LayerType) const
+{
+	if (ensure(EffectIndex < NumEffects(EffectType)))
+	{
+		return GetClippingEffect(EffectType, EffectIndex).GetInfluenceInfo(LayerType).SpecificIDs;
+	}
+	return {};
+}
+
+TSet<FString> AITwinClippingTool::GetInfluencedSpecificModels(EITwinClippingPrimitiveType EffectType,
+	int32 EffectIndex,
+	EITwinModelType LayerType) const
+{
+	return Impl->GetInfluencedSpecificModels(EffectType, EffectIndex, LayerType);
+}
+
+bool AITwinClippingTool::FImpl::DoesEffectInfluenceModel(EITwinClippingPrimitiveType EffectType, int32 EffectIndex,
+	const ITwin::ModelLink& ModelIdentifier) const
+{
+	if (ensure(EffectIndex < NumEffects(EffectType)))
+	{
+		return GetClippingEffect(EffectType, EffectIndex).DoesInfluenceModel(ModelIdentifier);
+	}
+	return {};
+}
+
+bool AITwinClippingTool::DoesEffectInfluenceModel(EITwinClippingPrimitiveType EffectType, int32 EffectIndex,
+	const ITwin::ModelLink& ModelIdentifier) const
+{
+	return Impl->DoesEffectInfluenceModel(EffectType, EffectIndex, ModelIdentifier);
 }
 
 AdvViz::SDK::RefID AITwinClippingTool::FImpl::GetEffectId(EITwinClippingPrimitiveType EffectType, int32 EffectIndex) const
@@ -3780,15 +3846,11 @@ namespace ITwin::Clipping
 		auto TilesetAccess = GetTilesetAccess(&HitActor);
 		if (!TilesetAccess)
 			return;
-		const EITwinModelType HitModelType = TilesetAccess->GetModelType();
-
+		// We now use per layer influence.
+		const ITwin::ModelLink HitLayer = TilesetAccess->GetModelLink();
 		FITwinClippingInfoBase ClippingProps;
-		for (EITwinModelType ModelType : { EITwinModelType::IModel,
-			EITwinModelType::RealityData,
-			EITwinModelType::GlobalMapLayer })
-		{
-			ClippingProps.SetInfluenceFullModelType(ModelType, HitModelType == ModelType);
-		}
+		ClippingProps.SetInfluenceSpecificModel(HitLayer, true);
+
 		const std::string EncodedCutoutInfo = EncodeProperties(ClippingProps);
 		auto inst = AVizInstance->GetAutoLock();
 		if (EncodedCutoutInfo != inst->GetName())
@@ -3910,7 +3972,7 @@ double AITwinClippingTool::FImpl::GetClippingValue_Boxes(FVector const& Absolute
 			glm::double3 pos_BoxCoords = BoxInfo.BoxProperties->BoxInvMatrix * (WorldPosition - BoxInfo.BoxProperties->BoxTranslation);
 			glm::double3 s = glm::step(bottomLeft, pos_BoxCoords) - glm::step(topRight, pos_BoxCoords);
 			double isInsideValueForBox = s.x * s.y * s.z;
-			if (BoxInfo.BoxProperties->bInvertEffect)
+			if (BoxInfo.BoxProperties->bIsSubtractive)
 			{
 				SubtractiveBoxValue += isInsideValueForBox;
 			}
@@ -3984,23 +4046,15 @@ static FAutoConsoleCommandWithWorldAndArgs FCmd_ITwinFlipClippingEffects(
 	auto ClippingActor = TWorldSingleton<AITwinClippingTool>().Get(World);
 	if (ensure(ClippingActor))
 	{
-		auto const FlipEffectsOfType = [&ClippingActor](EITwinClippingPrimitiveType Type)
-		{
-			const int32 NumEffects = ClippingActor->NumEffects(Type);
-			for (int32 i(0); i < NumEffects; ++i)
-			{
-				ClippingActor->FlipEffect(Type, i);
-			}
-		};
 		if (SingleType)
 		{
-			FlipEffectsOfType(*SingleType);
+			ClippingActor->FlipAllEffectsOfType(*SingleType);
 		}
 		else
 		{
 			for (EITwinClippingPrimitiveType Type : TEnumRange<EITwinClippingPrimitiveType>())
 			{
-				FlipEffectsOfType(Type);
+				ClippingActor->FlipAllEffectsOfType(Type);
 			}
 		}
 	}
@@ -4077,7 +4131,7 @@ static FAutoConsoleCommandWithWorldAndArgs FCmd_ITwinActivatePerModelClippingEff
 				else
 				{
 					ClippingActor->SetEffectInfluenceFullModelType(Type, Index, InModelType, false);
-					ClippingActor->SetEffectInfluenceSpecificModel(Type, Index, std::make_pair(InModelType, SingleModelId), *ActivateOpt);
+					ClippingActor->SetEffectInfluenceModel(Type, Index, std::make_pair(InModelType, SingleModelId), *ActivateOpt);
 				}
 			};
 

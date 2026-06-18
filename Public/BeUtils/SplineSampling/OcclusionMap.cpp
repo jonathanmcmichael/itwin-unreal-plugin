@@ -10,6 +10,7 @@
 #include "OcclusionMap.h"
 
 #include "Poisson2D.h"
+#include "Spline2DProjector.h"
 #include "SplinePattern.h"
 
 #include <BeUtils/Misc/Random.h>
@@ -293,12 +294,13 @@ namespace BeUtils
 
 		BE_ASSERT(nHeight_ * nWidth_ <= nCells_, "map size too short for given cell subdivision");
 
+		Basic2DProjector const projector(p2DPath.GetProjection());
 		// setup sampling resolution
 		// no need to sample the spline at a too high resolution (the higher
 		// resolution should be that of the occlusion map)
 		double dS = 1. / 16;
 		double splineLen(0.0);
-		double velocity = p2DPath.GetMaxVelocity(splineLen);
+		double velocity = p2DPath.GetMaxVelocity(splineLen, projector);
 		if (velocity > 0)
 		{
 			double dMap2DResolution = std::max(dCellWidth_, dCellHeight_);
@@ -335,7 +337,7 @@ namespace BeUtils
 				dS,
 				splineLen,
 				bbox,
-				p2DPath.GetProjection());
+				projector);
 			std::sort(segments.begin(), segments.end(), Compare2DSegments_Y);
 
 			if (segments.size() < 3)

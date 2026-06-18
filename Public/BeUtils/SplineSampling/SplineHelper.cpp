@@ -20,9 +20,12 @@ namespace BeUtils
 	bool CachedSegmentsContainer::RecordSegments(std::vector<Segment_2D> const& segments,
 		BoundingBox const& bbox, E2DProjection projection, double dU, double dUTolerance /*=1e-8*/)
 	{
+		if (projection == E2DProjection::None)
+			return false;
+
 		// Insert the given set of segments for future use.
 		// inserts the new data sorted by resolution.
-		CacheArray& vectorToFill(perProjectionData_[(int)projection]);
+		CacheArray& vectorToFill(perProjectionData_[static_cast<size_t>(projection)]);
 
 		CachedSegments recData;
 		recData.segments_ = segments;
@@ -68,8 +71,11 @@ namespace BeUtils
 	bool CachedSegmentsContainer::RetrieveSegments(std::vector<Segment_2D>& segments,
 		BoundingBox& bbox, E2DProjection projection, double dU, double dUTolerance /*= 1e-8*/) const
 	{
-		auto it = perProjectionData_[(size_t)projection].begin();
-		auto end = perProjectionData_[(size_t)projection].end();
+		if (projection == E2DProjection::None)
+			return false;
+		auto const& vectorToSearch(perProjectionData_[static_cast<size_t>(projection)]);
+		auto it = vectorToSearch.begin();
+		auto end = vectorToSearch.end();
 
 		for (; it != end; it++)
 		{
@@ -160,19 +166,17 @@ namespace BeUtils
 		EPathRegularSamplingMode samplingMode,
 		std::variant<size_t, double> const& fixedCountOrDistance,
 		TransformHolder const& transform,
-		E2DProjection projection /*= E2DProjection::None*/) const
+		Spline2DProjector const& projector) const
 	{
 		samples.clear();
 
-		double maxVelocity(0.0);
-		double const evalLen = EvalSplineLength(transform, maxVelocity,	0.01 /*dU*/, projection);
+		SplineLengthEvalData const evalData = EvalSplineLength(transform, 0.01 /*dU*/, projector);
+		double const evalLen = evalData.totalLength;
 		if (evalLen <= 0.)
 		{
-			BE_ISSUE("degenerated spline");
+			BE_ASSERT(projector.MayFail(), "degenerated spline");
 			return 0;
 		}
-
-		Basic2DProjector const proj(projection);
 
 		// distance between 2 consecutive samples
 		double deltaLength = 1.0;
@@ -209,21 +213,55 @@ namespace BeUtils
 		}
 		samples.reserve(targetNbSamples);
 
+		value_type const u_start(evalData.u_start);
+		value_type const u_end(evalData.u_end);
+		value_type const u_range(u_end - u_start);
+		if (u_range <= 0.)
+		{
+			BE_ISSUE("wrong u_start/u_end");
+			return 0;
+		}
+
 		// first sample the curve
 		const size_t numberOfSamples = std::max<size_t>(100, targetNbSamples * 10);
 		std::vector<value_type> samplesCumulatedDist(numberOfSamples, 0.0);
 		std::vector<vector_type> projSamples(numberOfSamples, vector_type(0.0));
-		vector_type prevPosition = proj.Project(GetPosition_world(0.0, transform));
+		vector_type prevPosition = projector.Project3D(GetPosition_world(u_start, transform));
 		projSamples[0] = prevPosition;
-		value_type const dU = value_type(1.0) / value_type(numberOfSamples - 1);
-		value_type u = dU;
-		for (size_t i = 1; i < numberOfSamples; ++i, u += dU)
+		value_type const dU = u_range / value_type(numberOfSamples - 1);
+		value_type u = u_start + dU;
+
+		if (projector.MayFail())
 		{
-			vector_type const curPosition = proj.Project(GetPosition_world(u, transform));
-			projSamples[i] = curPosition;
-			samplesCumulatedDist[i] = samplesCumulatedDist[i - 1] + glm::distance(curPosition, prevPosition);
-			prevPosition = curPosition;
+			size_t sampleIndex = 1;
+			while (u <= u_end)
+			{
+				auto const curPosOpt = projector.Project3DOpt(GetPosition_world(u, transform));
+				if (curPosOpt)
+				{
+					projSamples[sampleIndex] = *curPosOpt;
+					samplesCumulatedDist[sampleIndex] = samplesCumulatedDist[sampleIndex - 1] + glm::distance(*curPosOpt, prevPosition);
+					prevPosition = *curPosOpt;
+					++sampleIndex;
+				}
+				u += dU;
+			}
+			projSamples.resize(sampleIndex);
+			samplesCumulatedDist.resize(sampleIndex);
 		}
+		else
+		{
+			// If the projection cannot fail, we can be more efficient by directly accumulating the distance
+			// in projected space.
+			for (size_t i = 1; i < numberOfSamples; ++i, u += dU)
+			{
+				vector_type const curPosition = projector.Project3D(GetPosition_world(u, transform));
+				projSamples[i] = curPosition;
+				samplesCumulatedDist[i] = samplesCumulatedDist[i - 1] + glm::distance(curPosition, prevPosition);
+				prevPosition = curPosition;
+			}
+		}
+
 		// Divide the length in equally-sized pieces
 
 		if (samplingMode == EPathRegularSamplingMode::FixedNbSamples && targetNbSamples > 1)
@@ -236,23 +274,35 @@ namespace BeUtils
 		samples.push_back(projSamples[0]);
 
 		size_t iStart = 1, iLast = targetNbSamples;
-		value_type distOffset = 0.;
 		auto const distBegin = samplesCumulatedDist.begin();
 		auto const distEnd = samplesCumulatedDist.end();
 		auto itDist = distBegin;
+		size_t lastSampleIndex = 0;
 		for (size_t iCoord = iStart; iCoord <= iLast; ++iCoord)
 		{
-			value_type const valueToReach = deltaLength * iCoord + distOffset;
+			value_type const valueToReach = deltaLength * iCoord;
 			// Look for the smallest sample which length is bigger than the requested length
 			auto itLower = std::lower_bound(itDist, distEnd, valueToReach);
 			if (itLower != distEnd)
 			{
-				samples.push_back(projSamples[std::distance(distBegin, itLower)]);
+				lastSampleIndex = std::distance(distBegin, itLower);
+				samples.push_back(projSamples[lastSampleIndex]);
 				itDist = itLower;
 			}
 		}
+		// Depending on the requested number of samples and the curve length, we may end up with one sample
+		// less than expected (because of the strict "greater than" condition in the lower_bound search).
+		// In this case, we add the last sample which is guaranteed to be at the end of the curve.
+		if (samplingMode == EPathRegularSamplingMode::FixedNbSamples
+			&& samples.size() == targetNbSamples - 1
+			&& lastSampleIndex < projSamples.size() - 1)
+		{
+			samples.push_back(projSamples.back());
+		}
+
 		BE_ASSERT(samplingMode == EPathRegularSamplingMode::FixedSpacing
-			|| samples.size() == targetNbSamples);
+			|| samples.size() == targetNbSamples
+			|| projector.MayFail());
 		return samples.size();
 	}
 
@@ -347,18 +397,22 @@ namespace BeUtils
 	}
 
 	void SplineSampler::Compute2dNormals(
-		Basic2DProjector const& projector,
+		Spline2DProjector const& projector,
 		double dU_delta,
 		SplineHelper const& splineHelper,
 		TransformHolder const& transform)
 	{
+		BE_ASSERT(!projector.MayFail(), "projection with failure not implemented in Compute2dNormals");
+
 		int lastPtIndex = static_cast<int>(pts_.size()) - 1;
 		for (int index(0); index < lastPtIndex; index++)
 		{
 			double u = pts_[index].uCoord_;
 			auto const& curPos_3d = pts_[index].vWorldPos_;
 			vector_type nextPos_3d = splineHelper.GetPosition_world(std::min(u + dU_delta, 1.0), transform);
-			pts_[index].normal2d_ = Get2dNormal(projector(curPos_3d), projector(nextPos_3d));
+			pts_[index].normal2d_ = Get2dNormal(
+				projector.Project2D(curPos_3d),
+				projector.Project2D(nextPos_3d));
 		}
 
 		// last normal computed differently
@@ -366,7 +420,9 @@ namespace BeUtils
 		{
 			auto const& lastPos_3d = pts_[lastPtIndex].vWorldPos_;
 			vector_type prevPos_3d = splineHelper.GetPosition_world(std::min(1.0 - dU_delta, 1.0), transform);
-			pts_[lastPtIndex].normal2d_ = Get2dNormal(projector(prevPos_3d), projector(lastPos_3d));
+			pts_[lastPtIndex].normal2d_ = Get2dNormal(
+				projector.Project2D(prevPos_3d),
+				projector.Project2D(lastPos_3d));
 		}
 	}
 
@@ -377,19 +433,17 @@ namespace BeUtils
 		value_type const& dCurveLen,
 		BoundingBox& bbox,
 		TransformHolder const& transform,
-		E2DProjection projection /*= Z_Axis*/) const
+		Spline2DProjector const& projector) const
 	{
+		BE_ASSERT(!projector.MayFail(), "projection with failure not implemented in ComputeSegments");
 		BE_ASSERT(dU > 0 && dU < 1.0);
 
-		if (cache_.RetrieveSegments(segments, bbox, projection, dU))
+		if (cache_.RetrieveSegments(segments, bbox, projector.GetProjection(), dU))
 		{
 			return segments.size();
 		}
 
 		segments.clear();
-
-		// project (3D) positions to 2D
-		Basic2DProjector projector(projection);
 
 		size_t numControlPoints = CountControlPoints();
 
@@ -400,7 +454,7 @@ namespace BeUtils
 			vector_type curPos_3d_0;
 			curPos_3d_0 = GetPosition_world(0.0, transform);
 			ExtendBox(bbox, curPos_3d_0);
-			pos2d_0 = projector(curPos_3d_0);
+			pos2d_0 = projector.Project2D(curPos_3d_0);
 			prevPos = pos2d_0;
 			double prevU(0.0), curU(0.0);
 
@@ -413,7 +467,7 @@ namespace BeUtils
 			{
 				auto const& curPos_3d = sampler.pts_[curIndexPt].vWorldPos_;
 				ExtendBox(bbox, curPos_3d);
-				curPos = projector(curPos_3d);
+				curPos = projector.Project2D(curPos_3d);
 				curU = sampler.pts_[curIndexPt].uCoord_;
 
 				segments.push_back(Segment_2D(
@@ -432,7 +486,7 @@ namespace BeUtils
 			}
 
 			// Record result for future use.
-			cache_.RecordSegments(segments, bbox, projection, dU);
+			cache_.RecordSegments(segments, bbox, projector.GetProjection(), dU);
 		}
 
 		return segments.size();
@@ -445,25 +499,26 @@ namespace BeUtils
 
 	SplineHelper::value_type SplineHelper::GetTotalDeltaU() const
 	{
-		// bezier class is based on range [0..1] (see spline/engine/Bezier.hpp)
+		// Bezier class is based on range [0..1] (see spline/engine/Bezier.hpp)
 		return 1.0; //GetEndTime() - GetStartTime();
 	}
 
-	SplineHelper::value_type SplineHelper::GetControlPointsPathLength(TransformHolder const& transform, E2DProjection projection /*= None*/) const
+	SplineHelper::value_type SplineHelper::GetControlPointsPathLength(TransformHolder const& transform,
+		Spline2DProjector const& projector) const
 	{
+		BE_ASSERT(!projector.MayFail(), "projection with failure not implemented in GetControlPointsPathLength");
+
 		// Returns an approximation of the total length of the spline, based
 		// on the control points only.
-		Basic2DProjector projector(projection);
-
 		double dTotalLen(0.0);
 
 		size_t numControlPoints = CountControlPoints();
 		if (numControlPoints >= 2)
 		{
-			vector_type vPrev = projector.Project(GetControlPointPosition_world(0, transform));
+			vector_type vPrev = projector.Project3D(GetControlPointPosition_world(0, transform));
 			for (size_t i = 1; i < numControlPoints; i++)
 			{
-				vector_type vPos = projector.Project(GetControlPointPosition_world(i, transform));
+				vector_type vPos = projector.Project3D(GetControlPointPosition_world(i, transform));
 				dTotalLen += glm::length(vPos - vPrev);
 				vPrev = vPos;
 			}
@@ -472,71 +527,118 @@ namespace BeUtils
 		return dTotalLen;
 	}
 
-	SplineHelper::value_type SplineHelper::EvalSplineLength(TransformHolder const& transform, double& dMaxVelocity,
-		value_type const& dU, E2DProjection projection /*= None*/) const
+	SplineHelper::SplineLengthEvalData SplineHelper::EvalSplineLength(TransformHolder const& transform,
+		value_type const& dU,
+		Spline2DProjector const& projector) const
 	{
-		// Returns an approximation of the total length of the spline
-		// projected along given axis, with dS as time increment.
-		Basic2DProjector projector(projection);
+		SplineLengthEvalData result;
 
-		double dTotalLen(0.0);
-		dMaxVelocity = 0.0;
-
-		size_t numControlPoints = CountControlPoints();
-
-		if (numControlPoints >= 2)
+		size_t const numControlPoints = CountControlPoints();
+		if (numControlPoints < 2)
 		{
-			double u = 0.0; //GetStartTime();
-			double u_end = 1.0; //GetEndTime();
+			return result;
+		}
 
-			vector_type vPrev = projector.Project(GetPosition_world(u, transform));
+		double& totalLen(result.totalLength);
+		double& maxVelocity(result.maxVelocity);
+
+		double u = 0.0;
+		double u_end = 1.0;
+
+		if (projector.MayFail())
+		{
+			// If the projection may fail for some points (e.g. FScreenSpaceProjector when points are behind the
+			// camera), we need to skip those points and compute length/velocity based on valid segments only.
+			while (u <= u_end)
+			{
+				auto const optPos = projector.Project3DOpt(GetPosition_world(u, transform));
+				if (optPos.has_value())
+				{
+					vector_type vPrev = optPos.value();
+					result.u_start = u;
+					u += dU;
+					while (u <= u_end)
+					{
+						auto const optNextPos = projector.Project3DOpt(GetPosition_world(u, transform));
+						if (optNextPos.has_value())
+						{
+							vector_type vPos = optNextPos.value();
+							double segmentLen = glm::length(vPos - vPrev);
+							double localVelocity = segmentLen / dU;
+							if (localVelocity > maxVelocity)
+								maxVelocity = localVelocity;
+							totalLen += segmentLen;
+							vPrev = vPos;
+						}
+						else
+						{
+							// For now, disjoint segments are not handled (e.g. we don't try to find the next
+							// valid point after a failure), but we could if needed by adding an inner loop
+							// here.
+							result.u_end = u - dU;
+							break; // stop current segment, and look for next valid one
+						}
+						u += dU;
+					}
+					break; // we can stop after processing the last valid segment
+				}
+				u += dU;
+			}
+		}
+		else
+		{
+			vector_type vPrev = projector.Project3D(GetPosition_world(u, transform));
 			u += dU;
 
 			for (; u <= u_end; u += dU)
 			{
-				vector_type vPos = projector.Project(GetPosition_world(u, transform));
+				vector_type vPos = projector.Project3D(GetPosition_world(u, transform));
 
-				double dSegmentLen = glm::length(vPos - vPrev);
-				double localVelocity = dSegmentLen / dU;
-				if (localVelocity > dMaxVelocity)
-					dMaxVelocity = localVelocity;
-				dTotalLen += dSegmentLen;
+				double segmentLen = glm::length(vPos - vPrev);
+				double localVelocity = segmentLen / dU;
+				if (localVelocity > maxVelocity)
+					maxVelocity = localVelocity;
+				totalLen += segmentLen;
 
 				vPrev = vPos;
 			}
 		}
-
-		return dTotalLen;
+		return result;
 	}
 
 
-	SplineHelper::value_type SplineHelper::GetMeanVelocity(TransformHolder const& transform, E2DProjection projection /*= None*/) const
+	SplineHelper::value_type SplineHelper::GetMeanVelocity(TransformHolder const& transform, Spline2DProjector const& projector) const
 	{
 		//Average speed along the spline projected along given axis, if the curvilinear abscissa is understood as a time) - based on the control points only.
 		double dTotalTime = 1.0; // Bezier range is [0..1]
-		return (GetControlPointsPathLength(transform, projection) / dTotalTime);
+		return (GetControlPointsPathLength(transform, projector) / dTotalTime);
 	}
 
 	SplineHelper::value_type SplineHelper::EvalMaxVelocity(TransformHolder const& transform,
-		value_type& splineLenEvaluation, E2DProjection projection /*= None*/) const
+		value_type& splineLenEvaluation, Spline2DProjector const& projector) const
 	{
-		value_type dMaxVelocity(0.0);
 		size_t numControlPoints = CountControlPoints();
 		value_type dU = 1.0 / (3 * numControlPoints + 1);
-		splineLenEvaluation = EvalSplineLength(transform, dMaxVelocity, dU, projection);
-		return dMaxVelocity;
+		SplineLengthEvalData const evalData = EvalSplineLength(transform, dU, projector);
+		splineLenEvaluation = evalData.totalLength;
+		return evalData.maxVelocity;
 	}
 
 	SplineHelper::value_type SplineHelper::EvalMeanVelocity(
 		TransformHolder const& transform,
 		double& dMaxVelocity,
 		value_type const& dU,
-		E2DProjection projection/*= None*/) const
+		Spline2DProjector const& projector) const
 	{
 		// Average speed along the spline projected along given axis, if the curvilinear abscissa is understood as a time).
-		value_type dTotalTime = 1.0; // Bezier range is [0..1]
-		dMaxVelocity = 0.0;
-		return (EvalSplineLength(transform, dMaxVelocity, dU, projection) / dTotalTime);
+		SplineLengthEvalData const splineLenEvaluation = EvalSplineLength(transform, dU, projector);
+		dMaxVelocity = splineLenEvaluation.maxVelocity;
+		const value_type dTotalTime = splineLenEvaluation.u_end - splineLenEvaluation.u_start;
+		BE_ASSERT(dTotalTime >= 0.0);
+		if (dTotalTime > 0.0)
+			return (splineLenEvaluation.totalLength / dTotalTime);
+		else
+			return 0.;
 	}
 
 }

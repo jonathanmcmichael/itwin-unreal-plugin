@@ -839,7 +839,7 @@ private:
    * will no longer be possible to collide with the tileset since the physics
    * meshes will not be created.
    *
-   * Physics meshes cannot be generated for primitives containing points.
+   * Physics meshes are not supported for primitives containing points or lines.
    */
   UPROPERTY(
       EditAnywhere,
@@ -1128,7 +1128,7 @@ public:
   }
 
   UFUNCTION(BlueprintGetter, Category = Rendering)
-  int32 GetTranslucencySortPriority() { return TranslucencySortPriority; }
+  int32 GetTranslucencySortPriority() const { return TranslucencySortPriority; }
 
   UFUNCTION(BlueprintSetter, Category = Rendering)
   void SetTranslucencySortPriority(int32 InTranslucencySortPriority);

@@ -82,6 +82,39 @@ bool FITwinClippingInfoBase::ShouldInfluenceModel(const ITwin::ModelLink& ModelI
 	return IsEnabled() && DoesInfluenceModel(ModelIdentifier);
 }
 
+bool FITwinClippingInfoBase::IsUsingPerLayerTypeInfluence() const
+{
+	for (EITwinModelType LayerType : { EITwinModelType::GlobalMapLayer,
+									   EITwinModelType::IModel,
+									   EITwinModelType::RealityData })
+	{
+		if (GetInfluenceInfo(LayerType).bInfluenceAll)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+void FITwinClippingInfoBase::ConvertToPerLayerInfluence(const TMap<EITwinModelType, TSet<FString>>& InCurrentLayers)
+{
+	for (EITwinModelType LayerType : { EITwinModelType::GlobalMapLayer,
+									   EITwinModelType::IModel,
+									   EITwinModelType::RealityData })
+	{
+		FITwinClippingInfluenceInfo& InfluenceInfo = MutableInfluenceInfo(LayerType);
+		if (InfluenceInfo.bInfluenceAll)
+		{
+			InfluenceInfo.bInfluenceAll = false;
+			const TSet<FString>* CurrentLayers = InCurrentLayers.Find(LayerType);
+			if (CurrentLayers)
+			{
+				InfluenceInfo.SpecificIDs = *CurrentLayers;
+			}
+		}
+	}
+}
+
 bool FITwinClippingInfoBase::ShouldInfluenceFullModelType(EITwinModelType ModelType) const
 {
 	FITwinClippingInfluenceInfo const& InfluenceInfo = GetInfluenceInfo(ModelType);
@@ -140,8 +173,7 @@ void FITwinClippingInfoBase::UpdateInfluenceBoundingBox(UWorld const* World)
 {
 	InfluenceBoundingBox.Init();
 
-	bool const bInfluenceGoogleTileset = DoesInfluenceModel(
-		std::make_pair(EITwinModelType::GlobalMapLayer, FString()));
+	bool const bInfluenceGoogleTileset = DoesInfluenceModel(ITwin::GetGoogleTilesetLink());
 	FBox GoogleTilesetBox;
 
 	// Bounding box enclosing all tilesets but the Google one.

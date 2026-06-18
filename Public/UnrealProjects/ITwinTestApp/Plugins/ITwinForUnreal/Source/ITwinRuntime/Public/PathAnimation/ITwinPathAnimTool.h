@@ -13,6 +13,7 @@
 #include <Containers/Map.h>
 #include <GameFramework/Actor.h>
 #include <Misc/EnumRange.h>
+#include <Misc/Optional.h>
 #include <Templates/PimplPtr.h>
 #include <Spline/ITwinSplineHelper.h>
 #include <PathAnimation/ITwinAnimPathHelper.h>
@@ -133,6 +134,10 @@ public:
 	// Set the Path Animation Manager to manage the creation and update of path animations on the server
 	void SetPathAnimManager(const std::shared_ptr<AdvViz::SDK::IPathAnimManager>& InPathAnimManager);
 
+	// Manage synchronization of animation playback with the camera timeline
+	DECLARE_DELEGATE_RetVal(TOptional<float>, FGetTimelineFixedTime);
+	FGetTimelineFixedTime GetTimelineFixedTime;
+
 	// Load existing animation paths from the server for the current scene
 	void LoadAnimationPaths();
 
@@ -147,6 +152,9 @@ public:
 
 	// Return the total number of animation paths of given type
 	int32 NumPaths(EITwinAnimPathType PathType) const;
+
+	// Return the total number of animation paths of given type
+	int32 NumPaths() const;
 
 	// Remove animation path
 	bool RemovePath(FAnimPathIdentifier PathHandle, bool bTriggeredFromITS);
@@ -191,6 +199,10 @@ public:
 
 	void Get3DObjects(FAnimPathIdentifier PathHandle, TArray<FString>& Assets) const;
 	void Set3DObjects(FAnimPathIdentifier PathHandle, const TArray<FString>& Assets);
+
+	bool IsVisible(FAnimPathIdentifier PathHandle) const;
+	void SetVisible(FAnimPathIdentifier PathHandle, bool isVisible);
+	void SetAllVisible(bool isVisible);
 
 	bool HasInvDirection(FAnimPathIdentifier PathHandle) const;
 	void SetInvDirection(FAnimPathIdentifier PathHandle, bool bInvDirection);
@@ -239,12 +251,15 @@ public:
 
 	UFUNCTION()
 	void OnSplineEditedInTool();
+	
+	UFUNCTION()
+	void OnSplinePointMovedInTool(bool bTriggeredFromITS);
 
 private:
 	void BroadcastSelection();
+	void TriggerRebake(UITwinAnimPathHelper* PathHelper, bool bMultiObjectOnly);
+	void TriggerRepopulate(UITwinAnimPathHelper* PathHelper, bool bMultiObjectOnly);
 
-
-private:
 	class FImpl;
 	TPimplPtr<FImpl> Impl;
 };

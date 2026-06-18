@@ -33,9 +33,9 @@ public:
 	void SetLabelOnly(bool on);
 
 	UFUNCTION(BlueprintCallable, Category = "Interface")
-	bool IsLabelShown();
+	bool IsLabelShown() const;
 	UFUNCTION(BlueprintCallable, Category = "Interface")
-	FText GetText();
+	FText GetText() const;
 	UFUNCTION(BlueprintCallable, Category = "Interface")
 	void SetText(FText inText);
 	UFUNCTION(BlueprintCallable, Category = "Interface")
@@ -46,11 +46,11 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Interface")
 	void SetBackgroundColor(const FLinearColor& inColor);
 	UFUNCTION(BlueprintCallable, Category = "Interface")
-	FLinearColor GetBackgroundColor();
+	FLinearColor GetBackgroundColor() const;
 	UFUNCTION(BlueprintCallable, Category = "Interface")
 	void SetTextColor(const FLinearColor& inColor);
 	UFUNCTION(BlueprintCallable, Category = "Interface")
-	FLinearColor GetTextColor();
+	FLinearColor GetTextColor() const;
 	UFUNCTION(BlueprintCallable, Category = "Interface")
 	void SetFontSize(int size);
 	UFUNCTION(BlueprintCallable, Category = "Interface")
@@ -63,9 +63,9 @@ protected:
 private:
 	void UpdateComponentsVisibility();
 	//UPROPERTY(Meta = (BindWidget))
-	//UCanvasPanel* canvas;
+	//UCanvasPanel* canvas = nullptr;
 	UPROPERTY(Meta = (BindWidget))
-	UBorder* Pin;
+	UBorder* Pin = nullptr;
 	UPROPERTY(Meta = (BindWidget))
 	UBorder* Label = nullptr;
 	UPROPERTY(meta = (BindWidget))

@@ -65,6 +65,23 @@ inline double FromDateTime(FDateTime const& DateTime)
 	return DateTime.GetTicks() / (double)ETimespan::TicksPerSecond;
 }
 
+inline double ToNearestSecond(double const TimeInSeconds)
+{
+	return FMath::RoundToInt(TimeInSeconds);
+}
+
+inline FDateTime ToNearestSecond(FDateTime const& DateTime)
+{
+	return ToDateTime(ToNearestSecond(FromDateTime(DateTime)));
+}
+
+inline FDateRange ToNearestSecond(FDateRange const& DateRange)
+{
+	return FDateRange(
+		ToNearestSecond(DateRange.HasLowerBound() ? DateRange.GetLowerBoundValue() : FDateTime::MinValue()),
+		ToNearestSecond(DateRange.HasUpperBound() ? DateRange.GetUpperBoundValue() : FDateTime::MaxValue()));
+}
+
 inline FDateRange ToDateRange(FTimeRangeInSeconds TimeRange)
 {
 	if (TimeRange == Undefined())

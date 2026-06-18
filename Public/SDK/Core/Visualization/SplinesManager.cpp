@@ -9,6 +9,7 @@
 #include "SplinesManager.h"
 
 #include "Core/Network/HttpGetWithLink.h"
+#include "Core/Visualization/ConstantIDs.h"
 #include "../Singleton/singleton.h"
 #include "SavableItemManager.h"
 #include "SavableItemManager.inl"
@@ -49,7 +50,10 @@ namespace AdvViz::SDK
 		case ESplineUsage::EdgeDisplayHelper:
 			return "EdgeDisplayHelper";
 		case ESplineUsage::AnimPath:
+			BE_ISSUE("ESplineUsage::AnimPath should not be used in splines, path type should be specified");
 			return "AnimPath";
+		case ESplineUsage::AnimPathObject:
+			return "ObjectPath";
 		case ESplineUsage::AnimPathTraffic:
 			return "TrafficPath";
 		case ESplineUsage::AnimPathCrowd:
@@ -70,7 +74,9 @@ namespace AdvViz::SDK
 		else if (strUsage == "EdgeDisplayHelper")
 			return ESplineUsage::EdgeDisplayHelper;
 		else if (strUsage == "AnimPath")
-			return ESplineUsage::AnimPath;
+			return ESplineUsage::AnimPathObject; // for compatibility with old scenes; in any case AnimPath usage is reserved uniquely for selection by the spline tool, and should not be assigned to any spline directly as it doesn't correspond to any specific behavior
+		else if (strUsage == "ObjectPath")
+			return ESplineUsage::AnimPathObject;
 		else if (strUsage == "TrafficPath")
 			return ESplineUsage::AnimPathTraffic;
 		else if (strUsage == "CrowdPath")
@@ -309,7 +315,16 @@ namespace AdvViz::SDK
 			if (dst->GetUsage() == ESplineUsage::MapCutout
 				&& linkedModels.empty())
 			{
-				linkedModels.push_back({ .modelType = "GlobalMapLayer" });
+				linkedModels.push_back({ .modelType = "GlobalMapLayer", .modelId = ADVVIZ_GOOGLE_LAYER_ID });
+			}
+			// Before LA-7, we did leave an empty model ID for the Google layer, but we now avoid this, for
+			// consistency with the other types (and to allow having multiple global layers in the future).
+			for (auto& link: linkedModels)
+			{
+				if (link.modelType == "GlobalMapLayer" && link.modelId.empty())
+				{
+					link.modelId = ADVVIZ_GOOGLE_LAYER_ID;
+				}
 			}
 			dst->SetLinkedModels(linkedModels);
 			dst->EnableEffect(src.enableEffect.value_or(true));

@@ -41,7 +41,7 @@ namespace ITwin
 
 namespace
 {
-	static UITwinWebServices* WorkingInstance = nullptr;
+	static thread_local UITwinWebServices* WorkingInstance = nullptr;
 
 	struct [[nodiscard]] ScopedWorkingWebServices
 	{
