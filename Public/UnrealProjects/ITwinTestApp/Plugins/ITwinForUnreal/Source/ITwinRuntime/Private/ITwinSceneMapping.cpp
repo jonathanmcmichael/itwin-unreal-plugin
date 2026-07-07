@@ -424,6 +424,14 @@ void FITwinSceneMapping::ForEachKnownTile(std::function<void(const TITwinSceneTi
 		Func(SceneTile);
 }
 
+bool FITwinSceneMapping::ForEachKnownTile(std::function<bool(const TITwinSceneTilePtr&)> const& Func) const
+{
+	for (auto&& SceneTile : KnownTiles)
+		if (!Func(SceneTile))
+			return false;
+	return true;
+}
+
 void FITwinSceneMapping::UnloadKnownTile(const TITwinSceneTilePtr& SceneTilePtr)
 {
 	auto SceneTile = SceneTilePtr->GetAutoLock();
@@ -1103,7 +1111,7 @@ void FITwinSceneMapping::DisableUpdateSelectingAndHidingTextures(bool b)
 	}
 }
 
-void FITwinSceneMapping::HandleNewSelectingAndHidingTextures()
+bool FITwinSceneMapping::HandleNewSelectingAndHidingTextures()
 {
 	if (bNewSelectingAndHidingTexturesNeedSetupInMaterials)
 	{
@@ -1127,6 +1135,7 @@ void FITwinSceneMapping::HandleNewSelectingAndHidingTextures()
 		});
 		bNewSelectingAndHidingTexturesNeedSetupInMaterials = bHasPendingTextureInitialUpdates;
 	}
+	return bNewSelectingAndHidingTexturesNeedSetupInMaterials;
 }
 
 void FITwinSceneMapping::SetupFeatureIDsInVertexUVs(FITwinSceneTile& SceneTile, bool bUpdatingTile/*= false*/)
@@ -1507,12 +1516,19 @@ bool FITwinSceneMapping::PickVisibleElement(ITwinElementID const& InElemID,
 	//	return false;
 	bool bPickedInATile = false;
 	FITwinSceneTile::FTextureNeeds TextureNeeds;
-	ForEachKnownTile([&InElemID, &bPickedInATile, &TextureNeeds, Opts](TITwinSceneTilePtr const& SceneTilePtr)
+	ForEachKnownTile(std::function<bool(TITwinSceneTilePtr const&)>(
+		[&InElemID, &bPickedInATile, &TextureNeeds, Opts](TITwinSceneTilePtr const& SceneTilePtr)
 	{
 		auto SceneTileLock = SceneTilePtr->GetAutoLock();
 		auto& SceneTile = *SceneTileLock;
 		bPickedInATile |= SceneTile.PickElement(InElemID, TextureNeeds, Opts);
-	});
+		if (!Opts.MakeSelected() && bPickedInATile)
+		{
+			// If we are not selecting, we can stop as soon as we find the Element in a tile
+			return false; // break ForEachKnownTile
+		}
+		return true; // continue ForEachKnownTile
+	}));
 	this->bNewSelectingAndHidingTexturesNeedSetupInMaterials |= TextureNeeds.bWasCreated;
 	if (Opts.MakeSelected())
 	{

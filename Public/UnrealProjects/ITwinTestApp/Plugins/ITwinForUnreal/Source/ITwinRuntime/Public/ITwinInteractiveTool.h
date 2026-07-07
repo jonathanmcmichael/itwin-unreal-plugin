@@ -168,13 +168,11 @@ public:
 		TArray<const AActor*>&& IgnoredActors = {},
 		TArray<UPrimitiveComponent*>&& IgnoredComponents = {}) const;
 
-	DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FInteractiveCreationCompletedEvent, bool, bEventTriggeredFromITS);
+	DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FInteractiveCreationCompletedEvent, const AITwinInteractiveTool*, Tool, bool, bEventTriggeredFromITS);
 	UPROPERTY()
 	FInteractiveCreationCompletedEvent InteractiveCreationCompletedEvent;
-	UPROPERTY()
-	FInteractiveCreationCompletedEvent InteractiveCutoutCreationCompletedEvent;
 
-	DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FInteractiveCreationAbortedEvent, bool, bEventTriggeredFromITS);
+	DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FInteractiveCreationAbortedEvent, const AITwinInteractiveTool*, Tool, bool, bEventTriggeredFromITS);
 	UPROPERTY()
 	FInteractiveCreationAbortedEvent InteractiveCreationAbortedEvent;
 

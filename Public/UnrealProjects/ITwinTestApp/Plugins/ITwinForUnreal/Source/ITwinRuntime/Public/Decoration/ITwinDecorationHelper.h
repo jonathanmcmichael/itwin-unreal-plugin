@@ -127,6 +127,8 @@ public:
 	static void SetUseComponentCenter(bool bComponentCenter);
 	/// Returns whether the Component Center is currently used.
 	static bool UseComponentCenter();
+	/// Returns the singleton instance of the decoration helper for a given world (or nullptr if not found).
+	static AITwinDecorationHelper* GetInstance(const UWorld* InWorld);
 
 	AITwinDecorationHelper();
 
@@ -228,7 +230,7 @@ public:
 		bool bPromptUser = true;
 		bool bUponExit = false;
 		bool bUponCustomMaterialsDeletion = false;
-		std::function<void()> OnSceneSavedCallback;
+		std::function<void(bool)> OnSceneSavedCallback;
 	};
 	void SaveSceneWithOptions(FSaveRequestOptions const& Options);
 
@@ -286,6 +288,7 @@ public:
 	void SetHomeCamera(const FTransform&);
 	FTransform GetHomeCamera() const;
 
+	std::shared_ptr<AdvViz::SDK::IScenePersistence> GetScenePersistence() const;
 	FString GetSceneID() const;
 	void InitDecorationService();
 

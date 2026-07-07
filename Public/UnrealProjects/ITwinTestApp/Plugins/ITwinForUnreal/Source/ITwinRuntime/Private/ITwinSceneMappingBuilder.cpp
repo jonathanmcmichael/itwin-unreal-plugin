@@ -413,7 +413,8 @@ void UITwinSceneMappingBuilder::PreFetchPrimitiveData(
 
 	// Property names as std::string for cesium-native API
 	static const std::string ElementPropertyName = TCHAR_TO_UTF8(*ITwinCesium::Metada::ELEMENT_NAME);
-	static const std::string CategoryPropertyName = TCHAR_TO_UTF8(*ITwinCesium::Metada::SUBCATEGORY_NAME);
+	static const std::string CategoryNewPropertyName = TCHAR_TO_UTF8(*ITwinCesium::Metada::SUBCATEGORY_NAME);
+	static const std::string CategoryLegacyPropertyName = TCHAR_TO_UTF8(*ITwinCesium::Metada::SUBCATEGORY_LEGACY_NAME);
 	static const std::string ModelPropertyName = TCHAR_TO_UTF8(*ITwinCesium::Metada::MODEL_NAME);
 	static const std::string GeometryPropertyName = TCHAR_TO_UTF8(*ITwinCesium::Metada::GEOMETRYCLASS_NAME);
 	static const std::string MaterialPropertyName = TCHAR_TO_UTF8(*ITwinCesium::Metada::MATERIAL_NAME);
@@ -424,6 +425,12 @@ void UITwinSceneMappingBuilder::PreFetchPrimitiveData(
 
 	// Check for Geometry property availability
 	const bool bHasGeometryProperty = HasGltfProperty(Model, elementPropertyTable, GeometryPropertyName);
+
+	// Check for Category property availability (2 possible names: "subCategory" or "subcategory")
+	const bool bHasCategoryNewProperty = HasGltfProperty(Model, elementPropertyTable, CategoryNewPropertyName);
+	const bool bHasCategoryLegacyProperty = HasGltfProperty(Model, elementPropertyTable, CategoryLegacyPropertyName);
+	const bool bHasCategoryProperty = bHasCategoryNewProperty || bHasCategoryLegacyProperty;
+	const std::string& CategoryPropertyName = bHasCategoryNewProperty ? CategoryNewPropertyName : CategoryLegacyPropertyName;
 
 	// Get Material property table (may be different from element property table)
 	const CesiumGltf::PropertyTable* pMaterialPropertyTable = nullptr;
@@ -452,10 +459,17 @@ void UITwinSceneMappingBuilder::PreFetchPrimitiveData(
 			FeatureID, ITwin::NOT_ELEMENT.value());
 
 		// Fetch Category ID
-		data.CategoryID = GetGltfPropertyValueAsUInt64(Model, elementPropertyTable, CategoryPropertyName,
-			FeatureID, ITwin::NOT_ELEMENT.value());
-		if (data.CategoryID != ITwin::NOT_ELEMENT.value())
-			data.CategoryID--;
+		if (bHasCategoryProperty)
+		{
+			data.CategoryID = GetGltfPropertyValueAsUInt64(Model, elementPropertyTable, CategoryPropertyName,
+				FeatureID, ITwin::NOT_ELEMENT.value());
+			if (data.CategoryID != ITwin::NOT_ELEMENT.value())
+				data.CategoryID--;
+		}
+		else
+		{
+			data.CategoryID = ITwin::NOT_ELEMENT.value();
+		}
 
 		// Fetch Model ID
 		data.ModelID = GetGltfPropertyValueAsUInt64(Model, elementPropertyTable, ModelPropertyName,
@@ -568,6 +582,9 @@ void UITwinSceneMappingBuilder::OnTileMeshPrimitiveLoaded(ICesiumLoadedTilePrimi
 	if (!pProperties[to_underlying(EITwinPropertyType::Category)])
 	{
 		// Try again with subcategory slot if category slot returns null property
+		// Note that FindValidProperty is case-insensitive (because the default comparator for FString is
+		// case-insensitive), so it will find either "subCategory" or "subcategory" - not need to check both
+		// names here.
 		pProperties[to_underlying(EITwinPropertyType::Category)] =
 			FITwinMetadataPropertyAccess::FindValidProperty(
 				PrimitiveFeatures,

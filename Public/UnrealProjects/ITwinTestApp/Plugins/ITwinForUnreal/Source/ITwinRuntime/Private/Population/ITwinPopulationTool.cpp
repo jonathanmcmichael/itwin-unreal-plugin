@@ -14,6 +14,7 @@
 #include <ITwinGoogle3DTileset.h>
 #include <ITwinRealityData.h>
 #include <ITwinTilesetAccess.h>
+#include <ITwinFeatureChange.h>
 #include <Population/ITwinPopulation.h>
 #include <Population/ITwinPopulation.inl>
 #include <Spline/ITwinSplineHelper.h>
@@ -256,8 +257,8 @@ public:
 	std::optional<AITwinPopulation::FAutoRebuildTreeDisabler> DraggedPopTreeUpdateDisabler;
 	int32 draggedAssetInstanceIndex = -1;
 
-	float instancesScaleVariation = 0.2f;
-	float instancesRotationVariation = UE_PI;
+	FVector::FReal InstancesScaleVariation = 0.2;
+	FVector::FReal InstancesRotationVariation = UE_DOUBLE_PI;
 	bool forcePerpendicularToSurface = false;
 
 	bool isEditingBrushSize = false;
@@ -265,9 +266,15 @@ public:
 	std::map<AITwinPopulation*, FBrushAddedPopulationInfo> BrushAddedInstancesInfo;
 	std::map<AITwinPopulation*, FBrushRemovedPopulationInfo> BrushRemovedInstancesInfo;
 
-	FTransform savedTransform = FTransform::Identity;
-	bool savedTransformChanged = true;
-	float savedAngleZ = 0.f;
+	struct FSavedTransformInfo
+	{
+		FTransform Transform = FTransform::Identity;
+		FQuat::FReal AngleZ = 0.;
+		FVector::FReal ScaleVariation = 0.;
+		bool bChanged = true;
+	};
+	std::array<FSavedTransformInfo, static_cast<size_t>(EITwinInstantiatedObjectType::Count)> SavedTransformsByType;
+
 	std::map<FString, bool> usedAssets;
 	std::vector<AITwinPopulation*> EditedPopulations;
 	mutable bool bNeedsUpdateEditedPopulations = false;
@@ -277,13 +284,24 @@ public:
 	std::map<AITwinSplineHelper const*, AdvViz::SDK::RefID> splineToGroupId;
 
 	// For the addition of an instance from the browser
-	float draggingRotVar = 0.f;
-	float draggingScaleVar = 1.f;
+	FQuat::FReal DraggingRotVar = 0.;
+	FVector::FReal DraggingScaleVar = 1.;
 
 	// Interactive placement mode
 	bool bInteractivePlacement = false;
+	enum class EInteractivePlacementState
+	{
+		None,
+		JustStarted,
+		DelayTransform,
+		Transforming,
+	};
+	EInteractivePlacementState InteractivePlacementState = EInteractivePlacementState::None;
+
 	bool bRestrictPickingOnClipping = false;
 	TWeakObjectPtr<AActor> LastHitActor_InteractivePlacement;
+	// Preview of the object being placed in interactive placement mode (AzDev#2085006)
+	bool bPreviewPlacedObject = false;
 
 	bool bEnabledForCutout = false;
 
@@ -334,24 +352,44 @@ public:
 	bool DragActorInLevel(const FVector2D& screenPosition, const FString& assetPath);
 	void ReleaseDraggedAssetInstance();
 	void DestroyDraggedAssetInstance();
+
 	void SetUsedAsset(const FString& assetPath, bool used);
 	void ClearUsedAssets();
-	bool IsAdditionOfInstancesAllowed(bool& bOutAllowBrush) const;
+	void ReplaceUsedAssets(const TArray<FString>& AssetPaths);
+
+	bool IsAdditionOfInstancesAllowed(bool* bOutAllowBrush = nullptr) const;
 	int32 GetInstanceCount(const FString& assetPath) const;
 	bool GetForcePerpendicularToSurface() const;
 	void SetForcePerpendicularToSurface(bool b);
 	bool GetIsEditingBrushSize() const;
 	void SetIsEditingBrushSize(bool b);
 	bool DoMouseClickAction();
+
+	void SetInteractivePlacement(bool bInInteractivePlacement);
+	bool StartInteractiveCreation();
+
+	enum class EAbortContext
+	{
+		UserInput_ITS, // user input triggered from iTwin Studio
+		UserInput_Unreal, // user input triggered from Unreal (Escape key...)
+		Internal, // internal reason that prevents from adding instances
+	};
+	void AbortInteractiveCreation(EAbortContext Context);
+
 	void FinalizeInteractiveCreation(const FHitResult* HitResult, bool bTriggeredFromITS);
+
+	//! Set whether the tool is in preview mode for placing an object.
+	void SetPreviewPlacedObject(bool bPreview);
+	void UpdatePlacedObjectPreview();
+	bool CheckInteractivePlacementAllowance();
+
 	void Tick(float DeltaTime);
 
 	// Additional internal functions
-	bool ComputeTransformFromHitResult(
-		const FHitResult& hitResult, FTransform& transform,
-		const AITwinPopulation* population,
+	bool ComputeTransformFromHitResult(const FHitResult& HitResult,	FTransform& OutTransform,
+		const AITwinPopulation* Population,
 		bool bIsDraggingInstance = false,
-		bool bRequiresValidHit = true);
+		bool bStartingInteractiveCreation = false);
 	FHitResult LineTraceFromMousePos();
 	FVector LineTraceToSetBrushSize();
 	void MultiLineTraceFromMousePos(int32 traceCount, std::vector<AITwinPopulation*> const& populations);
@@ -383,6 +421,10 @@ public:
 	void SetInstanceTransformProxy(IITwinPopulationInstanceTransformProxyPtr InTransformProxy);
 
 	void UpdateGroupId(AITwinSplineHelper const* CurSpline);
+
+	FString GetTransformationName();
+
+	void PopulationChanged(AITwinPopulation &population, EChangeType change, const FString &eventSource);
 
 	// Population along / inside a spline
 	uint32 PopulateSpline();
@@ -456,6 +498,10 @@ void AITwinPopulationTool::FImpl::SetMode(EPopulationToolMode mode)
 	{
 		owner.ModeChangedEvent.Broadcast();
 	}
+
+	// Use interactive placement for the single instance mode.
+	// AzDev#2085006.
+	SetPreviewPlacedObject(toolMode == EPopulationToolMode::Instantiate);
 }
 
 void AITwinPopulationTool::FImpl::SetTransformationMode(ETransformationMode mode)
@@ -616,11 +662,20 @@ void AITwinPopulationTool::FImpl::OnSelectionTransformStarted(bool bForInteracti
 	{
 		// Optimization: suspend automatic tree rebuild for the edited population.
 		InteractiveTransformationScope.emplace(*selectedPopulation);
+
+		if (!bInteractivePlacement)
+		{
+			PopulationChanged(*selectedPopulation, EChangeType::Modified, TEXT("gizmo"));
+		}
 	}
 }
 
-void AITwinPopulationTool::FImpl::OnSelectionTransformCompleted(bool /*bForInteractivePlacement*/ /*= false*/)
+void AITwinPopulationTool::FImpl::OnSelectionTransformCompleted(bool bForInteractivePlacement /*= false*/)
 {
+	if (bInteractivePlacement && !bForInteractivePlacement)
+	{
+		return;
+	}
 	// Restore the suspended tree update, if any.
 	InteractiveTransformationScope.reset();
 }
@@ -639,8 +694,9 @@ void AITwinPopulationTool::FImpl::SetSelectionTransform(const FTransform& Transf
 		}
 		if (!selectedPopulation->IsRotationVariationEnabled())
 		{
-			savedTransform = Transform;
-			savedTransformChanged = true;
+			auto& SavedTransform = SavedTransformsByType[static_cast<size_t>(selectedPopulation->GetObjectType())];
+			SavedTransform.Transform = Transform;
+			SavedTransform.bChanged = true;
 		}
 	}
 }
@@ -678,6 +734,7 @@ void AITwinPopulationTool::FImpl::SetEnabled(bool value)
 
 		UpdatePopulationsArray();
 		UpdatePopulationsCollisionType();
+		UpdatePlacedObjectPreview();
 
 		if (!enabled)
 		{
@@ -709,6 +766,7 @@ void AITwinPopulationTool::FImpl::ResetToDefault()
 	transformationMode = ETransformationMode::Move;
 	usedAssets.clear();
 	EditedPopulations.clear();
+	SetPreviewPlacedObject(false);
 }
 
 void AITwinPopulationTool::FImpl::SetDecorationHelper(AITwinDecorationHelper* decoHelper)
@@ -826,15 +884,47 @@ void AITwinPopulationTool::FImpl::SetUsedAsset(const FString& assetPath, bool b)
 	// Empty the vector of edited populations so that it is updated the next time
 	// instances will be added.
 	EditedPopulations.clear();
+
+	UpdatePlacedObjectPreview();
 }
 
 void AITwinPopulationTool::FImpl::ClearUsedAssets()
 {
 	usedAssets.clear();
 	EditedPopulations.clear();
+	UpdatePlacedObjectPreview();
 }
 
-bool AITwinPopulationTool::FImpl::IsAdditionOfInstancesAllowed(bool& bOutAllowBrush) const
+void AITwinPopulationTool::FImpl::ReplaceUsedAssets(const TArray<FString>& AssetPaths)
+{
+	FString AssetBeingPlaced;
+	if (bInteractivePlacement && HasSelectedPopulation())
+	{
+		AssetBeingPlaced = UTF8_TO_TCHAR(selectedPopulation->GetObjectRef().c_str());
+	}
+	usedAssets.clear();
+	for (const FString& AssetPath : AssetPaths)
+	{
+		BE_ASSERT(!AssetPath.IsEmpty());
+		usedAssets[AssetPath] = true;
+	}
+
+	// Same comment as in SetUsedAsset: the vector of edited populations should be updated the next time
+	// instances will be added.
+	EditedPopulations.clear();
+
+	if (!AssetBeingPlaced.IsEmpty())
+	{
+		// If the asset being placed is not in the new list, we need to stop the interactive placement.
+		if (!usedAssets.contains(AssetBeingPlaced))
+		{
+			AbortInteractiveCreation(EAbortContext::Internal);
+		}
+	}
+	UpdatePlacedObjectPreview();
+}
+
+bool AITwinPopulationTool::FImpl::IsAdditionOfInstancesAllowed(bool* bOutAllowBrush /*= nullptr*/) const
 {
 	bool bHasSelectedAsset = false;
 	bool bForbidBrush = false;
@@ -850,7 +940,10 @@ bool AITwinPopulationTool::FImpl::IsAdditionOfInstancesAllowed(bool& bOutAllowBr
 			}
 		}
 	}
-	bOutAllowBrush = bHasSelectedAsset && !bForbidBrush;
+	if (bOutAllowBrush)
+	{
+		*bOutAllowBrush = bHasSelectedAsset && !bForbidBrush;
+	}
 	return bHasSelectedAsset;
 }
 
@@ -895,6 +988,58 @@ AITwinPopulationTool::FImpl::FScopedInstanceSelection::~FScopedInstanceSelection
 	Impl.SetSelectedInstanceIndex(PrevSelectedInstanceIndex);
 }
 
+void AITwinPopulationTool::FImpl::SetInteractivePlacement(bool bInInteractivePlacement)
+{
+	bInteractivePlacement = bInInteractivePlacement;
+	if (!bInteractivePlacement)
+	{
+		InteractivePlacementState = EInteractivePlacementState::None;
+	}
+}
+
+bool AITwinPopulationTool::FImpl::StartInteractiveCreation()
+{
+	Be::CleanUpGuard RestoreStateCleanup([this]
+	{
+		SetInteractivePlacement(false);
+	});
+	SetInteractivePlacement(true);
+	if (!AddSingleInstanceAtViewCenter(true))
+	{
+		return false;
+	}
+	RestoreStateCleanup.release();
+	return true;
+}
+
+void AITwinPopulationTool::FImpl::AbortInteractiveCreation(EAbortContext Context)
+{
+	if (bInteractivePlacement)
+	{
+		// Remove selected instance, if any, as it was never validated by the user.
+		if (HasSelectedInstance())
+		{
+			// Mark the transform as completed to avoid asserts related to SelectionTreeUpdateDisabler.
+			OnSelectionTransformCompleted(/*bForInteractivePopulation*/true);
+
+			DeleteSelectedInstance();
+		}
+		SetSelectedPopulation(nullptr);
+		owner.SelectionChangedEvent.Broadcast();
+		SetInteractivePlacement(false);
+
+		// The boolean bTriggeredFromITS is used to relay the event to iTwin Studio or not ; in the case of
+		// an internal abortal, we don't want to notify iTwin Studio, as it would trigger a deactivation of
+		// the population tool, which we do not want. Therefore we pass bTriggeredFromITS as true in such
+		// case.
+		// TODO_JDE: replace 'bTriggeredFromITS' by 'bNotifyITS' everywhere, to make things clearer (be
+		// careful with all usages in blueprints, such as BP_CarrotViewerController...)
+		const bool bTriggeredFromITS = Context == EAbortContext::UserInput_ITS
+			|| Context == EAbortContext::Internal;
+		owner.InteractiveCreationAbortedEvent.Broadcast(&owner, bTriggeredFromITS);
+	}
+}
+
 void AITwinPopulationTool::FImpl::FinalizeInteractiveCreation(const FHitResult* HitResult, bool bTriggeredFromITS)
 {
 	if (!ensure(bInteractivePlacement && HasSelectedInstance()))
@@ -929,13 +1074,58 @@ void AITwinPopulationTool::FImpl::FinalizeInteractiveCreation(const FHitResult* 
 	selectedPopulation->FinalizeAddedInstance(selectedInstanceIndex, &FinalTransform);
 	OnSelectionTransformCompleted(/*bForInteractivePopulation*/true);
 
-	owner.InteractiveCreationCompletedEvent.Broadcast(bTriggeredFromITS);
-	if (bCutoutCreated)
-	{
-		owner.InteractiveCutoutCreationCompletedEvent.Broadcast(bTriggeredFromITS);
-	}
+	owner.InteractiveCreationCompletedEvent.Broadcast(&owner, bTriggeredFromITS);
 
-	bInteractivePlacement = false;
+	// Track Amplitude event
+	PopulationChanged(*selectedPopulation, EChangeType::Added, TEXT("single_placement"));
+
+	SetInteractivePlacement(false);
+
+	// In single placement mode, create a new instance to place at once.
+	UpdatePlacedObjectPreview();
+}
+
+void AITwinPopulationTool::FImpl::UpdatePlacedObjectPreview()
+{
+	if (!bPreviewPlacedObject)
+	{
+		return;
+	}
+	// Use interactive placement for the "single instance" mode.
+	// AzDev#2085006.
+	const bool bCanPreviewPlacedInstance = GetMode() == EPopulationToolMode::Instantiate
+		&& IsEnabled()
+		&& IsAdditionOfInstancesAllowed();
+
+	if (bCanPreviewPlacedInstance)
+	{
+		if (!bInteractivePlacement)
+		{
+			StartInteractiveCreation();
+		}
+	}
+	else
+	{
+		if (bInteractivePlacement)
+		{
+			AbortInteractiveCreation(EAbortContext::Internal);
+		}
+	}
+}
+
+void AITwinPopulationTool::FImpl::SetPreviewPlacedObject(bool bPreview)
+{
+	const bool bWasPreview = bPreviewPlacedObject;
+	bPreviewPlacedObject = bPreview;
+
+	if (bPreviewPlacedObject)
+	{
+		UpdatePlacedObjectPreview();
+	}
+	else if (bWasPreview && bInteractivePlacement)
+	{
+		AbortInteractiveCreation(EAbortContext::Internal);
+	}
 }
 
 bool AITwinPopulationTool::FImpl::DoMouseClickAction()
@@ -980,7 +1170,7 @@ bool AITwinPopulationTool::FImpl::DoMouseClickAction()
 				ActorsToIgnore.Push(TilesetActor);
 			}
 		}, owner.GetWorld());
-		// Also ignore splines added for the display of box edges.
+		// Also ignore splines added for the display of cutout edges.
 		ITwin::AppendSplineHelpers(ActorsToIgnore, owner.GetWorld(), EITwinSplineUsage::EdgeDisplayHelper);
 	}
 	else
@@ -1044,12 +1234,13 @@ bool AITwinPopulationTool::FImpl::DoMouseClickAction()
 				bRelevantAction = AddSingleInstanceFromHitResult(hitResult, &CreatedInstance);
 				if (bRelevantAction)
 				{
-					owner.SingleInstanceAddedEvent.Broadcast();
+					// Track Amplitude event
+					PopulationChanged(*CreatedInstance.Population, EChangeType::Added, TEXT("single_placement"));
 
 					// Temporarily select the added instance (for backup system).
 					{
 						FScopedInstanceSelection TempSelection(*this, CreatedInstance);
-						owner.InteractiveCreationCompletedEvent.Broadcast(/*bTriggeredFromITS*/false);
+						owner.InteractiveCreationCompletedEvent.Broadcast(&owner, /*bTriggeredFromITS*/false);
 					}
 				}
 			}
@@ -1133,6 +1324,12 @@ void AITwinPopulationTool::FImpl::Tick(float DeltaTime)
 
 					for (auto& hits : hitsByPopulation)
 					{
+						if (!BrushRemovedInstancesInfo.contains(hits.first))
+						{
+							// Track amplitude event
+							PopulationChanged(*hits.first, EChangeType::Deleted, TEXT("brush"));
+						}
+
 						// Backup instances to be removed for undo/redo system.
 						auto& Backups = BrushRemovedInstancesInfo[hits.first].Backups;
 						Backups.reserve(Backups.size() + hits.second.Num());
@@ -1150,6 +1347,14 @@ void AITwinPopulationTool::FImpl::Tick(float DeltaTime)
 	}
 	else if (bInteractivePlacement && HasSelectedInstance())
 	{
+		// If this is the first instance being placed, we need to delay its transformation until the instance
+		// is fully loaded on GPU. Otherwise, the instance may not appear at all, or only its shadow will be
+		// visible, depending on the GPU load. This was a problem with cutout (see ADO#1973505) until we
+		// changed the instanced type for those objects.
+		if (!CheckInteractivePlacementAllowance())
+		{
+			return;
+		}
 		FHitResult hitResult = LineTraceFromMousePos();
 		FTransform transform;
 		if (ComputeTransformFromHitResult(hitResult, transform, selectedPopulation))
@@ -1157,7 +1362,7 @@ void AITwinPopulationTool::FImpl::Tick(float DeltaTime)
 			// Do not forget to multiply by BaseTransform, as done in AITwinPopulation::AddInstance
 			selectedPopulation->SetInstanceTransformUEOnly(selectedInstanceIndex,
 				selectedPopulation->GetBaseTransform() * transform);
-			if (selectedPopulation->GetObjectType() == EITwinInstantiatedObjectType::ClippingBox)
+			if (selectedPopulation->IsClippingPrimitive())
 			{
 				selectedPopulation->NotifyClippingToolOfTransform(selectedInstanceIndex);
 			}
@@ -1172,11 +1377,11 @@ bool AITwinPopulationTool::FImpl::ComputeTransformFromHitResult(
 	const FHitResult& hitResult, FTransform& transform,
 	const AITwinPopulation* population,
 	bool isDraggingInstance /*= false*/,
-	bool bRequiresValidHit /*= true*/)
+	bool bStartingInteractiveCreation /*= false*/)
 {
 	// In some cases (interactive creation of a cutout primitive), we want to create the instance even when
 	// no hit was found: it will float in the air as long as the user does not hover a valid area.
-	// => in such cases, bRequiresValidHit will be set to false.
+	bool const bRequiresValidHit = !bStartingInteractiveCreation;
 	if (bRequiresValidHit)
 	{
 		if (!hitResult.HasValidHitObjectHandle())
@@ -1192,25 +1397,46 @@ bool AITwinPopulationTool::FImpl::ComputeTransformFromHitResult(
 
 	FMatrix hitMat(FMatrix::Identity);
 
-	float rotVar = 0.f;
+	FQuat::FReal RotVar = 0.;
+
+	auto& SavedTransform = SavedTransformsByType[static_cast<size_t>(population->GetObjectType())];
+
 	if (!population->IsRotationVariationEnabled())
 	{
-		if (savedTransformChanged)
+		// Reuse the last saved angle for this population type, if any.
+		// Angles are now saved by object type, and for cutouts, we ignore it (AzDev#2082180).
+		if (!population->IsClippingPrimitive() && SavedTransform.bChanged)
 		{
-			FVector eulerAngles = savedTransform.GetRotation().Euler();
-			savedAngleZ = FMath::DegreesToRadians(static_cast<float>(eulerAngles.Z));
-			savedTransformChanged = false;
+			FVector eulerAngles = SavedTransform.Transform.GetRotation().Euler();
+			SavedTransform.AngleZ = FMath::DegreesToRadians(eulerAngles.Z);
+			SavedTransform.bChanged = false;
 		}
-		rotVar = savedAngleZ;
+		RotVar = SavedTransform.AngleZ;
 	}
 	else if (isDraggingInstance)
 	{
-		rotVar = draggingRotVar;
+		RotVar = DraggingRotVar;
 	}
-	else if (instancesRotationVariation != 0.f)
+	else if (InstancesRotationVariation != 0.)
 	{
-		rotVar = FMath::FRandRange(
-			-instancesRotationVariation, instancesRotationVariation);
+		// Now that we use interactive placement for single instance mode, we should make sure the random
+		// rotation is computed only once for the previewed instance, or else the object with change its
+		// rotation at each and every tick!
+		if (bInteractivePlacement && !bStartingInteractiveCreation)
+		{
+			RotVar = SavedTransform.AngleZ;
+		}
+		else
+		{
+			RotVar = FMath::FRandRange(
+				-InstancesRotationVariation, InstancesRotationVariation);
+
+			if (bStartingInteractiveCreation)
+			{
+				// Store the random rotation for the previewed instance (see above).
+				SavedTransform.AngleZ = RotVar;
+			}
+		}
 	}
 
 	// NB: for cutout cube/plane, we never want the instance to be perpendicular to the hit surface.
@@ -1229,34 +1455,46 @@ bool AITwinPopulationTool::FImpl::ComputeTransformFromHitResult(
 		FVector sY = sZ ^ sX;
 		sY.Normalize();
 		sX = sY ^ sZ;
-		hitMat = FMatrix(sX, sY, sZ, FVector(0.f));
+		hitMat = FMatrix(sX, sY, sZ, FVector(0.));
 
-		if (rotVar != 0.f)
+		if (RotVar != 0.)
 		{
 			FQuat hitQuat(hitMat);
-			hitQuat = FQuat(sZ, rotVar) * hitQuat;
+			hitQuat = FQuat(sZ, RotVar) * hitQuat;
 			hitMat = hitQuat.ToMatrix();
 		}
 	}
-	else if (rotVar != 0.f)
+	else if (RotVar != 0.)
 	{
-		FQuat hitQuat(FVector::ZAxisVector, rotVar);
+		FQuat hitQuat(FVector::ZAxisVector, RotVar);
 		hitMat = hitQuat.ToMatrix();
 	}
 	hitMat.SetOrigin(FVector(hitResult.Location));
 
-	if (population->IsScaleVariationEnabled() && instancesScaleVariation > 0.f)
+	if (population->IsScaleVariationEnabled() && InstancesScaleVariation > 0.)
 	{
-		float scaleVar = 0.f;
+		FVector::FReal ScaleVar = 0.;
 		if (isDraggingInstance)
 		{
-			scaleVar = draggingScaleVar;
+			ScaleVar = DraggingScaleVar;
+		}
+		else if (bInteractivePlacement && !bStartingInteractiveCreation)
+		{
+			// Same reasoning as for rotation variation: we want to keep the same scale for the previewed
+			// instance until the user validates its position.
+			ScaleVar = SavedTransform.ScaleVariation;
 		}
 		else
 		{
-			scaleVar = FMath::FRandRange(-instancesScaleVariation, instancesScaleVariation);
+			ScaleVar = FMath::FRandRange(-InstancesScaleVariation, InstancesScaleVariation);
+
+			if (bStartingInteractiveCreation)
+			{
+				// Store the random rotation for the previewed instance (see above).
+				SavedTransform.ScaleVariation = ScaleVar;
+			}
 		}
-		hitMat = hitMat.ApplyScale(1.f + scaleVar);
+		hitMat = hitMat.ApplyScale(1. + ScaleVar);
 	}
 
 	transform.SetFromMatrix(hitMat);
@@ -1459,10 +1697,11 @@ void AITwinPopulationTool::FImpl::MultiLineTraceFromMousePos(
 		{
 			int32 const Index = Population->AddInstance(transform);
 			// Record first instance index for each population, for undo/redo system.
-			auto itInfoForThisPopulation = BrushAddedInstancesInfo.find(Population);
-			if (itInfoForThisPopulation == BrushAddedInstancesInfo.end()
-				&& Index != INDEX_NONE)
+			if (Index != INDEX_NONE && !BrushAddedInstancesInfo.contains(Population))
 			{
+				//Track Amplitude event
+				PopulationChanged(*Population, EChangeType::Added, TEXT("brush"));
+
 				BrushAddedInstancesInfo.emplace(Population, Index);
 			}
 #ifndef RELEASE_CONFIG
@@ -1471,6 +1710,38 @@ void AITwinPopulationTool::FImpl::MultiLineTraceFromMousePos(
 		}
 	}
 }
+
+bool AITwinPopulationTool::FImpl::CheckInteractivePlacementAllowance()
+{
+	if (!ensure(selectedPopulation))
+	{
+		return false;
+	}
+
+	if (InteractivePlacementState != EInteractivePlacementState::Transforming)
+	{
+		// For the 1st instance, we need to wait for the tree to be fully built: if we freeze the tree update
+		// whereas the tree has never been built, it would result in invisible instances most of the time
+		// (see ADO#1973505).
+		if (selectedInstanceIndex == 0 && !selectedPopulation->IsTreeFullyBuilt())
+		{
+			InteractivePlacementState = EInteractivePlacementState::DelayTransform;
+			return false;
+		}
+	}
+
+	if (InteractivePlacementState == EInteractivePlacementState::JustStarted
+		|| InteractivePlacementState == EInteractivePlacementState::DelayTransform)
+	{
+		// The tree is now built, we can start the interactive placement.
+		InteractivePlacementState = EInteractivePlacementState::Transforming;
+		// Disable automatic UE tree rebuild for this population as long as the position is not
+		// validated.
+		OnSelectionTransformStarted(/*bForInteractivePlacement*/true);
+	}
+	return true;
+}
+
 
 bool AITwinPopulationTool::FImpl::AddSingleInstanceFromHitResult(const FHitResult& hitResult,
 	FCreatedInstance* OutCreatedInstance /*= nullptr*/,
@@ -1486,10 +1757,9 @@ bool AITwinPopulationTool::FImpl::AddSingleInstanceFromHitResult(const FHitResul
 		int32 popIndex = EditedPopulationsActors.size() > 1 ?
 			FMath::RandRange((int32)0, (int32)EditedPopulationsActors.size() - 1) : 0;
 		FTransform tm;
-		bool const bRequiresValidHit = !bStartingInteractiveCreation;
 		if (ComputeTransformFromHitResult(hitResult, tm, EditedPopulationsActors[popIndex],
 										  false/*bIsDraggingInstance*/,
-										  bRequiresValidHit))
+										  bStartingInteractiveCreation))
 		{
 			const int32 InstIndex = EditedPopulationsActors[popIndex]->AddInstance(tm,
 				bInteractivePlacement ? EAddInstanceContext::InteractivePlacement : EAddInstanceContext::Default);
@@ -1500,8 +1770,10 @@ bool AITwinPopulationTool::FImpl::AddSingleInstanceFromHitResult(const FHitResul
 				SetSelectedPopulation(EditedPopulationsActors[popIndex]);
 				SetSelectedInstanceIndex(InstIndex);
 				// Disable automatic UE tree rebuild for this population as long as the position is not
-				// validated.
-				OnSelectionTransformStarted(/*bForInteractivePlacement*/true);
+				// validated. If the tree is not yet built (for the first instance of a foliage), we delay
+				// the start of the transform until the tree is built.
+				InteractivePlacementState = EInteractivePlacementState::JustStarted;
+				CheckInteractivePlacementAllowance();
 			}
 			if (OutCreatedInstance)
 			{
@@ -1627,8 +1899,8 @@ void AITwinPopulationTool::FImpl::StartDragging(AITwinPopulation* population)
 		DraggedPopTreeUpdateDisabler.reset();
 		DraggedPopTreeUpdateDisabler.emplace(*draggedAssetPopulation);
 	}
-	draggingRotVar = FMath::FRandRange(-instancesRotationVariation, instancesRotationVariation);
-	draggingScaleVar = FMath::FRandRange(-instancesScaleVariation, instancesScaleVariation);
+	DraggingRotVar = FMath::FRandRange(-InstancesRotationVariation, InstancesRotationVariation);
+	DraggingScaleVar = FMath::FRandRange(-InstancesScaleVariation, InstancesScaleVariation);
 	UpdatePopulationsArray();
 	UpdatePopulationsCollisionType();
 }
@@ -1638,6 +1910,8 @@ void AITwinPopulationTool::FImpl::DeleteInstanceFromPopulation(
 {
 	if (population)
 	{
+		PopulationChanged(*population, EChangeType::Deleted, TEXT("key_down"));
+
 		if (instanceIndex >= 0)
 		{
 			population->RemoveInstance(instanceIndex);
@@ -1695,6 +1969,50 @@ void AITwinPopulationTool::FImpl::UpdateGroupId(AITwinSplineHelper const* CurSpl
 		instanceGroupId = newGroupId;
 		CollectEditedPopulations();
 	}
+}
+
+FString AITwinPopulationTool::FImpl::GetTransformationName()
+{
+	switch (transformationMode)
+	{
+	case ETransformationMode::Move:
+		return TEXT("position");
+	case ETransformationMode::Rotate:
+		return TEXT("rotation");
+	case ETransformationMode::Scale:
+		return TEXT("scale");
+	}
+	return TEXT("");
+}
+
+void AITwinPopulationTool::FImpl::PopulationChanged(AITwinPopulation& population, EChangeType change, const FString& eventSource)
+{
+	FFeatureEventProperties properties;
+	properties.ChangeType = change;
+
+	if (population.IsClippingPrimitive())
+	{
+		properties.bIsPrimitive = true;
+		properties.AddProperty(TEXT("cutout_type"), population.GetObjectTypeName());
+		if (change == EChangeType::Modified)
+		{
+			properties.AddProperty(TEXT("cutout_setting"), GetTransformationName());
+		}
+	}
+	else
+	{
+		std::string componentName = population.GetObjectRef();
+		componentName = componentName.substr(componentName.find_last_of("/") + 1);
+		properties.AddProperty(TEXT("component_name"), UTF8_TO_TCHAR(componentName.c_str()));
+		properties.AddProperty(TEXT("component_category"), population.GetObjectTypeName());
+		if (change == EChangeType::Modified)
+		{
+			properties.AddProperty(TEXT("object_setting"), GetTransformationName());
+		}
+	}
+	properties.AddProperty(TEXT("event_source"), eventSource);
+
+	owner.PopulationChangedEvent.Broadcast(properties);
 }
 
 uint32 AITwinPopulationTool::FImpl::PopulateSpline(AITwinSplineHelper const& TargetSpline)
@@ -2311,6 +2629,11 @@ void AITwinPopulationTool::ClearUsedAssets()
 	Impl->ClearUsedAssets();
 }
 
+void AITwinPopulationTool::ReplaceUsedAssets(const TArray<FString>& AssetPaths)
+{
+	Impl->ReplaceUsedAssets(AssetPaths);
+}
+
 AITwinPopulation* AITwinPopulationTool::PreLoadPopulation(const FString& AssetPath)
 {
 	return Impl->PreLoadPopulation(AssetPath);
@@ -2326,7 +2649,7 @@ void AITwinPopulationTool::SetInstanceTransformProxy(IITwinPopulationInstanceTra
 	Impl->SetInstanceTransformProxy(InTransformProxy);
 }
 
-bool AITwinPopulationTool::IsAdditionOfInstancesAllowed(bool& bOutAllowBrush) const
+bool AITwinPopulationTool::IsAdditionOfInstancesAllowed(bool* bOutAllowBrush /*= nullptr*/) const
 {
 	return Impl->IsAdditionOfInstancesAllowed(bOutAllowBrush);
 }
@@ -2387,17 +2710,7 @@ uint32 AITwinPopulationTool::PopulateSpline(AITwinSplineHelper const& TargetSpli
 
 bool AITwinPopulationTool::StartInteractiveCreationImpl()
 {
-	Be::CleanUpGuard RestoreStateCleanup([this]
-	{
-		Impl->bInteractivePlacement = false;
-	});
-	Impl->bInteractivePlacement = true;
-	if (!Impl->AddSingleInstanceAtViewCenter(true))
-	{
-		return false;
-	}
-	RestoreStateCleanup.release();
-	return true;
+	return Impl->StartInteractiveCreation();
 }
 
 bool AITwinPopulationTool::IsInteractiveCreationModeImpl() const
@@ -2419,25 +2732,22 @@ void AITwinPopulationTool::AbortInteractiveCreationImpl(bool bTriggeredFromITS)
 {
 	if (Impl->bInteractivePlacement)
 	{
-		// Remove selected instance, if any, as it was never validated by the user.
-		if (HasSelectedInstance())
-		{
-			// Mark the transform as completed to avoid asserts related to SelectionTreeUpdateDisabler.
-			OnSelectionTransformCompleted();
-
-			DeleteSelectionImpl();
-		}
-		SetSelectedPopulation(nullptr);
-		SelectionChangedEvent.Broadcast();
-		Impl->bInteractivePlacement = false;
-
-		InteractiveCreationAbortedEvent.Broadcast(bTriggeredFromITS);
+		const FImpl::EAbortContext AbortContext = bTriggeredFromITS
+			? FImpl::EAbortContext::UserInput_ITS
+			: FImpl::EAbortContext::UserInput_Unreal;
+		Impl->AbortInteractiveCreation(AbortContext);
+	}
+	// See discussion in AzDev#2085006: the escape key should also cancel the brushing mode.
+	// This is done by changing the mode from iTwin Studio.
+	else if (Impl->IsEnabled() && Impl->IsBrushModeActivated())
+	{
+		InteractiveCreationAbortedEvent.Broadcast(this, bTriggeredFromITS);
 	}
 }
 
 void AITwinPopulationTool::ValidateInteractiveCreationImpl(bool bTriggeredFromITS)
 {
-	if (!ensure(Impl->bInteractivePlacement))
+	if (!Impl->bInteractivePlacement)
 		return;
 	if (HasSelectedInstance())
 	{
@@ -2446,8 +2756,8 @@ void AITwinPopulationTool::ValidateInteractiveCreationImpl(bool bTriggeredFromIT
 	else
 	{
 		// No instance is ready to be validated: just abort the creation.
-		Impl->bInteractivePlacement = false;
-		InteractiveCreationAbortedEvent.Broadcast(bTriggeredFromITS);
+		Impl->SetInteractivePlacement(false);
+		InteractiveCreationAbortedEvent.Broadcast(this, bTriggeredFromITS);
 	}
 }
 

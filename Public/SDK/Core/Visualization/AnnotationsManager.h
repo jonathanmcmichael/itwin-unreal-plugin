@@ -24,7 +24,7 @@ MODULE_EXPORT namespace AdvViz::SDK
 	using namespace Tools;
 	struct Annotation : public SavableItemWithID
 	{
-		std::array<double, 3> position;
+		double3 position = { 0., 0., 0. };
 		std::string text;
 		std::optional<int> fontSize;
 		std::optional<std::string> name;

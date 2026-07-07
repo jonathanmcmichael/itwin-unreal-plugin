@@ -897,7 +897,12 @@ public:
 
 	FSceneTilesCont KnownTiles;
 
+	/// Tile visitor: the visited tiles are _not_ const
 	void ForEachKnownTile(std::function<void(TITwinSceneTilePtr const&)> const& Func) const;
+	/// Tile visitor: the visited tiles are _not_ const.
+	/// Visitor can stop the visit at once by returning false. The whole method also returns false if the visit was
+	/// interrupted by one of the calls, true otherwise.
+	bool ForEachKnownTile(std::function<bool(TITwinSceneTilePtr const&)> const& Func) const;
 	[[nodiscard]] TITwinSceneTilePtr KnownTile(ITwinScene::TileIdx const Rank) const;
 	TITwinSceneTilePtr& KnownTileSLOW(ICesiumLoadedTile& CesiumTile, ITwinScene::TileIdx* Rank = nullptr);
 	[[nodiscard]] TITwinSceneTilePtr FindKnownTileSLOW(CesiumTileID const& TileId) const;
@@ -1013,7 +1018,7 @@ public:
 	// textures (even for those we'll probably merge the two as well in the future)
 	//[[nodiscard]] bool TilesHaveNewSelectingAndHidingTextures(bool& bWaitingForTextures);
 	void HandleNew4DAnimTexturesNeedingSetupInMaterials();
-	void HandleNewSelectingAndHidingTextures/*NeedingSetupInMaterials*/();
+	bool HandleNewSelectingAndHidingTextures/*NeedingSetupInMaterials*/();
 
 	void SetTimelineGetter(std::function<FITwinScheduleTimeline const& ()> const& InTimelineGetter)
 		{ TimelineGetter = InTimelineGetter; }

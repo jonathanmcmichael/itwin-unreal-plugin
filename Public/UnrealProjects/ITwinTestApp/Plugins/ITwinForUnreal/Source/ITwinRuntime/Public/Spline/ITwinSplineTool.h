@@ -91,6 +91,9 @@ public:
 	UFUNCTION(Category = "iTwin", BlueprintCallable)
 	void DeleteSpline(AITwinSplineHelper* SplineHelper);
 
+	//! Deletes the spline passed as parameter at scene load time (without broadcasting any events).
+	void DeleteSplineAtLoad(AITwinSplineHelper* SplineHelper);
+
 	//! Returns true if the current point can be deleted (for the cutout feature, it prevents
 	//! having less than 3 points to keep a non-empty area).
 	UFUNCTION(Category = "iTwin", BlueprintCallable)
@@ -201,6 +204,9 @@ public:
 	bool LoadSpline(const AdvViz::SDK::ISplinePtr& spline,
 		TilesetAccessArray&& InCutoutTargets = {});
 
+	//! Returns true if the tool is currently loading a spline (from the decoration service or Scene API).
+	bool IsLoadingSpline() const;
+
 	//! Sets the AdvViz::SDK spline manager (which stores the data for splines and saves it on the decoration service).
 	void SetSplinesManager(const std::shared_ptr<AdvViz::SDK::ISplinesManager>& splinesManager);
 
@@ -222,6 +228,10 @@ public:
 	UPROPERTY()
 	FSplineSelectionEvent SplineSelectionEvent;
 
+	DECLARE_DYNAMIC_MULTICAST_DELEGATE(FSplineMovingStartedEvent);
+	UPROPERTY()
+	FSplineMovingStartedEvent SplineMovingStartedEvent;
+
 	DECLARE_DYNAMIC_MULTICAST_DELEGATE(FSplinePointSelectedEvent);
 	UPROPERTY()
 	FSplinePointSelectedEvent SplinePointSelectedEvent;
@@ -233,6 +243,14 @@ public:
 	DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FSplinePointMovedEvent, bool, bMovedInITS);
 	UPROPERTY()
 	FSplinePointMovedEvent SplinePointMovedEvent;
+
+	DECLARE_DYNAMIC_MULTICAST_DELEGATE(FSplinePointMovingStartedEvent);
+	UPROPERTY()
+	FSplinePointMovingStartedEvent SplinePointMovingStartedEvent;
+
+	DECLARE_DYNAMIC_MULTICAST_DELEGATE(FSplinePointAddedEvent);
+	UPROPERTY()
+	FSplinePointAddedEvent SplinePointAddedEvent;
 
 	DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FSplineAddedEvent, AITwinSplineHelper*, NewSpline);
 	UPROPERTY()
@@ -252,6 +270,7 @@ protected:
 	virtual bool DoMouseClickActionImpl() override;
 	virtual bool HasSelectionImpl() const override;
 	virtual FTransform GetSelectionTransformImpl() const override;
+	virtual void OnSelectionTransformStartedImpl() override;
 	virtual void SetSelectionTransformImpl(const FTransform & Transform) override;
 	virtual void DeleteSelectionImpl() override;
 	virtual void ResetToDefaultImpl() override;

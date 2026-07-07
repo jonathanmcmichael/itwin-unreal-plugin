@@ -37,5 +37,5 @@ private:
 	// A Box tile excluder can reference several boxes.
 	FBoxPropertiesArray BoxPropertiesArray;
 
-	friend class AITwinClippingTool;
+	friend class UITwinClippingRenderer;
 };

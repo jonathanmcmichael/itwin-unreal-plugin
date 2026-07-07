@@ -842,7 +842,8 @@ bool FITwinSceneTile::TPickSelectable(SelectableHelper const& PickHelper, Select
 	// Bad! See similar comment at the beginning of FITwinSceneMapping::PickVisibleElement
 	//if (Opts.MakeSelected() && InElemID == SelectedElement)
 	//	return false;
-	ensure(InElemID != SelectableHelper::NoneSelected() || Opts.MakeSelected());//de-selecting requires bSelecElem==true...
+	ensure(InElemID != SelectableHelper::NoneSelected()
+		|| Opts.MakeSelected());//de-selecting requires MakeSelected(true)...
 
 	// 0. SAFETY measure
 	if (Opts.MakeSelected() && SelectingAndHiding

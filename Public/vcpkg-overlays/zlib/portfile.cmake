@@ -33,7 +33,15 @@ if(NOT DEFINED VCPKG_BUILD_TYPE OR VCPKG_BUILD_TYPE STREQUAL "release")
     if(VCPKG_TARGET_IS_WINDOWS)
         vcpkg_replace_string("${CURRENT_BUILDTREES_DIR}/${TARGET_TRIPLET}-rel/zlib.pc" "-lz" "-lzlib")
     endif()
-    file(COPY "${CURRENT_BUILDTREES_DIR}/${TARGET_TRIPLET}-rel/zlib.pc" DESTINATION "${CURRENT_PACKAGES_DIR}/lib/pkgconfig")
+	# AdvViz: replaced this original line:
+    #	file(COPY "${CURRENT_BUILDTREES_DIR}/${TARGET_TRIPLET}-rel/zlib.pc" DESTINATION "${CURRENT_PACKAGES_DIR}/lib/pkgconfig")
+	# by the one below, because the file was not actually copied for some people! (eg. Kieran, Charles)
+	# Maybe because of this detail in the doc for the COPY(=INSTALL) operation: "optimizes out a file if it exists at the destination with the same timestamp"
+	# although I see no reason why the file would exist with the same timestamp especially since the problem clearly occurred even when cleaning everything
+	# before running CMake...
+	# COPY_FILE does not optimize out the copy unless ONLY_IF_DIFFERENT is passed, and "different" here means "different content" anyway.
+	# Maybe the INPUT_MAY_BE_RECENT option also adds some magic that helps work around Windows filesystem "quirks" X-|
+    file(COPY_FILE "${CURRENT_BUILDTREES_DIR}/${TARGET_TRIPLET}-rel/zlib.pc" "${CURRENT_PACKAGES_DIR}/lib/pkgconfig/zlib.pc" INPUT_MAY_BE_RECENT)
 endif()
 if(NOT DEFINED VCPKG_BUILD_TYPE OR VCPKG_BUILD_TYPE STREQUAL "debug")
     if(VCPKG_TARGET_IS_WINDOWS)

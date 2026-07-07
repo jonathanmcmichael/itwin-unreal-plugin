@@ -559,8 +559,14 @@ public:
 	UFUNCTION()
 	bool HasTilesetLoadFailure() const;
 
+	UFUNCTION()
+	void PlayMovieSequencer();
+	UFUNCTION()
+	void StopOrPauseMovieSequencer();
+
 private:
-	void SetResolvedChangesetId(FString const& InChangesetId);
+	void ResetResolvedChangesetId();
+	void SetResolvedChangesetId(FString const& InChangesetId, bool bValidId = true);
 	bool IsFetchingExportForAutoRefresh() const;
 
 	/// overridden from AITwinServiceActor:

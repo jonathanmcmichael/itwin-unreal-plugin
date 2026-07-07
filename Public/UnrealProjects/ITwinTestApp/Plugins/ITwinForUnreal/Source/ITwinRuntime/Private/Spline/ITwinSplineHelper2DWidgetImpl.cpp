@@ -42,6 +42,7 @@ namespace ITwin
 struct UITwinSplineHelper2DWidgetImpl::FImpl
 {
 	bool bIsMouseOverSpline = false;
+	TWeakObjectPtr<UITwinSplineHelper2DWidgetImpl> SlaveBeingHovered;
 	std::optional<FITwinViewProjectionState> LastViewProjectionState;
 
 
@@ -66,12 +67,99 @@ struct UITwinSplineHelper2DWidgetImpl::FImpl
 	}
 };
 
+namespace
+{
+	static TSet<UITwinSplineHelper2DWidgetImpl*> sSlaveWidgets;
+}
+
+/*static*/
+UITwinSplineHelper2DWidgetImpl* UITwinSplineHelper2DWidgetImpl::sMasterInstance = nullptr;
+
+/*static*/
+void UITwinSplineHelper2DWidgetImpl::SetMasterInstance(UITwinSplineHelper2DWidgetImpl* InMasterInstance)
+{
+	sMasterInstance = InMasterInstance;
+}
+
+/*static*/
+void UITwinSplineHelper2DWidgetImpl::SetMasterInstanceVisibility(ESlateVisibility InVisibility)
+{
+	if (sMasterInstance)
+	{
+		sMasterInstance->SetVisibility(InVisibility);
+	}
+}
+
+/*static*/
+void UITwinSplineHelper2DWidgetImpl::RegisterSlaveWidget(UITwinSplineHelper2DWidgetImpl* InSlaveWidget)
+{
+	sSlaveWidgets.FindOrAdd(InSlaveWidget);
+}
+
+/*static*/
+void UITwinSplineHelper2DWidgetImpl::UnregisterSlaveWidget(UITwinSplineHelper2DWidgetImpl* InSlaveWidget)
+{
+	if (sSlaveWidgets.Contains(InSlaveWidget))
+	{
+		// Before removing the slave widget from the manager, make sure we remove its spline-chunks
+		// sub-widgets.
+		if (IsValid(InSlaveWidget))
+		{
+			InSlaveWidget->EnsureSplineChunkWidgetCount(0);
+		}
+
+		sSlaveWidgets.Remove(InSlaveWidget);
+	}
+}
 
 UITwinSplineHelper2DWidgetImpl::UITwinSplineHelper2DWidgetImpl(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 	, Impl(MakePimpl<FImpl>())
 {
 
+}
+
+void UITwinSplineHelper2DWidgetImpl::BeginDestroy()
+{
+	Super::BeginDestroy();
+
+	if (this == sMasterInstance)
+	{
+		sMasterInstance = nullptr;
+	}
+	else
+	{
+		UnregisterSlaveWidget(this);
+	}
+}
+
+void UITwinSplineHelper2DWidgetImpl::OnVisibilityUpdated()
+{
+	if (this != sMasterInstance)
+	{
+		// If this is a slave widget, we need to update the visibility of the spline chunk widgets in the master.
+		auto const ThisVisibility = GetVisibility();
+		for (UITwinSplineWithPin2DWidgetImpl* SplineChunkWidget : SplineChunkWidgets)
+		{
+			if (SplineChunkWidget)
+			{
+				SplineChunkWidget->SetVisibility(ThisVisibility);
+			}
+		}
+		// If all slaves are hidden, we can hide the master as well.
+		bool bHasVisibleSlaves = false;
+		for (UITwinSplineHelper2DWidgetImpl* SlaveWidget : sSlaveWidgets)
+		{
+			// We cannot test 'IsVisible' here, as the result would depend on the master widget's visibility.
+			if (SlaveWidget->GetVisibility() != ESlateVisibility::Collapsed
+				&& SlaveWidget->GetVisibility() != ESlateVisibility::Hidden)
+			{
+				bHasVisibleSlaves = true;
+				break;
+			}
+		}
+		SetMasterInstanceVisibility(bHasVisibleSlaves ? ESlateVisibility::SelfHitTestInvisible : ESlateVisibility::Collapsed);
+	}
 }
 
 void UITwinSplineHelper2DWidgetImpl::NativeConstruct()
@@ -85,7 +173,20 @@ void UITwinSplineHelper2DWidgetImpl::NativeTick(const FGeometry& MyGeometry, flo
 {
 	Super::NativeTick(MyGeometry, InDeltaTime);
 
-	UpdateSplineWidgets();
+	// The master instance is the only one that is actually ticking, and it will update all slave widgets as
+	// needed.
+	if (this == sMasterInstance)
+	{
+		for (UITwinSplineHelper2DWidgetImpl* SlaveWidget : sSlaveWidgets)
+		{
+			SlaveWidget->UpdateSplineWidgets();
+		}
+	}
+	else
+	{
+		ensure(false); // Only the master instance should be ticking.
+		UpdateSplineWidgets();
+	}
 }
 
 void UITwinSplineHelper2DWidgetImpl::SetSplineHelper(AITwinSplineHelper* InSplineHelper)
@@ -244,6 +345,11 @@ struct UITwinSplineHelper2DWidgetImpl::FScreenSpaceProjector
 	static bool IsDubious2DTangent(FVector2D const& ScreenTangent)
 	{
 		BE_ASSERT(ViewportSize.X > 0 && ViewportSize.Y > 0);
+
+		// Check for NaN or infinite values
+		if (!FMath::IsFinite(ScreenTangent.X) || !FMath::IsFinite(ScreenTangent.Y))
+			return true;
+
 		static constexpr double LongTangentRatio = 0.333;
 		return FMath::Abs(ScreenTangent.X) >= ViewportSize.X * LongTangentRatio
 			|| FMath::Abs(ScreenTangent.Y) >= ViewportSize.Y * LongTangentRatio;
@@ -377,9 +483,11 @@ void UITwinSplineHelper2DWidgetImpl::EnsureSplineChunkWidgetCount(int32 DesiredC
 
 	const auto UIColors = MakeUIColorsFromTint(GetTint());
 
+	UITwinSplineHelper2DWidgetImpl* ContainerWidget = sMasterInstance ? sMasterInstance : this;
+
 	while (SplineChunkWidgets.Num() < DesiredCount)
 	{
-		UITwinSplineWithPin2DWidgetImpl* NewWidget = CreateWidget<UITwinSplineWithPin2DWidgetImpl>(this, SplineChunkClass);
+		UITwinSplineWithPin2DWidgetImpl* NewWidget = CreateWidget<UITwinSplineWithPin2DWidgetImpl>(ContainerWidget, SplineChunkClass);
 		if (!ensure(NewWidget))
 			return;
 
@@ -390,7 +498,7 @@ void UITwinSplineHelper2DWidgetImpl::EnsureSplineChunkWidgetCount(int32 DesiredC
 		NewWidget->SetSplineThickness(GetThickness());
 		NewWidget->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
 
-		UCanvasPanelSlot* CanvasSlot = RootCanvas->AddChildToCanvas(NewWidget);
+		UCanvasPanelSlot* CanvasSlot = ContainerWidget->RootCanvas->AddChildToCanvas(NewWidget);
 		if (CanvasSlot)
 		{
 			CanvasSlot->SetAnchors(FAnchors(0.f, 0.f, 1.f, 1.f));
@@ -425,6 +533,14 @@ void UITwinSplineHelper2DWidgetImpl::ClearSplineChunkWidgets()
 
 void UITwinSplineHelper2DWidgetImpl::UpdateSplineWidgets()
 {
+	if (GetVisibility() == ESlateVisibility::Collapsed
+		|| GetVisibility() == ESlateVisibility::Hidden)
+	{
+		// With the new centralized system, UpdateSplineWidgets is now called from the master, so me must
+		// test the visibility of this slave manually.
+		return;
+	}
+
 	AITwinSplineHelper* SplineActor = SplineHelper.Get();
 	if (!SplineActor || !SplineActor->GetSplineComponent())
 	{
@@ -473,20 +589,27 @@ void UITwinSplineHelper2DWidgetImpl::UpdateSplineWidgets()
 
 			Widget->SetStartAndEnd(Chunk2DInfo);
 
-			// If any of the points/tangents is invalid, we draw as multi-line.
-			bool bDrawAsMultiLine = !Chunk2DInfo.AllValid();
-			if (!bDrawAsMultiLine && !bLinearTangents)
+			bool bDrawAsMultiLine = false;
+			if (Chunk2DInfo.AllValid())
 			{
 				// Even though both points could be projected, the tangents can be instable when the camera
 				// is near a segment.
+				// Note that it can even lead to crashes in DrawSpline if the tangents are too long, so we
+				// must be careful here (see crash AzDev#2080574).
 				bDrawAsMultiLine = Projector.IsDubious2DTangent(Chunk2DInfo.StartDir)
 					|| Projector.IsDubious2DTangent(Chunk2DInfo.EndDir);
 			}
+			else
+			{
+				// If any of the projected points/tangents is invalid, we draw as multi-line.
+				bDrawAsMultiLine = true;
+			}
+
 			if (bDrawAsMultiLine)
 			{
-				// Draw as multi-line to avoid absurd tangents. In this case, we sample the spline chunk at
-				// a higher resolution. If the sampling fails, the widget will simply not draw anything,
-				// which is better than drawing a single segment with absurd tangents.
+				// Draw as multi-line to avoid absurd tangents (or even crashes!). In this case, we sample
+				// the spline chunk at a higher resolution. If the sampling fails, the widget will simply
+				// not draw anything, which is better than drawing a single segment with absurd tangents.
 				SampleSplineChunkWidget(*Widget, 128 /*NumSubdivisions*/);
 			}
 			UITwinSpline2DWidget* SplineWidget = Widget->GetSpline2DWidget();
@@ -497,24 +620,23 @@ void UITwinSplineHelper2DWidgetImpl::UpdateSplineWidgets()
 
 			Widget->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
 
+			bool bEnableStartButton = true;
+			bool bEnableEndButton = true;
 			// In interactive creation mode, only the first and last point can be interacted with, and
 			// clicking on them should terminate the interactive creation.
 			if (bInteractiveCreation)
 			{
 				// NB: we test N-2 below, as this is the last point actually validated by the user ; the last
 				// point, during interactive drawing, is always following the mouse...
-				const bool bEnableInteraction = (ChunkIndex == 0 || ChunkIndex == NumPoints - 2);
+				bEnableStartButton = (ChunkIndex == 0 || ChunkIndex == NumPoints - 2);
 				// The End button should never be enabled during interactive creation (of animation paths,
 				// typically), or else the creation will always be aborted upon the 2nd click!
-				Widget->EnableStartEndButtonInteractions(bEnableInteraction, false);
+				bEnableEndButton = false;
+			}
+			Widget->EnableStartEndButtonInteractions(bEnableStartButton, bEnableEndButton);
 
-				auto ChunkSlot = Cast<UCanvasPanelSlot>(Widget->Slot);
-				ChunkSlot->SetZOrder(bEnableInteraction ? 1 : 0);
-			}
-			else
-			{
-				Widget->EnableButtonInteractions(true);
-			}
+			auto ChunkSlot = Cast<UCanvasPanelSlot>(Widget->Slot);
+			ChunkSlot->SetZOrder(bEnableStartButton ? 1 : 0);
 		}
 		else
 		{
@@ -550,6 +672,9 @@ void UITwinSplineHelper2DWidgetImpl::OnSplinePointPicked(int32 PickedPointIndex)
 bool UITwinSplineHelper2DWidgetImpl::SampleSplineChunkWidget(const UITwinSplineWithPin2DWidgetImpl& ChunkWidget,
 	int32 NumSubdivisions) const
 {
+	// Only slave widgets should call this function, as the master has no spline helper to sample from.
+	BE_ASSERT(this != sMasterInstance);
+
 	UITwinSpline2DWidget* SplineWidget = ChunkWidget.GetSpline2DWidget();
 	if (!SplineWidget)
 		return false;
@@ -566,16 +691,12 @@ bool UITwinSplineHelper2DWidgetImpl::SampleSplineChunkWidget(const UITwinSplineW
 	}
 }
 
-const UITwinSplineWithPin2DWidgetImpl* UITwinSplineHelper2DWidgetImpl::FindSplineChunkUnderMouse(
-	const FPointerEvent& InMouseEvent,
-	FVector2D& OutClosestPoint2D,
-	FVector::FReal ExtraTolerance /*= 0.*/) const
+const UITwinSplineWithPin2DWidgetImpl* UITwinSplineHelper2DWidgetImpl::FindClosestSplineChunk(
+	const FVector2D& ScreenPosition,
+	FClosestImpactInfo& OutImpactInfo,
+	FVector::FReal ExtraTolerance) const
 {
-	const FVector2D ScreenPosition = InMouseEvent.GetScreenSpacePosition();
-
 	const UITwinSplineWithPin2DWidgetImpl* BestCandidate = nullptr;
-	FVector::FReal BestDistanceSquaredToSpline = 0.;
-
 	for (const UITwinSplineWithPin2DWidgetImpl* ChunkWidget : SplineChunkWidgets)
 	{
 		if (!ChunkWidget || ChunkWidget->GetVisibility() == ESlateVisibility::Collapsed)
@@ -598,19 +719,36 @@ const UITwinSplineWithPin2DWidgetImpl* UITwinSplineHelper2DWidgetImpl::FindSplin
 
 		// Then test the distance to the mouse position.
 		if (SplineWidget->IsScreenPositionOverSpline(SplineGeometry, ScreenPosition,
-													 DistanceSq, ClosestPoint2D,
-													 ExtraTolerance))
+			DistanceSq, ClosestPoint2D,
+			ExtraTolerance))
 		{
-			if (!BestCandidate || DistanceSq < BestDistanceSquaredToSpline)
+			if (OutImpactInfo.HasNewClosestImpact(ClosestPoint2D, DistanceSq))
 			{
 				BestCandidate = ChunkWidget;
-				BestDistanceSquaredToSpline = DistanceSq;
-				OutClosestPoint2D = ClosestPoint2D;
 			}
 		}
 	}
 
 	return BestCandidate;
+}
+
+
+const UITwinSplineWithPin2DWidgetImpl* UITwinSplineHelper2DWidgetImpl::FindSplineChunkUnderMouse(
+	const FPointerEvent& InMouseEvent,
+	FVector2D& OutClosestPoint2D,
+	FVector::FReal ExtraTolerance /*= 0.*/) const
+{
+	OutClosestPoint2D = { -1., -1. };
+
+	const FVector2D ScreenPosition = InMouseEvent.GetScreenSpacePosition();
+	FClosestImpactInfo ClosestImpactInfo;
+	const UITwinSplineWithPin2DWidgetImpl* ChunkWidget =
+		FindClosestSplineChunk(ScreenPosition, ClosestImpactInfo, ExtraTolerance);
+	if (ChunkWidget && ensure(ClosestImpactInfo.ClosestPoint2D))
+	{
+		OutClosestPoint2D = *ClosestImpactInfo.ClosestPoint2D;
+	}
+	return ChunkWidget;
 }
 
 inline bool UITwinSplineHelper2DWidgetImpl::IsPointInsertionAllowed() const
@@ -626,17 +764,31 @@ inline bool UITwinSplineHelper2DWidgetImpl::IsPointInsertionAllowed() const
 FReply UITwinSplineHelper2DWidgetImpl::NativeOnMouseMove(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
 {
 	const bool bOverSplineOld(Impl->bIsMouseOverSpline);
-	if (IsPointInsertionAllowed())
+
+	if (ensure(this == sMasterInstance))
 	{
+		bool bIsMouseOverSpline = false;
 		// Test if mouse if over a spline chunk, and if so, change the cursor to indicate that the user can
 		// click to select the chunk (and insert a point in the spline).
 		FVector2D ClosestPoint2D = { -1., -1. };
-		Impl->bIsMouseOverSpline = (FindSplineChunkUnderMouse(InMouseEvent, ClosestPoint2D, 2.0f) != nullptr);
+
+		const FVector2D ScreenPosition = InMouseEvent.GetScreenSpacePosition();
+		FClosestImpactInfo ClosestImpactInfo;
+
+		UITwinSplineHelper2DWidgetImpl* SlaveBeingHovered = nullptr;
+		for (UITwinSplineHelper2DWidgetImpl* SlaveWidget : sSlaveWidgets)
+		{
+			if (SlaveWidget->IsPointInsertionAllowed()
+				&& SlaveWidget->FindClosestSplineChunk(ScreenPosition, ClosestImpactInfo, 2.0f))
+			{
+				bIsMouseOverSpline = true;
+				SlaveBeingHovered = SlaveWidget;
+			}
+		}
+		Impl->bIsMouseOverSpline = bIsMouseOverSpline;
+		Impl->SlaveBeingHovered = bIsMouseOverSpline ? SlaveBeingHovered : nullptr;
 	}
-	else
-	{
-		Impl->bIsMouseOverSpline = false;
-	}
+
 	const FReply Reply = Super::NativeOnMouseMove(InGeometry, InMouseEvent);
 
 	if (bOverSplineOld != Impl->bIsMouseOverSpline)
@@ -699,22 +851,28 @@ FVector UITwinSplineHelper2DWidgetImpl::GetClosestPointOnSplineMatching2D(
 
 FReply UITwinSplineHelper2DWidgetImpl::NativeOnMouseButtonDown(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
 {
+	BE_ASSERT(this == sMasterInstance);
+
 	bool bHasInsertedPoint = false;
-	if (Impl->bIsMouseOverSpline && IsPointInsertionAllowed())
+	if (Impl->bIsMouseOverSpline
+		&& Impl->SlaveBeingHovered.IsValid()
+		&& Impl->SlaveBeingHovered->IsPointInsertionAllowed())
 	{
+		UITwinSplineHelper2DWidgetImpl* TargetWidget = Impl->SlaveBeingHovered.Get();
 		FVector2D ClosestPoint2D = { -1., -1. };
-		const UITwinSplineWithPin2DWidgetImpl* PickedChunk = FindSplineChunkUnderMouse(InMouseEvent, ClosestPoint2D, 2.0f);
+		const UITwinSplineWithPin2DWidgetImpl* PickedChunk =
+			TargetWidget->FindSplineChunkUnderMouse(InMouseEvent, ClosestPoint2D, 2.0f);
 
 		if (PickedChunk && ensure(PickedChunk->GetSplineChunkIndex() >= 0))
 		{
-			AITwinSplineHelper* SplineActor = SplineHelper.Get();
+			AITwinSplineHelper* SplineActor = TargetWidget->SplineHelper.Get();
 			const USplineComponent* SplineComp = SplineActor ? SplineActor->GetSplineComponent() : nullptr;
 			AITwinSplineTool* SplineTool = ITwin::GetSplineTool(GetWorld());
 			if (ensure(SplineTool && !SplineTool->IsInteractiveCreationMode() && SplineComp))
 			{
 				// Get the 3D point on curve corresponding to the closest 2D point, and insert a new point
 				// in the spline at this position.
-				const FVector WorldPosition = GetClosestPointOnSplineMatching2D(*SplineComp, ClosestPoint2D,
+				const FVector WorldPosition = TargetWidget->GetClosestPointOnSplineMatching2D(*SplineComp, ClosestPoint2D,
 					PickedChunk->GetSplineChunkIndex());
 				bHasInsertedPoint = SplineTool->InsertPointAt(SplineActor,
 					PickedChunk->GetSplineChunkIndex() + 1,
@@ -732,6 +890,9 @@ bool UITwinSplineHelper2DWidgetImpl::SampleSplineChunk(TArray<FVector2D>& OutSam
 	int32 ChunkIndex,
 	int32 NumSubdivisions) const
 {
+	// Only slave widgets should call this function, as the master has no spline helper to sample from.
+	BE_ASSERT(this != sMasterInstance);
+
 	if (!SplineHelper.IsValid())
 		return false;
 	const USplineComponent* SplineComponent = SplineHelper->GetSplineComponent();
@@ -821,4 +982,35 @@ bool UITwinSplineHelper2DWidgetImpl::SampleSplineChunk(TArray<FVector2D>& OutSam
 		OutSampledPositions.Emplace(FVector2D{ Pos.x, Pos.y });
 	}
 	return !OutSampledPositions.IsEmpty();
+}
+
+/*static*/
+AITwinSplineHelper* UITwinSplineHelper2DWidgetImpl::FindClosestSplineToScreenPosition(const FVector2D& ScreenPosition,
+	FVector::FReal& OutClosestDistance,
+	const TFunction<bool(const AITwinSplineHelper&)>& IgnoreSpline)
+{
+	FClosestImpactInfo ClosestImpactInfo;
+	AITwinSplineHelper* BestCandidate = nullptr;
+	for (UITwinSplineHelper2DWidgetImpl* SlaveWidget : sSlaveWidgets)
+	{
+		if (IgnoreSpline && SlaveWidget->SplineHelper.IsValid()
+			&& IgnoreSpline(*SlaveWidget->SplineHelper))
+		{
+			continue;
+		}
+		// We cannot test 'IsVisible' here, as the result would depend on the master widget's visibility.
+		if (SlaveWidget->FindClosestSplineChunk(ScreenPosition, ClosestImpactInfo, 200.0 /*ExtraTolerance*/))
+		{
+			BestCandidate = SlaveWidget->SplineHelper.Get();
+		}
+	}
+	if (ClosestImpactInfo.ClosestDistanceSquared)
+	{
+		OutClosestDistance = FMath::Sqrt(*ClosestImpactInfo.ClosestDistanceSquared);
+	}
+	else
+	{
+		OutClosestDistance = -1.;
+	}
+	return BestCandidate;
 }

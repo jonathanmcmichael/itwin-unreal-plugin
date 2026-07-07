@@ -65,24 +65,15 @@ void FITwinClippingBoxInfo::DeactivatePrimitiveInExcluder(UITwinTileExcluderBase
 	}
 }
 
-void FITwinClippingBoxInfo::SetEdgeVisibility(bool bVisible)
+int32 FITwinClippingBoxInfo::CountRequiredEdgeSplines() const
 {
-	SetEdgeSplinesVisibility(bVisible);
+	// We use 6 splines to represent the edges of the box, one spline per face. Each spline is a closed loop
+	// of 4 points.
+	return 6;
 }
 
-void FITwinClippingBoxInfo::CreateEdgeSplines(AITwinSplineTool* SplineTool)
+void FITwinClippingBoxInfo::DoCreateEdgeSplines(TArray<TObjectPtr<AITwinSplineHelper>>& OutEdgeSplines, AITwinSplineTool& SplineTool)
 {
-	if (!ensure(SplineTool != nullptr))
-	{
-		return;
-	}
-	if (BoxEdgeSplines.Num() == 6)
-	{
-		return; // Splines already created
-	}
-	auto const PreviousUsage = SplineTool->GetUsage();
-	SplineTool->SetUsage(EITwinSplineUsage::EdgeDisplayHelper);
-
 	static const TArray<FVector> CubePositions =
 	{
 		{ -0.5, -0.5, -0.5 },
@@ -105,60 +96,11 @@ void FITwinClippingBoxInfo::CreateEdgeSplines(AITwinSplineTool* SplineTool)
 	};
 	for (int i(0); i < 6; ++i)
 	{
-		auto EdgeSpline = SplineTool->AddSpline(FVector::ZeroVector, CubeFaces[i]);
-		BoxEdgeSplines.Add(EdgeSpline);
+		auto EdgeSpline = SplineTool.AddSpline(FVector::ZeroVector, CubeFaces[i]);
+		OutEdgeSplines.Add(EdgeSpline);
 #if WITH_EDITOR
 		EdgeSpline->SetActorLabel(FString::Printf(TEXT("BoxEdgeSpline_%d"), i));
 #endif
 		EdgeSpline->SetActorHiddenInGame(true);
 	}
-	SplineTool->SetUsage(PreviousUsage);
-}
-
-void FITwinClippingBoxInfo::UpdateEdgeSplinesTransform(FTransform const& InstanceTransform)
-{
-	for (auto& Spline : BoxEdgeSplines)
-	{
-		if (Spline)
-		{
-			Spline->SetTransform(InstanceTransform, false /*bMarkSplineForSaving*/);
-		}
-	}
-}
-
-void FITwinClippingBoxInfo::SetEdgeSplinesSelected(bool bSelected)
-{
-	for (auto& Spline : BoxEdgeSplines)
-	{
-		if (Spline)
-		{
-			Spline->SetSelected(bSelected);
-		}
-	}
-
-}
-
-void FITwinClippingBoxInfo::SetEdgeSplinesVisibility(bool bVisible)
-{
-	for (auto& Spline : BoxEdgeSplines)
-	{
-		if (Spline)
-		{
-			Spline->SetActorHiddenInGame(!bVisible);
-		}
-	}
-}
-
-void FITwinClippingBoxInfo::BeforeDestroy()
-{
-	// Make sure to destroy the edge splines before the box is destroyed, to avoid keeping ghosts of the box
-	// edges in the scene after the box has been removed.
-	for (auto& Spline : BoxEdgeSplines)
-	{
-		if (Spline)
-		{
-			Spline->Destroy();
-		}
-	}
-	BoxEdgeSplines.Empty();
 }

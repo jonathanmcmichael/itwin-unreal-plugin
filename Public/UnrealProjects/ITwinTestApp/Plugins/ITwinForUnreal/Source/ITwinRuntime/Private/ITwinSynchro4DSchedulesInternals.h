@@ -130,6 +130,8 @@ public:
 	void HideNonAnimatedDuplicates(const TITwinSceneTilePtr& SceneTilePtr, FElementsGroup const& NonAnimatedDuplicates);
 	void OnDownloadProgressed(double PercentComplete, bool bHasPlayableSchedule = false);
 	FITwinSchedulesImport& GetSchedulesApiReadyForUnitTesting();
+	void SetMeshesDynamicShadows(bool bDynamic);
+	void UpdateS4DClassDefaults();
 
 	static FTransform ComputeTransformFromFinalizedKeyframe(FITwinCoordConversions const& CoordConv,
 		ITwin::Timeline::PTransform const& TransfoKey, FVector const& ElementsBBoxCenter,
@@ -143,6 +145,4 @@ public:
 		ITwin::Timeline::FDeferredPlaneEquation const& Deferred, FBox const& ElementsBox);
 	static void FinalizeAnchorPos(FITwinCoordConversions const& CoordConv,
 		ITwin::Timeline::FDeferredAnchor const& Deferred, FBox const& ElementsBox);
-
-	void SetMeshesDynamicShadows(bool bDynamic);
 };

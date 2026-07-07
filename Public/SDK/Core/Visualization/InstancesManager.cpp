@@ -20,6 +20,8 @@
 
 namespace AdvViz::SDK
 {
+	static const std::string CUTOUT_SUB_PATH = "Clipping/Clipping";
+
 	class InstancesManager::Impl : public std::enable_shared_from_this<Impl>
 	{
 
@@ -579,6 +581,16 @@ namespace AdvViz::SDK
 			return {};
 		}
 
+		inline bool ShouldExcludeFromSaving(IInstance const& inst) const
+		{
+			if (inst.GetObjectRef().find(CUTOUT_SUB_PATH) != std::string::npos)
+			{
+				// Cutout instances are now saved through the Scene API.
+				return true;
+			}
+			return false;
+		}
+
 		void AsyncSaveInstances(
 			std::string const& decorationId,
 			ObjRefAndGPId const& objRefAndGroup,
@@ -600,6 +612,11 @@ namespace AdvViz::SDK
 			for (auto& instPtr : instances)
 			{
 				auto inst = instPtr->GetAutoLock();
+				if (ShouldExcludeFromSaving(*inst))
+				{
+					continue;
+				}
+
 				if (inst->GetAnimPathId())
 				{
 					// update animation path database id within the instance
@@ -1059,8 +1076,8 @@ namespace AdvViz::SDK
 				for (const auto& inst : it.second)
 				{
 					auto lockedInst = inst->GetAutoLock();
-					if (!lockedInst->HasDBIdentifier() ||
-						lockedInst->ShouldSave())
+					if ((!lockedInst->HasDBIdentifier() || lockedInst->ShouldSave())
+						&& !ShouldExcludeFromSaving(*lockedInst))
 					{
 						return true;
 					}

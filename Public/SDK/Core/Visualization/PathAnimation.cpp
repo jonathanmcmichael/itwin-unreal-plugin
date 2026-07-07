@@ -393,6 +393,28 @@ namespace AdvViz::SDK
 			}
 		}
 
+		bool HasAnimPathsToSave() const
+		{
+			auto thdata = thdata_.GetRAutoLock();
+			for (const auto& [_, itPtr] : thdata->infosMap_)
+			{
+				auto it = itPtr->GetRAutoLock();
+				if (it->ShouldSave())
+				{
+					return true;
+				}
+			}
+			for (const auto& [_, itPtr] : thdata->removedInfosMap_)
+			{
+				auto it = itPtr->GetRAutoLock();
+				if (it->HasDBIdentifier())
+				{
+					return true;
+				}
+			}
+			return false;
+		}
+
 		void LoadDataFromServer(const std::string& decorationId);
 		void AsyncLoadDataFromServer(const std::string& decorationId,
 			const std::function<void(IAnimationPathInfoPtr&)>& onPathLoaded,
@@ -537,11 +559,13 @@ namespace AdvViz::SDK
 				{
 					jInPost.AnimationPaths.emplace_back(infoPtr->GetServerSideData());
 					newIndices.push_back(elem.first);
+					infoPtr->OnStartSave();
 				}
 				else if (infoPtr->ShouldSave())
 				{
 					jInPut.AnimationPaths.emplace_back(infoPtr->GetServerSideData());
 					updatedIndices.push_back(elem.first);
+					infoPtr->OnStartSave();
 				}
 			}
 		}
@@ -733,7 +757,7 @@ namespace AdvViz::SDK
 
 	bool PathAnimManager::HasAnimPathsToSave() const
 	{
-		return GetNumberOfPaths() > 0; // TODO@DK
+		return GetImpl().HasAnimPathsToSave();
 	}
 
 	PathAnimManager::Impl& PathAnimManager::GetImpl()

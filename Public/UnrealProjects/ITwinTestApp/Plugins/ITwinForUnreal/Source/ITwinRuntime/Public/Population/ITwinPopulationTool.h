@@ -27,6 +27,8 @@ class AITwinPopulation;
 class AITwinDecorationHelper;
 class AITwinSplineHelper;
 
+struct FFeatureEventProperties;
+
 class FUESplineCurve : public BeUtils::SplineCurve
 {
 public:
@@ -59,9 +61,9 @@ class ITWINRUNTIME_API AITwinPopulationTool : public AITwinInteractiveTool
 	GENERATED_BODY()
 
 public:
-	DECLARE_DYNAMIC_MULTICAST_DELEGATE(FSingleInstanceAddedEvent);
+	DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FPopulationChangedEvent, const FFeatureEventProperties&, Properties);
 	UPROPERTY()
-	FSingleInstanceAddedEvent SingleInstanceAddedEvent;
+	FPopulationChangedEvent PopulationChangedEvent;
 	DECLARE_DYNAMIC_MULTICAST_DELEGATE(FSelectionChangedEvent);
 	UPROPERTY()
 	FSelectionChangedEvent SelectionChangedEvent;
@@ -149,6 +151,7 @@ public:
 
 	void SetUsedAsset(const FString& assetPath, bool used);
 	void ClearUsedAssets();
+	void ReplaceUsedAssets(const TArray<FString>& AssetPaths);
 
 	/// Pre-load the given asset in a population.
 	AITwinPopulation* PreLoadPopulation(const FString& AssetPath);
@@ -161,7 +164,7 @@ public:
 
 	/// Returns whether some instances can be added - ie. there is one (or more) selected assets.
 	/// \param bOutAllowBrush Will be set to true if the paint brush is compatible with the selection.
-	bool IsAdditionOfInstancesAllowed(bool& bOutAllowBrush) const;
+	bool IsAdditionOfInstancesAllowed(bool* bOutAllowBrush = nullptr) const;
 
 	int32 GetInstanceCount(const FString& assetPath) const;
 

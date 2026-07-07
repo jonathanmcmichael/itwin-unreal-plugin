@@ -22,6 +22,7 @@
 
 
 // UE headers
+#include <Blueprint/WidgetLayoutLibrary.h>
 #include <Camera/CameraActor.h>
 #include <Camera/CameraComponent.h>
 #include <Components/SplineComponent.h>
@@ -115,6 +116,7 @@ public:
 	bool InsertPointAt(AITwinSplineHelper* Spline, int32 PointIndex, FVector const& NewWorldPosition);
 	void EnableDuplicationWhenMovingPoint(bool value);
 	FTransform GetSelectionTransform() const;
+	void OnSelectionTransformStarted();
 	void SetSelectionTransform(const FTransform& transform);
 	void SetEnabled(bool value);
 	bool IsEnabled() const;
@@ -435,6 +437,24 @@ FTransform AITwinSplineTool::FImpl::GetSelectionTransform() const
 	return FTransform();
 }
 
+void AITwinSplineTool::FImpl::OnSelectionTransformStarted()
+{
+	if (IsValid(selectedSplineHelper))
+	{
+		if (HasSelectedPoint())
+		{
+			if (ToolMode != EITwinSplineToolMode::InteractiveCreation)
+			{
+				owner.SplinePointMovingStartedEvent.Broadcast();
+			}
+		}
+		else
+		{
+			owner.SplineMovingStartedEvent.Broadcast();
+		}
+	}
+}
+
 void AITwinSplineTool::FImpl::SetSelectionTransform(const FTransform& transform)
 {
 	if (IsValid(selectedSplineHelper))
@@ -572,7 +592,8 @@ bool AITwinSplineTool::FImpl::InsertPointAt(AITwinSplineHelper* Spline, int32 Po
 	{
 		SetSelectedPointIndex(NewPointIndex, /*bBroadcastPointSelection*/true);
 		owner.SplineSelectionEvent.Broadcast();
-		owner.InteractiveCreationCompletedEvent.Broadcast(/*bTriggeredFromITS*/false);
+		owner.InteractiveCreationCompletedEvent.Broadcast(&owner, /*bTriggeredFromITS*/false);
+		owner.SplinePointAddedEvent.Broadcast();
 		return true;
 	}
 	else
@@ -747,13 +768,38 @@ bool AITwinSplineTool::FImpl::DoMouseClickAction()
 		{
 			if (HasSameUsageAs(*SplineIter)	&& !SplineIter->IsHidden())
 			{
-				if (SplineIter->DoesLineIntersectSplinePolygon(PickingResult.TraceStart, PickingResult.TraceEnd))
+				// For closed loops, we can use the polygon intersection test.
+				if (SplineIter->IsClosedLoop()
+					&& SplineIter->DoesLineIntersectSplinePolygon(PickingResult.TraceStart, PickingResult.TraceEnd))
 				{
 					SetSelectedSpline(*SplineIter);
 					return true;
 				}
 			}
 		}
+
+		if (AITwinSplineHelper::Is2DDrawingEnabled())
+		{
+			// For open splines (or even closed ones, if they have a complex geometry), we work on their
+			// 2D projection.
+			const FVector2D MouseAbsolutePosition = UWidgetLayoutLibrary::GetMousePositionOnPlatform();
+			double ClosestDistance_2D = -1.;
+			AITwinSplineHelper* ClosestSpline = AITwinSplineHelper::FindClosestSplineToScreenPosition(
+				MouseAbsolutePosition,
+				ClosestDistance_2D,
+				[](const AITwinSplineHelper& Spline) -> bool
+			{
+				// Ignore cube edges here.
+				return Spline.GetUsage() == EITwinSplineUsage::EdgeDisplayHelper;
+			});
+			// Use an arbitrary threshold to avoid selecting a spline too far from the mouse position.
+			if (ClosestSpline && ClosestDistance_2D < 18.)
+			{
+				SetSelectedSpline(ClosestSpline);
+				return true;
+			}
+		}
+
 		// No spline selected => reset selection.
 		SetSelectedSpline(nullptr);
 	}
@@ -1426,6 +1472,30 @@ AITwinSplineHelper* AITwinSplineTool::FImpl::CreateSpline(EITwinSplineUsage Spli
 
 	if (CreatedSpline)
 	{
+		auto const HasUndefinedTangent = [](AdvViz::SDK::ISplinePtr const& AvizSpline) -> bool
+		{
+			if (!AvizSpline)
+				return false;
+			auto Spline = AvizSpline->GetRAutoLock();
+			if (Spline->GetNumberOfPoints() < 1)
+				return false;
+			auto const& FirstPointPtr = Spline->GetPoints().front();
+			auto Point = FirstPointPtr->GetRAutoLock();
+			return Point->HasUndefinedTangent();
+		};
+
+		// Recompute linear tangents if needed (note that they are not persisted for cutouts polygons saved
+		// on the Scene API).
+		// Of course, non linear tangents should always be persisted, as they cannot be guessed from the
+		// control points.
+		BE_ASSERT(CreatedSpline->GetTangentMode() == EITwinTangentMode::Linear
+			|| !HasUndefinedTangent(LoadedSpline));
+
+		if (CreatedSpline->GetTangentMode() == EITwinTangentMode::Linear
+			&& HasUndefinedTangent(LoadedSpline))
+		{
+			CreatedSpline->SetTangentMode(EITwinTangentMode::Linear);
+		}
 		// In interactive creation mode, do not broadcast the creation event until the spline is fully
 		// created.
 		if (ToolMode != EITwinSplineToolMode::InteractiveCreation)
@@ -1659,7 +1729,7 @@ bool AITwinSplineTool::FImpl::ToggleInteractiveCreationMode(bool bTriggeredFromI
 
 		owner.SplineAddedEvent.Broadcast(NewSpline.Get());
 		owner.SplineEditionEvent.Broadcast();
-		owner.InteractiveCreationCompletedEvent.Broadcast(bTriggeredFromITS);
+		owner.InteractiveCreationCompletedEvent.Broadcast(&owner, bTriggeredFromITS);
 		owner.SplineSelectionEvent.Broadcast();
 	}
 
@@ -1701,7 +1771,7 @@ void AITwinSplineTool::FImpl::AbortInteractiveCreation(bool bTriggeredFromITS)
 	}
 	else
 	{
-		owner.InteractiveCreationAbortedEvent.Broadcast(bTriggeredFromITS);
+		owner.InteractiveCreationAbortedEvent.Broadcast(&owner, bTriggeredFromITS);
 	}
 }
 
@@ -1876,6 +1946,15 @@ void AITwinSplineTool::DeleteSpline(AITwinSplineHelper* SplineHelper)
 	Impl->DeleteSpline(SplineHelper);
 }
 
+void AITwinSplineTool::DeleteSplineAtLoad(AITwinSplineHelper* SplineHelper)
+{
+	if (Impl->splinesManager)
+	{
+		Impl->splinesManager->RemoveSpline(SplineHelper->GetAVizSpline());
+	}
+	SplineHelper->Destroy();
+}
+
 bool AITwinSplineTool::CanDeletePoint() const
 {
 	return Impl->CanDeletePoint();
@@ -1904,6 +1983,11 @@ bool AITwinSplineTool::InsertPointAt(AITwinSplineHelper* Spline, int32 PointInde
 FTransform AITwinSplineTool::GetSelectionTransformImpl() const
 {
 	return Impl->GetSelectionTransform();
+}
+
+void AITwinSplineTool::OnSelectionTransformStartedImpl()
+{
+	Impl->OnSelectionTransformStarted();
 }
 
 void AITwinSplineTool::SetSelectionTransformImpl(const FTransform& transform)
@@ -1983,6 +2067,11 @@ bool AITwinSplineTool::LoadSpline(const AdvViz::SDK::ISplinePtr& spline,
 	return Impl->LoadSpline(spline);
 }
 
+bool AITwinSplineTool::IsLoadingSpline() const
+{
+	return Impl->bIsLoadingSpline;
+}
+
 void AITwinSplineTool::SetSplinesManager(const std::shared_ptr<AdvViz::SDK::ISplinesManager>& splinesManager)
 {
 	Impl->splinesManager = splinesManager;
@@ -2038,14 +2127,14 @@ void AITwinSplineTool::AbortInteractiveCreationImpl(bool bTriggeredFromITS)
 
 void AITwinSplineTool::ValidateInteractiveCreationImpl(bool bTriggeredFromITS)
 {
-	if (!ensure(GetMode() == EITwinSplineToolMode::InteractiveCreation))
+	if (!IsInteractiveCreationMode())
 		return;
 	const bool bHasNewSpline = Impl->ToggleInteractiveCreationMode(bTriggeredFromITS);
 	if (!bHasNewSpline)
 	{
 		// No polygon could be created (probably not enough points) => just broadcast the cancelation of the
 		// interactive creation.
-		InteractiveCreationAbortedEvent.Broadcast(bTriggeredFromITS);
+		InteractiveCreationAbortedEvent.Broadcast(this, bTriggeredFromITS);
 	}
 }
 

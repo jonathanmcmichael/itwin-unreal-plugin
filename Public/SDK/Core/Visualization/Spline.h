@@ -68,6 +68,8 @@ MODULE_EXPORT namespace AdvViz::SDK
 		
 		virtual ESplineTangentMode GetOutTangentMode() const = 0;
 		virtual void SetOutTangentMode(ESplineTangentMode mode) = 0;
+
+		virtual bool HasUndefinedTangent() const = 0;
 		
 		virtual const double3& GetOutTangent() const = 0;
 		virtual void SetOutTangent(const double3& tangent) = 0;
@@ -103,6 +105,8 @@ MODULE_EXPORT namespace AdvViz::SDK
 		
 		ESplineTangentMode GetOutTangentMode() const override;
 		void SetOutTangentMode(const ESplineTangentMode mode) override;
+
+		bool HasUndefinedTangent() const override;
 		
 		const double3& GetOutTangent() const override;
 		void SetOutTangent(const double3& tangent) override;

@@ -60,7 +60,7 @@ public:
 	FComponentInfoRetrievalDoneEvent ComponentInfoRetrievalDoneEvent;
 
 	// Broadcasted when an iModel or RealityData has finished loading
-	DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FComponentLoadedEvent, AActor*, LoadedComponent);
+	DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FComponentLoadedEvent, AActor*, LoadedComponent, EITwinModelType, ModelType, const FString&, LayerId);
 	UPROPERTY()
 	FComponentLoadedEvent ComponentLoadedEvent;
 
@@ -152,11 +152,13 @@ public:
 	FString GetComponentName(FString const& StringId) const;
 	bool IsComponentLoaded(FString const& StringId) const;
 	bool IsComponentBeingLoaded(FString const& StringId) const;
+	EITwinLoadContext GetComponentLoadContext(FString const& StringId) const;
 	bool AreComponentSavedViewsLoaded(FString const& StringId) const;
 
 	// Get loaded IModel or Reality Data objects
 	AITwinRealityData* GetRealityData(FString const& StringId) const;
 	AITwinIModel* GetIModel(FString const& StringId) const;
+	TUniquePtr<FITwinTilesetAccess> GetTilesetAccess(EITwinModelType ModelType, FString const& StringId) const;
 	TUniquePtr<FITwinTilesetAccess> GetTilesetAccessFromId(FString const& StringId) const;
 
 	UFUNCTION(Category = "iTwin",

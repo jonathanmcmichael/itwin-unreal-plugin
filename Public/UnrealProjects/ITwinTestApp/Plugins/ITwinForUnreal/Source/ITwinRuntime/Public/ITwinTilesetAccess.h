@@ -11,8 +11,10 @@
 #pragma once
 
 #include <ITwinModelType.h>
+#include <ITwinWebServices/ITwinWebServices_Info.h>
 #include <Templates/Function.h>
 #include <UObject/WeakObjectPtrTemplates.h>
+#include <optional>
 
 class AActor;
 class UWorld;
@@ -101,6 +103,12 @@ public:
 	virtual UITwinClipping3DTilesetHelper* GetClippingHelper() const = 0;
 
 	virtual FBox GetBoundingBox() const = 0;
+
+	//! Returns the geo-reference of the model, if the model itself holds such information.
+	//! Beware that this is not necessarily the same as the tileset's geo-location, which may be different
+	//! if the model is not geo-located, and thus, was placed in the scene by the user.
+	//! The returned value is in WGS84 coordinates (longitude, latitude, height).
+	virtual std::optional<FCartographicProps> GetNativeGeoreference() const = 0;
 
 	/// Creates the cut-out polygons overlay for the tileset, if not already present.
 	void InitCutoutOverlay() const;

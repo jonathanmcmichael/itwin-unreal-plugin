@@ -127,6 +127,7 @@ AITwinSavedView::AITwinSavedView()
 
 void AITwinSavedView::OnSavedViewDeleted(bool bSuccess, FString const& InSavedViewId, FString const& Response)
 {
+	BE_LOGI("ITwinAPI", "SavedView deleted: " << TCHAR_TO_UTF8(*GetActorNameOrLabel()));
 	// usually, saved views are owned by a AITwinIModel actor (except those created manually from scratch)
 	AActor* OwnerActor = GetOwner();
 	AITwinServiceActor* OwnerSrvActor = OwnerActor ? Cast<AITwinServiceActor>(OwnerActor) : nullptr;
@@ -163,6 +164,42 @@ namespace
 
 		return Result;
 	}
+
+	FString ToString(FPerModelCategoryVisibilityProps const& PerModelCat)
+	{
+		return FString::Printf(TEXT("Model:%s,Category:%s"), *PerModelCat.ModelId, *PerModelCat.CategoryId);
+	}
+
+	FString ToString(FString const& Str) { return Str; }
+
+	template<typename T, size_t S>
+	FString ToString(TSet<T> const& Set)
+	{
+		if (Set.IsEmpty())
+			return TEXT("{}");
+		FString Result = TEXT("{");
+		Result.Reserve((std::max(100, Set.Num()) + 1) * S);
+		int N = 1;
+		for (const T& Element : Set)
+		{
+			if (N > 100)
+				break;
+			++N;
+			Result += ToString(Element);
+			Result += TCHAR(',');
+		}
+		if (N > 100)
+			Result += TEXT(" ... }");
+		else
+			Result[Result.Len() - 1] = TCHAR('}');
+		return Result;
+	}
+
+	template<size_t S, typename Container>
+	FString ToString(Container const& Set)
+	{
+		return ToString<typename Container::ElementType, S>(Set);
+	}
 }
 
 /*static*/ void AITwinSavedView::HideElements(AITwinIModel* iModel, FSavedView const& SavedView)
@@ -190,6 +227,14 @@ namespace
 		}
 		return res;
 	};
+	BE_LOGI("ITwinAPI", "HiddenElements: " << TCHAR_TO_UTF8(*ToString<20>(SavedView.HiddenElements)));
+	BE_LOGI("ITwinAPI", "AlwaysDrawnElements: " << TCHAR_TO_UTF8(*ToString<20>(SavedView.AlwaysDrawnElements)));
+	BE_LOGI("ITwinAPI", "HiddenModels: " << TCHAR_TO_UTF8(*ToString<20>(SavedView.HiddenModels)));
+	BE_LOGI("ITwinAPI", "HiddenCategories: " << TCHAR_TO_UTF8(*ToString<20>(SavedView.HiddenCategories)));
+	BE_LOGI("ITwinAPI", "HiddenCategoriesPerModel: "
+						<< TCHAR_TO_UTF8(*ToString<60>(SavedView.HiddenCategoriesPerModel)));
+	BE_LOGI("ITwinAPI", "AlwaysDrawnCategoriesPerModel: "
+						<< TCHAR_TO_UTF8(*ToString<60>(SavedView.AlwaysDrawnCategoriesPerModel)));
 	auto HiddenElements = InsertParsedIDs(SavedView.HiddenElements);
 	auto AlwaysDrawnElements = InsertParsedIDs(SavedView.AlwaysDrawnElements);
 	auto HiddenModels = InsertParsedIDs(SavedView.HiddenModels);
@@ -206,28 +251,30 @@ namespace
 	}
 	IModelInternals.HideCategories(HiddenCategories, true);
 	IModelInternals.HideModels(HiddenModels, true);
-	IModelInternals.HideCategories(HiddenCategories, true);
+	IModelInternals.HideCategories(HiddenCategories, true); // a 2nd time on purpose (but rationale is lost...)
 	IModelInternals.HideCategoriesPerModel(HiddenCategoriesPerModel, true);
 	IModelInternals.ShowCategoriesPerModel(AlwaysDrawnCategoriesPerModel, true);
 	IModelInternals.HideElements(HiddenElements, false, true);
 	IModelInternals.ShowElements(AlwaysDrawnElements, true);
 	auto SceneMappingLocked = IModelInternals.SceneMapping->GetRAutoLock();
-	std::unordered_set<ITwinElementID> emptyElements;
-	const std::unordered_set<ITwinElementID>* hiddenElements = &emptyElements;
+	std::unordered_set<ITwinElementID> EmptyElements;
+	const std::unordered_set<ITwinElementID>* pConstructionElementsToHide = &EmptyElements;
 	auto GeometryIDToElementIDsLock = SceneMappingLocked->GeometryIDToElementIDs->GetRAutoLock();
 	auto& GeometryIDToElementIDs = *GeometryIDToElementIDsLock;
 	if (!iModel->bShowConstructionData)
-		hiddenElements = &GeometryIDToElementIDs.at(1);
-	IModelInternals.HideElements(*hiddenElements,
-		true, true);
+		pConstructionElementsToHide = &GeometryIDToElementIDs.at(1);
+	IModelInternals.HideElements(*pConstructionElementsToHide, true, true);
 }
 
 void AITwinSavedView::OnSavedViewRetrieved(bool bSuccess, FSavedView const& SavedView, 
 										   FSavedViewInfo const& SavedViewInfo)
 {
 	if (!bSuccess)
+	{
+		BE_LOGE("ITwinAPI", "SavedView retrieval failed: " << TCHAR_TO_UTF8(*GetActorNameOrLabel()));
 		return;
-
+	}
+	BE_LOGI("ITwinAPI", "SavedView information retrieved: " << TCHAR_TO_UTF8(*GetActorNameOrLabel()));
 	OnSavedViewEdited(bSuccess, SavedView, SavedViewInfo);
 	Impl->SavedViewData = SavedView;
 	// Perform pending operation now, if any
@@ -249,8 +296,10 @@ void AITwinSavedView::OnSavedViewEdited(bool bSuccess, FSavedView const& SavedVi
 										FSavedViewInfo const& SavedViewInfo)
 {
 	if (!bSuccess)
+	{
+		BE_LOGE("ITwinAPI", "SavedView edition failed: " << TCHAR_TO_UTF8(*GetActorNameOrLabel()));
 		return;
-
+	}
 	// rename
 #if WITH_EDITOR
 	SetActorLabel(SavedViewInfo.DisplayName);
@@ -265,6 +314,8 @@ void AITwinSavedView::OnSavedViewEdited(bool bSuccess, FSavedView const& SavedVi
 	SetActorLocation(Transform.GetLocation());
 	SetActorRotation(Transform.GetRotation());
 	Impl->bSavedViewTransformIsSet = true;
+	BE_LOGI("ITwinAPI", "Editing SavedView, translation: " << TCHAR_TO_UTF8(*Transform.GetLocation().ToString())
+		<< " and rotation " << TCHAR_TO_UTF8(*Transform.GetRotation().ToString()));
 }
 
 void AITwinSavedView::UpdateSavedView()
@@ -274,6 +325,7 @@ void AITwinSavedView::UpdateSavedView()
 		BE_LOGE("ITwinAPI", "ITwinSavedView has no SavedViewId");
 		return;
 	}
+	BE_LOGI("ITwinAPI", "Will update SavedView: " << TCHAR_TO_UTF8(*GetActorNameOrLabel()));
 	if (CheckServerConnection() != AdvViz::SDK::EITwinAuthStatus::Success)
 	{
 		// No authorization yet: postpone the actual update (see UpdateOnSuccessfulAuthorization)
@@ -287,6 +339,7 @@ void AITwinSavedView::UpdateSavedView()
 
 void AITwinSavedView::UpdateThumbnail(const FString& FullFilePath)
 {
+	BE_LOGI("ITwinAPI", "SavedView will update its thumbnail: " << TCHAR_TO_UTF8(*GetActorNameOrLabel()));
 	FString prefixURL = TEXT("data:image/png;base64,");
 	TArray<uint8> RawBuffer;
 	if (!FFileHelper::LoadFileToArray(RawBuffer, *FullFilePath))
@@ -301,6 +354,7 @@ void AITwinSavedView::UpdateThumbnail(const FString& FullFilePath)
 
 void AITwinSavedView::GetThumbnail()
 {
+	BE_LOGI("ITwinAPI", "SavedView will query its thumbnail: " << TCHAR_TO_UTF8(*GetActorNameOrLabel()));
 	UpdateWebServices();
 	if (WebServices)
 		WebServices->GetSavedViewThumbnail(SavedViewId);
@@ -310,19 +364,28 @@ void AITwinSavedView::OnSavedViewThumbnailRetrieved(bool bSuccess, FString const
 	TArray<uint8> const& Buffer)
 {
 	if (!bSuccess)
+	{
+		BE_LOGE("ITwinAPI", "SavedView thumbnail retrieval failed: " << TCHAR_TO_UTF8(*GetActorNameOrLabel()));
 		return;
-
+	}
+	BE_LOGI("ITwinAPI", "SavedView thumbnail retrieved: " << TCHAR_TO_UTF8(*GetActorNameOrLabel()));
 	UTexture2D* Tex2D = FImageUtils::ImportBufferAsTexture2D(Buffer);
 	RetrievedThumbnail.Broadcast(SavedViewId, Tex2D);
 }
 
 void AITwinSavedView::OnSavedViewThumbnailUpdated(bool bSuccess, FString const& InSavedViewId, FString const& Response)
 {
-
+	if (!bSuccess)
+	{
+		BE_LOGE("ITwinAPI", "SavedView thumbnail update failed: " << TCHAR_TO_UTF8(*GetActorNameOrLabel()));
+		return;
+	}
+	BE_LOGI("ITwinAPI", "SavedView thumbnail updated: " << TCHAR_TO_UTF8(*GetActorNameOrLabel()));
 }
 
 void AITwinSavedView::MoveToSavedView()
 {
+	BE_LOGI("ITwinAPI", "Will move to SavedView: " << TCHAR_TO_UTF8(*GetActorNameOrLabel()));
 	if (SavedViewId.IsEmpty() && !Impl->bSavedViewTransformIsSet)
 	{
 		BE_LOGE("ITwinAPI", "ITwinSavedView has no SavedViewId - cannot move to it");
@@ -334,6 +397,9 @@ void AITwinSavedView::MoveToSavedView()
 	if (Impl->bSavedViewTransformIsSet)
 	{
 		auto EndRot = GetActorRotation();
+		BE_LOGI("ITwinAPI", "Applying translation: " << TCHAR_TO_UTF8(*GetActorLocation().ToString())
+			<< ", rotation: " << TCHAR_TO_UTF8(*EndRot.ToString())
+			<< " and schedule time: " << Impl->SavedViewData.DisplayStyle.TimePoint);
 		EndRot.Roll = 0.;
 		if (Pawn)
 		{
@@ -387,6 +453,8 @@ void AITwinSavedView::MoveToSavedView()
 		#endif // WITH_EDITOR
 		}
 		AITwinIModel* const iModel = Cast<AITwinIModel>(GetAttachParentActor());
+		BE_LOGI("ITwinAPI",
+			"Applying show/hide requirements from SavedView " << TCHAR_TO_UTF8(*GetActorNameOrLabel()));
 		HideElements(iModel, Impl->SavedViewData);
 	}
 	else // fetch the saved view data before we can move to it
@@ -404,6 +472,7 @@ void AITwinSavedView::DeleteSavedView()
 		return;
 	}
 	UpdateWebServices();
+	BE_LOGI("ITwinAPI", "Deleting SavedView: " << TCHAR_TO_UTF8(*GetActorNameOrLabel()));
 	if (WebServices)
 	{
 		WebServices->DeleteSavedView(SavedViewId);
@@ -417,6 +486,7 @@ void AITwinSavedView::RenameSavedView()
 		BE_LOGE("ITwinAPI", "ITwinSavedView with no SavedViewId cannot be renamed");
 		return;
 	}
+	BE_LOGI("ITwinAPI", "Will rename SavedView: " << TCHAR_TO_UTF8(*GetActorNameOrLabel()));
 	if (!Impl->bSavedViewTransformIsSet)
 	{
 		// fetch the saved view data before we can rename it
@@ -441,6 +511,7 @@ void AITwinSavedView::RenameSavedView()
 		CurrentSV.DisplayStyle.TimePoint = currentTime.ToUnixTimestamp();
 	}
 	UpdateWebServices();
+	BE_LOGI("ITwinAPI", "Renaming SavedView to " << TCHAR_TO_UTF8(*DisplayName));
 	if (WebServices && !DisplayName.IsEmpty())
 	{
 		WebServices->EditSavedView(CurrentSV, { SavedViewId, DisplayName, true });
@@ -465,8 +536,10 @@ void AITwinSavedView::RetakeSavedView()
 		return;
 	}
 	FString const displayName = GetActorNameOrLabel();
-
 	UpdateWebServices();
+	BE_LOGI("ITwinAPI", "Retaking SavedView: " << TCHAR_TO_UTF8(*displayName)
+		<< ", new origin: " << TCHAR_TO_UTF8(*ModifiedSV.Origin.ToString())
+		<< ", new angles: " << TCHAR_TO_UTF8(*ModifiedSV.Angles.ToString()));
 	if (WebServices && !displayName.IsEmpty())
 	{
 		WebServices->EditSavedView(ModifiedSV, { SavedViewId, displayName, true });

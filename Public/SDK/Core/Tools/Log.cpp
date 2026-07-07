@@ -198,6 +198,7 @@ namespace AdvViz::SDK::Tools
 		CreateLogChannel("App", level);
 		CreateLogChannel("AppUI", level);
 		CreateLogChannel("Timeline", level);
+		CreateLogChannel("PathAnim", level);
 		CreateLogChannel("http", level);
 		CreateLogChannel("json", level);
 		CreateLogChannel("keyframeAnim", level);

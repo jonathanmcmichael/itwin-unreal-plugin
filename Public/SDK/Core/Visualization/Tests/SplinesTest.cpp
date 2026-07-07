@@ -124,8 +124,8 @@ TEST_CASE("Splines Saving")
 					return HTTPMock::Response2(504, "wrong request order");
 				}
 				if (data == "{\"splines\":[" \
-					"{\"name\":\"spline_1\",\"usage\":\"AnimPath\",\"pointIDs\":[\"pt1\",\"pt2\",\"pt3\",\"pt4\"],\"transform\":[0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],\"closedLoop\":false}," \
-					"{\"name\":\"spline_2\",\"usage\":\"MapCutout\",\"pointIDs\":[\"pt5\",\"pt6\",\"pt7\",\"pt8\"],\"transform\":[0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],\"closedLoop\":true}" \
+					"{\"name\":\"spline_1\",\"usage\":\"ObjectPath\",\"pointIDs\":[\"pt1\",\"pt2\",\"pt3\",\"pt4\"],\"transform\":[1.0,0.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0,0.0],\"closedLoop\":false}," \
+					"{\"name\":\"spline_2\",\"usage\":\"PopulationZone\",\"pointIDs\":[\"pt5\",\"pt6\",\"pt7\",\"pt8\"],\"transform\":[1.0,0.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0,0.0],\"closedLoop\":true}" \
 					"]}")
 				{
 					return HTTPMock::Response2(201,
@@ -160,7 +160,7 @@ TEST_CASE("Splines Saving")
 			{
 				auto spline1 = spline1_ptr->GetAutoLock();
 				spline1->SetName("spline_1");
-				spline1->SetUsage(ESplineUsage::AnimPath);
+				spline1->SetUsage(ESplineUsage::AnimPathObject);
 				auto pt1_spl1 = spline1->AddPoint()->GetAutoLock();
 				auto pt2_spl1 = spline1->AddPoint()->GetAutoLock();
 				auto pt3_spl1 = spline1->AddPoint()->GetAutoLock();
@@ -176,7 +176,7 @@ TEST_CASE("Splines Saving")
 			{
 				auto spline2 = spline2_ptr->GetAutoLock();
 				spline2->SetName("spline_2");
-				spline2->SetUsage(ESplineUsage::MapCutout);
+				spline2->SetUsage(ESplineUsage::PopulationZone);
 				auto pt1_spl2 = spline2->AddPoint()->GetAutoLock();
 				auto pt2_spl2 = spline2->AddPoint()->GetAutoLock();
 				auto pt3_spl2 = spline2->AddPoint()->GetAutoLock();
@@ -238,7 +238,7 @@ TEST_CASE("Splines Saving")
 					return HTTPMock::Response2(504, "wrong request order");
 				}
 				if (data == "{\"splines\":[" \
-						"{\"id\":\"spl1\",\"name\":\"spline_1\",\"usage\":\"AnimPath\",\"pointIDs\":[\"pt1\",\"pt2\",\"pt4\"],\"transform\":[0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],\"closedLoop\":false}" \
+						"{\"id\":\"spl1\",\"name\":\"spline_1\",\"usage\":\"ObjectPath\",\"pointIDs\":[\"pt1\",\"pt2\",\"pt4\"],\"transform\":[1.0,0.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0,0.0],\"closedLoop\":false}" \
 						"]}")
 				{
 					return HTTPMock::Response2(200,
@@ -284,15 +284,15 @@ TEST_CASE("Splines Saving")
 				{
 					return HTTPMock::Response2(200,
 						"{\"total_rows\":2,\"rows\":[" \
-						"{\"id\":\"spl1\",\"name\":\"spline_1\",\"usage\":\"AnimPath\",\"pointIDs\":[\"pt1\",\"pt2\",\"pt4\"],\"transform\":[0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],\"closedLoop\":false}," \
-						"{\"id\":\"spl2\",\"name\":\"spline_2\",\"usage\":\"MapCutout\",\"pointIDs\":[\"pt5\",\"pt6\",\"pt7\",\"pt8\"],\"transform\":[0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],\"closedLoop\":true}" \
+						"{\"id\":\"spl1\",\"name\":\"spline_1\",\"usage\":\"ObjectPath\",\"pointIDs\":[\"pt1\",\"pt2\",\"pt4\"],\"transform\":[1.0,0.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0,0.0],\"closedLoop\":false}," \
+						"{\"id\":\"spl2\",\"name\":\"spline_2\",\"usage\":\"PopulationZone\",\"pointIDs\":[\"pt5\",\"pt6\",\"pt7\",\"pt8\"],\"transform\":[1.0,0.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0,0.0],\"closedLoop\":true}" \
 						"],\"_links\":{}}");
 				}
 				else
 				{
 					return HTTPMock::Response2(200,
 						"{\"total_rows\":1,\"rows\":[" \
-						"{\"id\":\"spl2\",\"name\":\"spline_2\",\"usage\":\"MapCutout\",\"pointIDs\":[\"pt5\",\"pt6\",\"pt7\",\"pt8\"],\"transform\":[0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],\"closedLoop\":true}" \
+						"{\"id\":\"spl2\",\"name\":\"spline_2\",\"usage\":\"PopulationZone\",\"pointIDs\":[\"pt5\",\"pt6\",\"pt7\",\"pt8\"],\"transform\":[1.0,0.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0,0.0],\"closedLoop\":true}" \
 						"],\"_links\":{}}");
 				}
 			};

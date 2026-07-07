@@ -11,7 +11,8 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "Components/HierarchicalInstancedStaticMeshComponent.h"
-#include <UObject/StrongObjectPtr.h>
+
+#include <Population/ITwinPopulationEnums.h>
 
 #include <ITwinRuntime/Private/Compil/BeforeNonUnrealIncludes.h>
 #	include <SDK/Core/Tools/Tools.h>
@@ -22,18 +23,6 @@
 #include <string>
 
 #include "ITwinPopulation.generated.h"
-
-enum class EITwinInstantiatedObjectType : uint8
-{
-	Vehicle = 0,
-	Vegetation,
-	Character,
-	ClippingPlane,
-	ClippingBox,
-	Crane,
-
-	Other
-};
 
 namespace AdvViz::SDK
 {
@@ -73,6 +62,8 @@ struct FITwinFoliageComponentHolder
 
 	FBox GetMasterMeshBoundingBox() const;
 	FBoxSphereBounds GetMasterMeshBounds() const;
+
+	bool IsTreeFullyBuilt() const;
 };
 
 UCLASS()
@@ -97,8 +88,12 @@ public:
 		
 	AdvViz::SDK::IInstancePtr GetAVizInstance(int32 instanceIndex) const;
 
+	//! Returns whether the internal tree (UE internal structure to optimize the hierarchy of instances) is
+	//! fully built.
+	bool IsTreeFullyBuilt() const;
+
 	/// Toggle the automatic rebuild of the internal tree (UE internal structure to optimize the
-	/// hierarchy of instances.
+	/// hierarchy of instances).
 	/// \param bSuspendAutoRebuildOpt If provided, enforce the new value - if not, the property is toggled
 	/// \return Previous value of the property.
 	bool ToggleAutoRebuildTree(std::optional<bool> const& bSuspendAutoRebuildOpt = std::nullopt);
@@ -188,7 +183,8 @@ public:
 	{
 		Default = 0,
 		InteractivePlacement,
-		UndoRedo
+		UndoRedo,
+		LoadScene,
 	};
 
 	//! Add a new instance with given transformation, and return its index.

@@ -20,10 +20,13 @@ namespace AdvViz::SDK::Tools
 		int writeCount = 0;
 	};
 
-	// use local memory resource to avoid heap allocations on each thread
-	static const size_t ReservedMemory = 1024;
-	thread_local std::array<std::byte, ReservedMemory> buf1; 
-	thread_local std::pmr::monotonic_buffer_resource pool1{ buf1.data(), buf1.size() };
+	// Using unsynchronized_pool_resource instead of monotonic_buffer_resource
+	// to allow memory reuse when map entries are erased, preventing buffer exhaustion
+
+	//static const size_t ReservedMemory = 1024; // use local memory resource to avoid heap allocations on each thread
+	//thread_local std::array<std::byte, ReservedMemory> buf1; 
+	//thread_local std::pmr::monotonic_buffer_resource pool1{ buf1.data(), buf1.size() };
+	thread_local std::pmr::unsynchronized_pool_resource pool1;
 	// members can't be thread_local, so we use a thread_local map instead to keep per-thread state
 	thread_local std::pmr::unordered_map<SharedRecursiveMutex*, LockCounter> g_SharedRecursiveMutexState{ &pool1 };
 

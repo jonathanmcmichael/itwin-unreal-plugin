@@ -15,6 +15,8 @@
 #include "ITwinClipping3DTilesetHelper.generated.h"
 
 class AITwinClippingTool;
+class UITwinClippingRenderer;
+class UITwinClippingEffectManager;
 class ACesium3DTileset;
 class UPrimitiveComponent;
 class FITwinTilesetAccess;
@@ -43,7 +45,7 @@ public:
 
 	/// Update the Custom Primitive Data values depending on current activation of the clipping planes and
 	/// boxes, and return true if at least one value was modified.
-	bool UpdateCPDFlagsFromClippingSelection(const AITwinClippingTool& ClippingTool);
+	bool UpdateCPDFlagsFromClippingSelection(const UITwinClippingEffectManager& EffectManager);
 
 	void SetClippingTool(const AITwinClippingTool* InClippingTool);
 	void SetCutoutOverlay(const UCesiumPolygonRasterOverlay* InPolygonRasterOverlay);
@@ -53,7 +55,7 @@ public:
 
 private:
 	ITwin::ModelLink ModelIdentifier; // Identifies the iModel/RealityData/GlobalMapLayer the tileset belongs to.
-	TWeakObjectPtr<const AITwinClippingTool> ClippingToolPtr;
+	TWeakObjectPtr<const UITwinClippingRenderer> ClippingRenderer;
 	TWeakObjectPtr<const UCesiumPolygonRasterOverlay> CutoutOverlayPtr;
 	// For internal reasons (see ITwinClippingTool.cpp for details), there are currently up to 32 planes and
 	// 32 cubes, and we encode them by groups of 16.

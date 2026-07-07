@@ -6,6 +6,10 @@
 #include "Misc/AutomationTest.h"
 #include <limits>
 
+THIRD_PARTY_INCLUDES_START
+#include <CesiumImage/ImageAsset.h>
+THIRD_PARTY_INCLUDES_END
+
 BEGIN_DEFINE_SPEC(
     FCesiumPropertyTexturePropertySpec,
     "Cesium.Unit.PropertyTextureProperty",
@@ -22,6 +26,7 @@ END_DEFINE_SPEC(FCesiumPropertyTexturePropertySpec)
 
 void FCesiumPropertyTexturePropertySpec::Define() {
   using namespace CesiumGltf;
+  using namespace CesiumImage;
 
   Describe("Constructor", [this]() {
     It("constructs invalid instance by default", [this]() {
@@ -1131,7 +1136,7 @@ void FCesiumPropertyTexturePropertySpec::Define() {
       image.channels = 4;
       image.bytesPerChannel = 1;
 
-      std::vector<float> values{-1.1, 2.2, -3.3, 4.0};
+      std::vector<float> values{-1.1f, 2.2f, -3.3f, 4.0f};
       image.pixelData = GetValuesAsBytes(values);
 
       if (FPlatformProperties::IsLittleEndian()) {

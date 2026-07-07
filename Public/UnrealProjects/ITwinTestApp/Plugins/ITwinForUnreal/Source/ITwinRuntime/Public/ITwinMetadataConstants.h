@@ -22,7 +22,11 @@ namespace ITwinCesium::Metada
 	static const FString ELEMENT_NAME		= TEXT("element");
 	static const FString MODEL_NAME			= TEXT("model");
 	static const FString CATEGORY_NAME		= TEXT("category");
-	static const FString SUBCATEGORY_NAME	= TEXT("subcategory");
+	// In Q3 2026 "subcategory" will be renamed as "subCategory" for more consistency.
+	// We must support both spelling versions as long as existing export can still exist.
+	static const FString SUBCATEGORY_NAME			= TEXT("subCategory");
+	static const FString SUBCATEGORY_LEGACY_NAME	= TEXT("subcategory");
+
 	static const FString GEOMETRYCLASS_NAME = TEXT("geometryClass");
 
 	// material IDs are about to be added in Cesium Mesh-Export, in a separate table

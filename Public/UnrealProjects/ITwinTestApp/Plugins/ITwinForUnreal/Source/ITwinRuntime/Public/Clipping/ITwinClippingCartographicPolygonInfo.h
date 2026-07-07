@@ -14,13 +14,18 @@
 
 class AITwinSplineHelper;
 
-
 USTRUCT()
-struct FITwinClippingCartographicPolygonInfo : public FITwinClippingInfoBase
+struct FITwinClippingCartographicPolygonInfo final : public FITwinClippingInfoBase
 {
 	GENERATED_USTRUCT_BODY()
 
+	void InitWith(AITwinSplineHelper* Spline);
+
 	virtual bool GetInvertEffect() const override;
+
+	TWeakObjectPtr<AITwinSplineHelper> const& GetSpline() const { return SplineHelper; }
+
+	AdvViz::SDK::RefID GetAVizSplineId() const;
 
 protected:
 	virtual void DoSetEnabled(bool bInEnabled) override;
@@ -36,7 +41,4 @@ private:
 	/// Spline Helper associated to this primitive.
 	UPROPERTY()
 	TWeakObjectPtr<AITwinSplineHelper> SplineHelper;
-
-
-	friend class AITwinClippingTool;
 };

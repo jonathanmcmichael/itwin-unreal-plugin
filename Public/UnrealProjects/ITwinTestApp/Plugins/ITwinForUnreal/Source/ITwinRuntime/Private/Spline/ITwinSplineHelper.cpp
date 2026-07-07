@@ -1469,6 +1469,15 @@ void AITwinSplineHelper::FImpl::SetInteractiveCreationInProgress(bool bInProgres
 	return true;
 }
 
+/*static*/ AITwinSplineHelper* AITwinSplineHelper::FindClosestSplineToScreenPosition(const FVector2D& ScreenPosition,
+	FVector::FReal& OutClosestDistance,
+	const TFunction<bool(const AITwinSplineHelper&)>& IgnoreSpline)
+{
+	BE_ASSERT(Is2DDrawingEnabled());
+	return UITwinSplineHelper2DWidgetImpl::FindClosestSplineToScreenPosition(
+		ScreenPosition, OutClosestDistance, IgnoreSpline);
+}
+
 AITwinSplineHelper::FSpawnContext::FSpawnContext(EITwinSplineUsage SplineUsage)
 {
 	ensureMsgf(!FImpl::UsageForSpawnedActor, TEXT("do not nest AITwinSplineHelper construction"));
@@ -1523,12 +1532,30 @@ AITwinSplineHelper::AITwinSplineHelper()
 	if (!HasAnyFlags(RF_ClassDefaultObject))
 	{
 		// Create widget for screen-space rendering.
-		OnScreen2DWidget = CreateWidget<UITwinSplineHelper2DWidgetImpl>(GetWorld(), LoadClass<UITwinSplineHelper2DWidgetImpl>(nullptr,
-			TEXT("/Script/UMGEditor.WidgetBlueprint'/ITwinForUnreal/ITwin/Splines/ITwinSplineHelper2DWidget.ITwinSplineHelper2DWidget_C'")));
+		const FString WidgetPath =
+			TEXT("/Script/UMGEditor.WidgetBlueprint'/ITwinForUnreal/ITwin/Splines/ITwinSplineHelper2DWidget.ITwinSplineHelper2DWidget_C'");
+
+		if (!UITwinSplineHelper2DWidgetImpl::GetMasterInstance())
+		{
+			// Create a master instance of the 2D widget to be used for all spline helpers.
+			UITwinSplineHelper2DWidgetImpl* MasterScreen2DWidget =
+				CreateWidget<UITwinSplineHelper2DWidgetImpl>(GetWorld(), LoadClass<UITwinSplineHelper2DWidgetImpl>(
+					nullptr,
+					*WidgetPath));
+			if (ensure(MasterScreen2DWidget))
+			{
+				MasterScreen2DWidget->AddToViewport(10);
+				MasterScreen2DWidget->SetVisibility(ESlateVisibility::Hidden);
+				UITwinSplineHelper2DWidgetImpl::SetMasterInstance(MasterScreen2DWidget);
+			}
+		}
+
+		OnScreen2DWidget = CreateWidget<UITwinSplineHelper2DWidgetImpl>(GetWorld(), LoadClass<UITwinSplineHelper2DWidgetImpl>(
+			nullptr,
+			*WidgetPath));
 		if (ensure(OnScreen2DWidget))
 		{
 			OnScreen2DWidget->SetSplineHelper(this);
-			OnScreen2DWidget->AddToViewport(10);
 			OnScreen2DWidget->SetVisibility(ESlateVisibility::Hidden);
 		}
 	}
@@ -1550,7 +1577,14 @@ void AITwinSplineHelper::BeginPlay()
 			// Edge only mode.
 			OnScreen2DWidget->SetShowPins(false);
 		}
-		OnScreen2DWidget->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
+
+		// Only one instance, the master, is actually added to the viewport. The slave instances are used to
+		// set the correct position of the spline helper in screen space.
+		BE_ASSERT(UITwinSplineHelper2DWidgetImpl::GetMasterInstance() != nullptr);
+		UITwinSplineHelper2DWidgetImpl::RegisterSlaveWidget(OnScreen2DWidget);
+
+		// Make sure the chunk widgets are initially hidden.
+		OnScreen2DWidget->OnVisibilityUpdated();
 	}
 }
 
@@ -1558,6 +1592,8 @@ void AITwinSplineHelper::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	if (OnScreen2DWidget)
 	{
+		UITwinSplineHelper2DWidgetImpl::UnregisterSlaveWidget(OnScreen2DWidget);
+
 		OnScreen2DWidget->RemoveFromParent();
 	}
 	Super::EndPlay(EndPlayReason);
@@ -1993,6 +2029,7 @@ void AITwinSplineHelper::Update2DWidgetVisibility()
 	{
 		OnScreen2DWidget->SetVisibility(
 			(bDraw2DElements && !IsHidden()) ? ESlateVisibility::SelfHitTestInvisible : ESlateVisibility::Collapsed);
+		OnScreen2DWidget->OnVisibilityUpdated();
 	}
 }
 

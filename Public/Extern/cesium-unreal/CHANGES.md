@@ -1,5 +1,20 @@
 # Change Log {#changes}
 
+### v2.28.0 - 2026-07-01
+
+This is the last release that will support Unreal 5.5. Future versions will require Unreal 5.6+.
+
+##### Additions :tada:
+
+- Added support for Unreal Engine 5.8.
+
+##### Fixes :wrench:
+
+- Fixed a crash that could occur when zooming to a tileset with **Update in Editor** disabled.
+- Fixed Gaussian splats not rendering in Standalone Game sessions launched from the editor.
+
+In addition to the above, this release updates [cesium-native](https://github.com/CesiumGS/cesium-native) from v0.61.0 to v0.62.0. See the [changelog](https://github.com/CesiumGS/cesium-native/blob/main/CHANGES.md) for a complete list of changes in cesium-native.
+
 ### v2.27.0 - 2026-06-01
 
 ##### Additions :tada:

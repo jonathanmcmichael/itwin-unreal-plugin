@@ -11,6 +11,8 @@
 
 #include <Clipping/ITwinTileExcluderBase.h>
 #include <ITwinTilesetAccess.h>
+#include <Spline/ITwinSplineHelper.h>
+#include <Spline/ITwinSplineTool.h>
 
 #include <DrawDebugHelpers.h>
 
@@ -72,10 +74,103 @@ void FITwinClippingInfoBase::DeactivatePrimitiveInExcluder(UITwinTileExcluderBas
 	Excluder.Deactivate();
 }
 
-void FITwinClippingInfoBase::SetEdgeVisibility(bool /*bVisible*/)
+bool FITwinClippingInfoBase::NeedsCreateEdgeSplines() const
 {
-	// Does nothing in base class (see override for FITwinClippingBoxInfo).
+	return CountRequiredEdgeSplines() != EdgeSplines.Num();
 }
+
+void FITwinClippingInfoBase::CreateEdgeSplines(TWeakObjectPtr<AITwinSplineTool> const& SplineTool)
+{
+	if (EdgeSplines.Num() == CountRequiredEdgeSplines())
+	{
+		return; // Edge splines already created.
+	}
+
+	if (!ensure(SplineTool.IsValid()))
+	{
+		return;
+	}
+
+	auto const PreviousUsage = SplineTool->GetUsage();
+	SplineTool->SetUsage(EITwinSplineUsage::EdgeDisplayHelper);
+
+	// (Re)create the edge splines for the primitive.
+	if (!EdgeSplines.IsEmpty())
+	{
+		EdgeSplines.Empty();
+	}
+	DoCreateEdgeSplines(EdgeSplines, *SplineTool);
+
+	BE_ASSERT(EdgeSplines.Num() == CountRequiredEdgeSplines());
+
+	SplineTool->SetUsage(PreviousUsage);
+}
+
+void FITwinClippingInfoBase::DoCreateEdgeSplines(TArray<TObjectPtr<AITwinSplineHelper>>& /*OutEdgeSplines*/,
+	AITwinSplineTool& /*SplineTool*/)
+{
+	BE_ASSERT(CountRequiredEdgeSplines() == 0,
+		"Derived class must override DoCreateEdgeSplines if it requires edge splines.");
+}
+
+void FITwinClippingInfoBase::UpdateEdgeSplinesTransform(FTransform const& InstanceTransform)
+{
+	for (auto& Spline : EdgeSplines)
+	{
+		if (Spline)
+		{
+			Spline->SetTransform(InstanceTransform, false /*bMarkSplineForSaving*/);
+		}
+	}
+}
+
+void FITwinClippingInfoBase::SetEdgeSplinesSelected(bool bSelected)
+{
+	for (auto& Spline : EdgeSplines)
+	{
+		if (Spline)
+		{
+			Spline->SetSelected(bSelected);
+		}
+	}
+}
+
+
+void FITwinClippingInfoBase::SetEdgeVisibility(bool bVisible)
+{
+	for (auto& Spline : EdgeSplines)
+	{
+		if (Spline)
+		{
+			Spline->SetActorHiddenInGame(!bVisible);
+		}
+	}
+}
+
+void FITwinClippingInfoBase::BeforeDestroy()
+{
+	// Deactivate the primitive in all tile excluders that are using it, so that they don't keep a reference
+	// to it after it is destroyed.
+	for (auto const& TileExcluder : TileExcluders)
+	{
+		if (TileExcluder.IsValid())
+		{
+			DeactivatePrimitiveInExcluder(*TileExcluder);
+		}
+	}
+
+	// Make sure to destroy the edge splines before the box is destroyed, to avoid keeping ghosts of the box
+	// edges in the scene after the box has been removed.
+	for (auto& Spline : EdgeSplines)
+	{
+		if (Spline)
+		{
+			Spline->Destroy();
+		}
+	}
+	EdgeSplines.Empty();
+}
+
 
 bool FITwinClippingInfoBase::ShouldInfluenceModel(const ITwin::ModelLink& ModelIdentifier) const
 {
@@ -257,4 +352,18 @@ FBox const& FITwinClippingInfoBase::GetUpToDateInfluenceBoundingBox(UWorld const
 		UpdateInfluenceBoundingBox(World);
 	}
 	return InfluenceBoundingBox;
+}
+
+void FITwinClippingInfoBase::SetSceneLinkId(AdvViz::SDK::RefID const& InSceneLinkId)
+{
+	SceneLinkId = InSceneLinkId;
+}
+
+void FITwinClippingInfoBase::RecordTileExcluder(UITwinTileExcluderBase* Excluder)
+{
+	if (Excluder)
+	{
+		BE_ASSERT(!TileExcluders.Contains(Excluder));
+		TileExcluders.Add(Excluder);
+	}
 }

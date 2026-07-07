@@ -115,6 +115,18 @@ MODULE_EXPORT namespace AdvViz::SDK
 		ITwinAtmosphereSettings GetAtmosphere() const override;
 		void SetSceneSettings(const ITwinSceneSettings&) override;
 		ITwinSceneSettings GetSceneSettings() const override;
+
+		void SetCutout(RefID const& refID, const Cutout&) override;
+		void UpdateCutoutBaseInfo(RefID const& refID, const CutoutBase&) override;
+		void UpdateCutoutBox(RefID const& refID, const CutoutBox&) override;
+		void UpdateCutoutPlane(RefID const& refID, const CutoutPlane&, bool inverse) override;
+		void UpdateCutoutPolygonTransform(RefID const& refID, const std::array<double, 16>& transform) override;
+		void UpdateCutoutPolygonPoint(RefID const& refID, size_t polygonIndex, size_t pointIndex, double3 const& position) override;
+		void RemoveCutout(RefID const& refID) override;
+		bool HasCutouts() const override;
+		ECutoutType FindCutoutType(RefID const& refID) const override;
+		std::map<RefID, Cutout> GetCutouts(std::set<ECutoutType> const& filteredTypes = {}) const override;
+
 		void AsyncSave(std::function<void(bool)>&& onDataSavedFunc = {}) override;
 		bool ShouldSave() const final;
 		void SetShouldSave(bool shouldSave) const final;
@@ -161,6 +173,8 @@ MODULE_EXPORT namespace AdvViz::SDK
 		std::string GenerateBody(const LinkAPIPtr& link, bool forPatch, bool ignoretimelineID = true); // if not for patch, then it is for post
 		LinkAPIPtrVec GenerateSubLinks();
 		LinkAPIPtrVec GeneratePreLinks();
+
+		void InvalidateCutoutLink(RefID const& refID);
 	};
 
 	//global function to get all scenes from a Itwin

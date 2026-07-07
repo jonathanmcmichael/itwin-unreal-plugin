@@ -273,6 +273,10 @@ void FITwinIModelMaterialHandler::OnMaterialPropertiesRetrieved(AdvViz::SDK::ITw
 			{
 				TexConverter.ConvertTexturesToGltf(MatId, Lock);
 			}
+			// We are done with the material helper, so unlock it before triggering a retuning (which will
+			// lock a second mutex, hence a risk of dead-lock...).
+			Lock.unlock();
+
 			// After that, we should be able to tune materials with the right textures.
 			SplitGltfModelForCustomMaterials(true);
 		}
@@ -678,8 +682,10 @@ void FITwinIModelMaterialHandler::DetectCustomizedMaterials(AITwinIModel* OwnerI
 	}
 
 	// Use a cleanup guard in case of early exit.
-	Be::CleanUpGuard ToggleMLGuard([&Lock, OwnerIModel, bActivateMLMatPrediction]
+	Be::CleanUpGuard GltfMatHelperProcessingGuard([&Lock, OwnerIModel, bActivateMLMatPrediction]
 	{
+		Lock.unlock(); // we are done editing GltfMatHelper
+
 		if (bActivateMLMatPrediction && OwnerIModel)
 		{
 			OwnerIModel->ToggleMLMaterialPrediction(true);
@@ -722,10 +728,9 @@ void FITwinIModelMaterialHandler::DetectCustomizedMaterials(AITwinIModel* OwnerI
 			TexConverter.ConvertTexturesToGltf(MatID, Lock);
 		}
 	}
-	Lock.unlock(); // we are done editing GltfMatHelper
 
 	// Toggle material prediction at the end if needed. This may trigger a custom glTF tuning.
-	ToggleMLGuard.cleanup();
+	GltfMatHelperProcessingGuard.cleanup();
 
 	const bool bHasTriggeredTuning = (bActivateMLMatPrediction && OwnerIModel
 		&& OwnerIModel->VisualizeMaterialMLPrediction());
@@ -1934,18 +1939,25 @@ namespace ITwin
 
 		UITwinMaterialPreviewHolder* MatPreviewComp = Cast<UITwinMaterialPreviewHolder>(
 			UITwinMaterialPreviewHolder::StaticClass()->GetDefaultObject());
+
 		UMaterialInterface* pBaseMaterial = nullptr;
-		if (NewMaterial.kind == AdvViz::SDK::EMaterialKind::PBR)
+		const bool bTranslucent =
+			(NewMaterial.GetChannelIntensityOpt(AdvViz::SDK::EChannelType::Opacity).value_or(1.) < 1.);
+		switch (NewMaterial.kind)
 		{
-			if (NewMaterial.GetChannelIntensityOpt(AdvViz::SDK::EChannelType::Opacity).value_or(1.) < 1.)
-				pBaseMaterial = MatPreviewComp->BaseMaterialTranslucent;
-			else
-				pBaseMaterial = MatPreviewComp->BaseMaterialMasked;
+			BE_NO_UNCOVERED_ENUM_ASSERT_AND_FALLTHROUGH
+		case AdvViz::SDK::EMaterialKind::PBR:
+			pBaseMaterial = bTranslucent
+				? MatPreviewComp->BaseMaterialTranslucent
+				: MatPreviewComp->BaseMaterialMasked;
+			break;
+		case AdvViz::SDK::EMaterialKind::Glass:
+			pBaseMaterial = bTranslucent
+				? MatPreviewComp->BaseMaterialGlass
+				: MatPreviewComp->BaseMaterialMasked;
+			break;
 		}
-		else // Glass
-		{
-			pBaseMaterial = MatPreviewComp->BaseMaterialGlass;
-		}
+
 		if (!ensure(IsValid(pBaseMaterial)))
 		{
 			return false;

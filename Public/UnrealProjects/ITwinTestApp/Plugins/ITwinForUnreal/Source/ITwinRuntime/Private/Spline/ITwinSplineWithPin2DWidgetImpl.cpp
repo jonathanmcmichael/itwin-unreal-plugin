@@ -182,7 +182,7 @@ void UITwinSplineWithPin2DWidgetImpl::EnableButtonInteractions(bool bEnable)
 
 void UITwinSplineWithPin2DWidgetImpl::OnStartPointButtonPressed()
 {
-	if (ensure(bShowPins && bShowStartPin &&SplineChunkIndex != INDEX_NONE))
+	if (ensure(bShowPins && bShowStartPin && SplineChunkIndex != INDEX_NONE))
 	{
 		OnSplinePointPickedEvent.Broadcast(SplineChunkIndex);
 	}

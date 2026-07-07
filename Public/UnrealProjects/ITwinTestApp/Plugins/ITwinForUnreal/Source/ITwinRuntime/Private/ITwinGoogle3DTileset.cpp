@@ -86,6 +86,7 @@ public:
 	virtual AITwinDecorationHelper* GetDecorationHelper() const override;
 	virtual UITwinClipping3DTilesetHelper* GetClippingHelper() const override;
 	virtual FBox GetBoundingBox() const override;
+	virtual std::optional<FCartographicProps> GetNativeGeoreference() const override;
 	virtual const ACesium3DTileset* GetTileset() const override;
 	virtual ACesium3DTileset* GetMutableTileset() const override;
 
@@ -122,11 +123,8 @@ public:
 
 void AITwinGoogle3DTileset::FImpl::FindPersistenceMgr()
 {
-	//Look if a helper already exists:
-	for (TActorIterator<AITwinDecorationHelper> DecoIter(Owner.GetWorld()); DecoIter; ++DecoIter)
-	{
-		PersistenceMgr = *DecoIter;
-	}
+	// Look if a helper already exists:
+	PersistenceMgr = AITwinDecorationHelper::GetInstance(Owner.GetWorld());
 	//if (PersistenceMgr)
 	//{
 	//	PersistenceMgr->OnSceneLoaded.AddDynamic(&Owner, &AITwinGoogle3DTileset::OnSceneLoaded);
@@ -588,6 +586,12 @@ FBox AITwinGoogle3DTileset::FTilesetAccess::GetBoundingBox() const
 	if (!Tileset)
 		return {};
 	return UITwinUtilityLibrary::GetUnrealAxisAlignBoundingBox(Tileset);
+}
+
+std::optional<FCartographicProps> AITwinGoogle3DTileset::FTilesetAccess::GetNativeGeoreference() const
+{
+	// The Google 3D tileset potentially covers the entire globe: it has no intrinsic geo-location.
+	return std::nullopt;
 }
 
 const ACesium3DTileset* AITwinGoogle3DTileset::FTilesetAccess::GetTileset() const

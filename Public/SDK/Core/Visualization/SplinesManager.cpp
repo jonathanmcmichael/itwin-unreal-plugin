@@ -177,6 +177,9 @@ namespace AdvViz::SDK
 		// Never save splines instantiated for display purpose (they are recreated from other sources).
 		if (spline.GetUsage() == ESplineUsage::EdgeDisplayHelper)
 			return true;
+		// Cutout polygons are now saved through the Scene API.
+		if (spline.GetUsage() == ESplineUsage::MapCutout)
+			return true;
 		return false;
 	}
 
@@ -233,12 +236,12 @@ namespace AdvViz::SDK
 		}
 
 		#define POINT_STRUCT_MEMBERS \
-			std::array<double, 3> position;\
-			std::array<double, 3> upVector;\
+			double3 position;\
+			double3 upVector;\
 			std::string inTangentMode;\
-			std::array<double, 3> inTangent;\
+			double3 inTangent;\
 			std::string outTangentMode;\
-			std::array<double, 3> outTangent;
+			double3 outTangent;
 
 		struct SJsonPoint
 		{
@@ -654,6 +657,20 @@ namespace AdvViz::SDK
 			);
 		}
 
+		void ClearRemovedPoints(const std::vector<std::pair<RefID, RefID>>& removedPointIds)
+		{
+			auto thdata = thdata_.GetAutoLock();
+			auto const& splines = thdata->splines_;
+			for (auto const& removed : removedPointIds)
+			{
+				if (auto splinePtr = FindSplineById(splines, removed.first))
+				{
+					auto spline = splinePtr->GetAutoLock();
+					spline->UnregisterRemovedPointById(removed.second);
+				}
+			}
+		}
+
 		void AsyncDeleteSplinePoints(const std::string& decorationId, std::function<void(bool)>&& onPointsDeletedFunc)
 		{
 			BE_ASSERT(IsValidThreadForAsyncSaving());
@@ -676,14 +693,18 @@ namespace AdvViz::SDK
 					if (pointId.HasDBIdentifier())
 					{
 						jIn.ids.push_back(pointId.GetDBIdentifier());
-						removedPointIds.push_back(
-							std::make_pair(spline->GetId(), point->GetId()));
 					}
+					// If the points were removed before saving the scene (so they do not have
+					// a DB identifier yet), we need to remove them as well, otherwise the scene
+					// will be constantly marked as dirty.
+					removedPointIds.push_back(
+						std::make_pair(spline->GetId(), point->GetId()));
 				}
 			}
 
 			if (jIn.ids.empty())
 			{
+				ClearRemovedPoints(removedPointIds);
 				if (onPointsDeletedFunc)
 					onPointsDeletedFunc(true);
 				return;
@@ -700,16 +721,7 @@ namespace AdvViz::SDK
 				const bool bSuccess = (httpCode == 200 || httpCode == 201 || httpCode == 204 /* No-Content*/);
 				if (bSuccess)
 				{
-					auto thdata = thdata_.GetAutoLock();
-					auto const& splines = thdata->splines_;
-					for (auto const& removed : removedPointIds)
-					{
-						if (auto splinePtr = FindSplineById(splines, removed.first))
-						{
-							auto spline = splinePtr->GetAutoLock();
-							spline->UnregisterRemovedPointById(removed.second);
-						}
-					}
+					ClearRemovedPoints(removedPointIds);
 				}
 				else
 				{

@@ -14,7 +14,7 @@
 #include <ITwinPlaneTileExcluder.generated.h>
 
 class ACesium3DTileset;
-class AITwinClippingTool;
+
 
 UCLASS()
 class ITWINRUNTIME_API UITwinPlaneTileExcluder : public UITwinTileExcluderBase
@@ -52,5 +52,7 @@ private:
 	FPlaneEquation PlaneEquation;
 	int32 PlaneIndex = -1;
 
-	friend class AITwinClippingTool;
+
+	friend class UITwinClippingRenderer;
+	friend struct FITwinClippingPlaneInfo;
 };

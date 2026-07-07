@@ -11,6 +11,7 @@
 #include "Core/Network/Network.h"
 #include "Core/Tools/Tools.h"
 #include "Core/ITwinAPI/ITwinScene.h"
+#include "Core/Visualization/Cutout.h"
 #include "Core/Visualization/SavableItem.h"
 #include "Core/Visualization/Timeline.h"
 #include "Core/Tools/Types.h"
@@ -83,6 +84,21 @@ MODULE_EXPORT namespace AdvViz::SDK
 		virtual ITwinAtmosphereSettings GetAtmosphere() const = 0;
 		virtual void SetSceneSettings(const ITwinSceneSettings&) = 0;
 		virtual ITwinSceneSettings GetSceneSettings() const = 0;
+
+		// cutouts management
+		virtual void SetCutout(RefID const& refID, const Cutout&) = 0;
+		virtual void RemoveCutout(RefID const& refID) = 0;
+		virtual std::map<RefID, Cutout> GetCutouts(std::set<ECutoutType> const& filteredTypes = {}) const = 0;
+		virtual bool HasCutouts() const = 0;
+		virtual ECutoutType FindCutoutType(RefID const& refID) const = 0;
+		// shortcuts to avoid passing the full cutout when only a part of it is updated, for better
+		// performance (for example in case of polygon point update)
+		virtual void UpdateCutoutBaseInfo(RefID const& refID, const CutoutBase&) = 0;
+		virtual void UpdateCutoutBox(RefID const& refID, const CutoutBox&) = 0;
+		virtual void UpdateCutoutPlane(RefID const& refID, const CutoutPlane&, bool inverse) = 0;
+		virtual void UpdateCutoutPolygonTransform(RefID const& refID, const std::array<double, 16>& transform) = 0;
+		virtual void UpdateCutoutPolygonPoint(RefID const& refID, size_t polygonIndex, size_t pointIndex, double3 const& position) = 0;
+
 
 		/// save to the cloud (decoration server or iTwin SceneAPI)
 		virtual void AsyncSave(std::function<void(bool)>&& onDataSavedFunc = {}) = 0;

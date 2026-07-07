@@ -112,6 +112,12 @@ public:
 	EOperationUponAuth PendingOperation = EOperationUponAuth::None;
 	TMap<FString, FString> IModelIdToLoadableLayerNameMap;
 	TMap<FString, FString> RealityDataIdToLoadableLayerNameMap;
+	TSet<FString> LoadableLayerNames;
+
+	//! Unlike PendingLoadIds, ComponentLoadContextMap will persist after the component is loaded: it can be
+	//! used to know in which context the component was loaded (to know if a model was loaded as part of a
+	//! scene or individually).
+	TMap<FString, EITwinLoadContext> ComponentLoadContextMap;
 };
 
 AITwinDigitalTwinManager::FImpl::FImpl(AITwinDigitalTwinManager& InOwner)
@@ -340,18 +346,24 @@ void AITwinDigitalTwinManager::OnIModelsRetrieved(bool bSuccess, FIModelInfos co
 
 			// Also create a helper which will allow to easily load this iModel from the Editor.
 			TObjectPtr<UITwinLoadableIModel> LoadableIModel = NewObject<UITwinLoadableIModel>(this,
-				FName(*IModelInfo.DisplayName),
+				MakeUniqueObjectName(this, UITwinLoadableIModel::StaticClass(), *IModelInfo.DisplayName),
 				RF_Transient);
 			LoadableIModel->Owner = this;
 			LoadableIModel->Info = IModelInfo;
 
-			FITwinLoadableLayerHelper& LoadableIModelHelper = IModelLoadStatusMap.FindOrAdd(LoadableIModel->GetName());
+			// MakeUniqueObjectName appends "_0" to the name even if it's not already used, so we try to
+			// remove it if possible.
+			const FString LoadableUniqueName = Impl->LoadableLayerNames.Contains(IModelInfo.DisplayName)
+				? LoadableIModel->GetName()
+				: IModelInfo.DisplayName;
+			Impl->LoadableLayerNames.Add(LoadableUniqueName);
+			FITwinLoadableLayerHelper& LoadableIModelHelper = IModelLoadStatusMap.FindOrAdd(LoadableUniqueName);
 			LoadableIModelHelper.LoadableLayer = LoadableIModel;
 
 			// Store the mapping between layer ID and loadable layer name, to be able to find the
 			// corresponding loadable layer when only the layer ID is known.
 			// (See #SetLoadStatus for example).
-			Impl->IModelIdToLoadableLayerNameMap.FindOrAdd(IModelInfo.Id) = LoadableIModel->GetName();
+			Impl->IModelIdToLoadableLayerNameMap.FindOrAdd(IModelInfo.Id) = LoadableUniqueName;
 
 			if (bAutoLoadAllComponents)
 			{
@@ -400,18 +412,23 @@ void AITwinDigitalTwinManager::OnRealityData3DInfoRetrieved(bool bSuccess, FITwi
 		// Also create a helper which will allow to easily load this iModel from the Editor.
 		TObjectPtr<UITwinLoadableRealityData> LoadableRealityData;
 		LoadableRealityData = NewObject<UITwinLoadableRealityData>(this,
-			FName(*Info.DisplayName),
+			MakeUniqueObjectName(this, UITwinLoadableRealityData::StaticClass(), *Info.DisplayName),
 			RF_Transient);
 		LoadableRealityData->Owner = this;
 		LoadableRealityData->Info = Info;
 
-		FITwinLoadableLayerHelper& LoadableRealityDataHelper = RealityDataLoadStatusMap.FindOrAdd(LoadableRealityData->GetName());
+		// Same remark as for iModels regarding the name (see #OnIModelsRetrieved).
+		const FString LoadableUniqueName = Impl->LoadableLayerNames.Contains(Info.DisplayName)
+			? LoadableRealityData->GetName()
+			: Info.DisplayName;
+		Impl->LoadableLayerNames.Add(LoadableUniqueName);
+		FITwinLoadableLayerHelper& LoadableRealityDataHelper = RealityDataLoadStatusMap.FindOrAdd(LoadableUniqueName);
 		LoadableRealityDataHelper.LoadableLayer = LoadableRealityData;
 
 		// Store the mapping between layer ID and loadable layer name, to be able to find the
 		// corresponding loadable layer when only the layer ID is known.
 		// (See #SetLoadStatus for example).
-		Impl->RealityDataIdToLoadableLayerNameMap.FindOrAdd(Info.Id) = LoadableRealityData->GetName();
+		Impl->RealityDataIdToLoadableLayerNameMap.FindOrAdd(Info.Id) = LoadableUniqueName;
 
 		if (bAutoLoadAllComponents)
 		{
@@ -685,7 +702,7 @@ void AITwinDigitalTwinManager::OnRealityDataInfoLoaded(bool bSuccess, FString St
 		// Now that RealityData information is known, we can broadcast the event (to handle geo-location,
 		// typically).
 		CompletedLoadIds.Add(StringId);
-		ComponentLoadedEvent.Broadcast(LoadedObjects[StringId]);
+		ComponentLoadedEvent.Broadcast(LoadedObjects[StringId], EITwinModelType::RealityData, StringId);
 	}
 }
 
@@ -694,6 +711,9 @@ void AITwinDigitalTwinManager::LoadComponent(FString const& StringId, EITwinLoad
 	//no need to load anything if it's already (being) loaded
 	if (IsComponentLoaded(StringId) || IsComponentBeingLoaded(StringId))
 		return;
+
+	Impl->ComponentLoadContextMap.FindOrAdd(StringId, LoadContext);
+
 	// First look in iModels map:
 	const FIModelInfo* IModelInfo = IModelsMap.Find(StringId);
 	if (IModelInfo != nullptr)
@@ -747,7 +767,7 @@ void AITwinDigitalTwinManager::OnIModelLoaded(bool bSuccess, FString StringId)
 					LoadComponent(RealityDataId, EITwinLoadContext::Unknown);
 				}
 			});
-		ComponentLoadedEvent.Broadcast(LoadedObjects[StringId]);
+		ComponentLoadedEvent.Broadcast(LoadedObjects[StringId], EITwinModelType::IModel, StringId);
 	}
 }
 
@@ -778,6 +798,31 @@ AITwinIModel* AITwinDigitalTwinManager::GetIModel(FString const& StringId) const
 	return !StringId.IsEmpty() && LoadedObjects.Contains(StringId) ? Cast<AITwinIModel>(LoadedObjects[StringId]) : nullptr;
 }
 
+TUniquePtr<FITwinTilesetAccess> AITwinDigitalTwinManager::GetTilesetAccess(EITwinModelType ModelType, FString const& StringId) const
+{
+	switch (ModelType)
+	{
+	case EITwinModelType::IModel:
+		if (AITwinIModel* IModel = GetIModel(StringId))
+		{
+			return IModel->MakeTilesetAccess();
+		}
+		break;
+
+	case EITwinModelType::RealityData:
+		if (AITwinRealityData* RealityData = GetRealityData(StringId))
+		{
+			return RealityData->MakeTilesetAccess();
+		}
+		break;
+
+	default:
+		BE_ISSUE("Model type not handled by iTwin Manager: ", static_cast<int>(ModelType));
+		break;
+	}
+	return {};
+}
+
 TUniquePtr<FITwinTilesetAccess> AITwinDigitalTwinManager::GetTilesetAccessFromId(FString const& StringId) const
 {
 	if (AITwinIModel* IModel = GetIModel(StringId))
@@ -805,6 +850,15 @@ bool AITwinDigitalTwinManager::AreComponentSavedViewsLoaded(FString const& Strin
 bool AITwinDigitalTwinManager::IsComponentBeingLoaded(FString const& StringId) const
 {
 	return !StringId.IsEmpty() && LoadedObjects.Contains(StringId) && !CompletedLoadIds.Contains(StringId);
+}
+
+EITwinLoadContext AITwinDigitalTwinManager::GetComponentLoadContext(FString const& StringId) const
+{
+	if (const EITwinLoadContext* LoadContext = Impl->ComponentLoadContextMap.Find(StringId))
+	{
+		return *LoadContext;
+	}
+	return EITwinLoadContext::Unknown;
 }
 
 void AITwinDigitalTwinManager::SetIsLoadingScene(bool bIsLoading)

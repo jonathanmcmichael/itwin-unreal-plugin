@@ -41,6 +41,13 @@ namespace AdvViz::SDK {
 			double y = 0.0;
 			double z = 0.0;
 		};
+		struct SJsonQuaternion
+		{
+			double x = 0.0;
+			double y = 0.0;
+			double z = 0.0;
+			double w = 1.0;
+		};
 		struct SJsonCamera
 		{
 			JsonVector up;
@@ -90,7 +97,41 @@ namespace AdvViz::SDK {
 			std::vector<SJsonFrameData> output;
 			std::optional< std::string> name;
 		};
-		struct Data {
+
+		struct SJsonClippingPolygon
+		{
+			std::vector<JsonVector> positions;
+		};
+		struct SJsonClippingPlane
+		{
+			JsonVector normal;
+			double distance = 0.;
+		};
+		struct SJsonClippingBox
+		{
+			JsonVector center;
+			JsonVector halfExtents;
+			std::optional<SJsonQuaternion> rotation;
+		};
+		struct SJsonCutout
+		{
+			std::string cutoutType;
+			std::optional<bool> enabled;
+			std::optional<bool> inverse;
+			std::optional< std::array<double, 16> > transformFromClip;
+			std::optional< std::array<double, 16> > transformToClip;
+			std::optional<std::vector<SJsonClippingPolygon>> polygons;
+			std::optional<SJsonClippingPlane> plane;
+			std::optional<SJsonClippingBox> box;
+		};
+		struct SJsonCutoutInfo
+		{
+			SJsonCutout cutout;
+			std::vector<std::string> appliesTo;
+		};
+
+		struct Data
+		{
 			std::optional<bool> visible; //obsolete
 			rfl::Rename<"class", std::optional<std::string>> type;
 			std::optional<std::string> repositoryId;
@@ -104,6 +145,8 @@ namespace AdvViz::SDK {
 			std::optional<std::vector<std::string>> animations;
 			std::optional< std::vector<double>> input;
 			std::optional< std::vector<SJsonFrameData>> output;
+			std::optional<SJsonCutout> cutout;
+			std::optional<std::vector<std::string>> appliesTo;
 		};
 		struct JsonObjectWithId
 		{
@@ -289,12 +332,14 @@ namespace AdvViz::SDK {
 		struct SJsonInEmpty {};
 
 		using SJSonAtmosphere = SceneAPIDetails::SJSonAtmosphere;
+		using SJsonCutout = SceneAPIDetails::SJsonCutout;
+		using SJsonCutoutInfo = SceneAPIDetails::SJsonCutoutInfo;
 
 		struct SJSonSceneSettings
 		{
 			bool displayGoogleTiles = true;
 			double qualityGoogleTiles = 0.30;
-			std::optional < std::array<double, 3> > geoLocation;
+			std::optional<double3> geoLocation;
 		};
 		struct SJSonEnvironment
 		{
@@ -321,6 +366,7 @@ namespace AdvViz::SDK {
 			SJsonScene jsonScene_;
 			SJSonAtmosphere jsonAtmo_;
 			SJSonSceneSettings jsonSS_;
+			std::unordered_map<RefID, SJsonCutoutInfo> jsonCutoutsMap_;
 			LinkAPIPtrVec links_;
 		};
 		Tools::RWLockableObject<SThreadSafeData> thdata_;
@@ -369,6 +415,18 @@ namespace AdvViz::SDK {
 			return true;
 		}
 
+		LinkAPIPtr FindLinkByID(RefID const& refID) const
+		{
+			auto thdata = thdata_.GetRAutoLock();
+			for (auto& link : thdata->links_)
+			{
+				if (link->GetImpl().GetId() == refID)
+				{
+					return link;
+				}
+			}
+			return {};
+		}
 
 		std::shared_ptr<Http> const& GetHttp() const
 		{
@@ -812,10 +870,13 @@ namespace AdvViz::SDK {
 					if (geolocid >= 0)
 					{
 						auto thdata = thdata_.GetAutoLock();
-						thdata->jsonSS_.geoLocation = std::array<double, 3>();
-						(*thdata->jsonSS_.geoLocation)[0] = sldata[geolocid];
-						(*thdata->jsonSS_.geoLocation)[1] = sldata[geolocid + 1];
-						(*thdata->jsonSS_.geoLocation)[2] = sldata[geolocid + 2];
+						const double3 geoloc =
+						{
+							sldata[geolocid],
+							sldata[geolocid + 1],
+							sldata[geolocid + 2]
+						};
+						thdata->jsonSS_.geoLocation = geoloc;
 					}
 				}
 				AddLink(link);
@@ -879,6 +940,22 @@ namespace AdvViz::SDK {
 						data.name = *row.displayName;
 					thLoadedLinksData->cameraDatas[row.id] = data;
 				}
+			}
+			else if (row.kind == "Cutout")
+			{
+				link->GetImpl().link_.type = "cutout";
+				if (row.data && row.data->cutout)
+				{
+					auto thdata = thdata_.GetAutoLock();
+					RefID const& linkID = link->GetImpl().GetId();
+					SJsonCutoutInfo cutoutInfo;
+					cutoutInfo.cutout = *row.data->cutout;
+					if (row.data->appliesTo)
+						cutoutInfo.appliesTo = *row.data->appliesTo;
+
+					thdata->jsonCutoutsMap_.emplace(linkID, cutoutInfo);
+				}
+				AddLink(link);
 			}
 		}
 		return {};
@@ -984,7 +1061,7 @@ namespace AdvViz::SDK {
 					AddLink(link);
 					{
 						auto thdata = thdata_.GetAutoLock();
-						thdata->jsonAtmo_.heliodonDate = "2024-06-16T18:00:00Z";
+						thdata->jsonAtmo_.heliodonDate = "2024-03-18T12:00:00Z";
 						thdata->jsonAtmo_.useHeliodon = true;
 						thdata->jsonAtmo_.heliodonLongitude = -77.90736389160156;
 						thdata->jsonAtmo_.heliodonLatitude = 35.857818603515625;
@@ -1413,6 +1490,437 @@ namespace AdvViz::SDK {
 		return ss;
 	}
 
+
+	namespace SceneAPIDetails
+	{
+		inline ECutoutType StrToCutoutType(const std::string& str)
+		{
+			if (str == "box")
+			{
+				return ECutoutType::Box;
+			}
+			else if (str == "plane")
+			{
+				return ECutoutType::Plane;
+			}
+			else if (str == "polygonSet")
+			{
+				return ECutoutType::Polygons;
+			}
+			else
+			{
+				BE_ISSUE("Unknown cutout type", str);
+				return ECutoutType::ENUM_END;
+			}
+		}
+
+		inline void JsonVectorToDouble3(const JsonVector& jsonVec, double3& doubleVec)
+		{
+			doubleVec[0] = jsonVec.x;
+			doubleVec[1] = jsonVec.y;
+			doubleVec[2] = jsonVec.z;
+		}
+
+		inline void Double3ToJsonVector(const double3& doubleVec, JsonVector& jsonVec)
+		{
+			jsonVec.x = doubleVec[0];
+			jsonVec.y = doubleVec[1];
+			jsonVec.z = doubleVec[2];
+		}
+
+		inline void JsonQuatToDouble4(const SJsonQuaternion& jsonQuat, double4& doubleQuat)
+		{
+			doubleQuat[0] = jsonQuat.x;
+			doubleQuat[1] = jsonQuat.y;
+			doubleQuat[2] = jsonQuat.z;
+			doubleQuat[3] = jsonQuat.w;
+		}
+
+		inline void Double4ToJsonQuat(const double4& doubleQuat, SJsonQuaternion& jsonQuat)
+		{
+			jsonQuat.x = doubleQuat[0];
+			jsonQuat.y = doubleQuat[1];
+			jsonQuat.z = doubleQuat[2];
+			jsonQuat.w = doubleQuat[3];
+		}
+
+		inline bool IsIdentityRotation(const double4& quat)
+		{
+			// Identity quaternion is (0,0,0,1)
+			return std::abs(quat[0]) < 1e-7
+				&& std::abs(quat[1]) < 1e-7
+				&& std::abs(quat[2]) < 1e-7
+				&& std::abs(quat[3] - 1.0) < 1e-7;
+		}
+
+		void CutoutBaseToJson(const CutoutBase& cutoutBase, SJsonCutoutInfo& jsonCutoutInfo)
+		{
+			jsonCutoutInfo.appliesTo = cutoutBase.appliesTo;
+
+			SJsonCutout& jsonCutout(jsonCutoutInfo.cutout);
+			jsonCutout.enabled = cutoutBase.enabled;
+
+			// N.B. No inversion boolean exists for plane cutouts in scene API, nor transformation.
+			if (cutoutBase.cutoutType != ECutoutType::Plane)
+			{
+				jsonCutout.inverse = cutoutBase.inverse;
+			}
+		}
+
+		void CutoutBoxToJson(const CutoutBox& cutoutBox, SJsonClippingBox& jsonCutoutBox)
+		{
+			Double3ToJsonVector(cutoutBox.center, jsonCutoutBox.center);
+			Double3ToJsonVector(cutoutBox.halfExtents, jsonCutoutBox.halfExtents);
+			if (!IsIdentityRotation(cutoutBox.rotation))
+			{
+				jsonCutoutBox.rotation = SJsonQuaternion();
+				Double4ToJsonQuat(cutoutBox.rotation, *jsonCutoutBox.rotation);
+			}
+		}
+
+		void CutoutPlaneToJson(const CutoutPlane& cutoutPlane, SJsonClippingPlane& jsonCutoutPlane, bool inverse)
+		{
+			Double3ToJsonVector(cutoutPlane.normal, jsonCutoutPlane.normal);
+			jsonCutoutPlane.distance = cutoutPlane.distance;
+
+			if (inverse)
+			{
+				// No inversion boolean exists for plane cutouts in scene API, so we apply the inversion
+				// directly to the plane data.
+				jsonCutoutPlane.normal.x = -jsonCutoutPlane.normal.x;
+				jsonCutoutPlane.normal.y = -jsonCutoutPlane.normal.y;
+				jsonCutoutPlane.normal.z = -jsonCutoutPlane.normal.z;
+
+				jsonCutoutPlane.distance = -jsonCutoutPlane.distance;
+			}
+		}
+	}
+
+	void ScenePersistenceAPI::SetCutout(RefID const& refID, Cutout const& cutout)
+	{
+		using namespace SceneAPIDetails;
+
+		auto thdata = GetImpl().thdata_.GetAutoLock();
+
+		// Convert to internal JSON structure for storage
+		SJsonCutoutInfo jsonCutoutInfo;
+
+		CutoutBaseToJson(cutout, jsonCutoutInfo);
+
+		SJsonCutout& jsonCutout(jsonCutoutInfo.cutout);
+		switch (cutout.cutoutType)
+		{
+		case ECutoutType::Box:
+			jsonCutout.cutoutType = "box";
+			if (std::holds_alternative<CutoutBox>(cutout.cutoutData))
+			{
+				const auto& cutoutBox = std::get<CutoutBox>(cutout.cutoutData);
+				jsonCutout.transformFromClip = cutoutBox.transformFromClip;
+				jsonCutout.box = SJsonClippingBox();
+				CutoutBoxToJson(cutoutBox, *jsonCutout.box);
+			}
+			else
+			{
+				BE_ISSUE("Invalid cutout data for box type");
+				return;
+			}
+			break;
+		case ECutoutType::Plane:
+			jsonCutout.cutoutType = "plane";
+			if (std::holds_alternative<CutoutPlane>(cutout.cutoutData))
+			{
+				const auto& cutoutPlane = std::get<CutoutPlane>(cutout.cutoutData);
+				jsonCutout.plane = SJsonClippingPlane();
+				CutoutPlaneToJson(cutoutPlane, *jsonCutout.plane, cutout.inverse);
+			}
+			else
+			{
+				BE_ISSUE("Invalid cutout data for plane type");
+				return;
+			}
+			break;
+		case ECutoutType::Polygons:
+			jsonCutout.cutoutType = "polygonSet";
+			if (std::holds_alternative<CutoutPolygonSet>(cutout.cutoutData))
+			{
+				const auto& polygonSet = std::get<CutoutPolygonSet>(cutout.cutoutData);
+				jsonCutout.transformFromClip = polygonSet.transformFromClip;
+				jsonCutout.polygons = std::vector<SJsonClippingPolygon>();
+				jsonCutout.polygons->reserve(polygonSet.polygons.size());
+				for (const auto& polygon : polygonSet.polygons)
+				{
+					SJsonClippingPolygon jsonPolygon;
+					jsonPolygon.positions.reserve(polygon.positions.size());
+					for (const auto& point : polygon.positions)
+					{
+						JsonVector jsonPoint;
+						Double3ToJsonVector(point, jsonPoint);
+						jsonPolygon.positions.push_back(jsonPoint);
+					}
+					jsonCutout.polygons->push_back(jsonPolygon);
+				}
+			}
+			else
+			{
+				BE_ISSUE("Invalid cutout data for polygons type");
+				return;
+			}
+			break;
+		}
+
+		thdata->jsonCutoutsMap_[refID] = jsonCutoutInfo;
+
+		// Create a new link for this cutout if needed.
+		LinkAPIPtr link = GetImpl().FindLinkByID(refID);
+		if (!link)
+		{
+			link.reset(LinkAPI::New());
+			link->SetId(refID);
+			link->GetImpl().link_.type = "cutout";
+			GetImpl().AddLink(link);
+		}
+		link->InvalidateDB();
+	}
+
+	void ScenePersistenceAPI::InvalidateCutoutLink(RefID const& refID)
+	{
+		LinkAPIPtr link = GetImpl().FindLinkByID(refID);
+		if (link)
+		{
+			link->InvalidateDB();
+		}
+		else
+		{
+			BE_ISSUE("No cutout link found for refID ", refID.ID());
+		}
+	}
+
+	void ScenePersistenceAPI::UpdateCutoutBaseInfo(RefID const& refID, const CutoutBase& cutoutBase)
+	{
+		using namespace SceneAPIDetails;
+
+		auto thdata = GetImpl().thdata_.GetAutoLock();
+		auto it = thdata->jsonCutoutsMap_.find(refID);
+		if (it != thdata->jsonCutoutsMap_.end())
+		{
+			SJsonCutoutInfo& jsonCutoutInfo = it->second;
+			CutoutBaseToJson(cutoutBase, jsonCutoutInfo);
+			InvalidateCutoutLink(refID);
+		}
+		else
+		{
+			BE_ISSUE("No Json cutout found for refID ", refID.ID(), " while updating cutout base info");
+		}
+	}
+
+	void ScenePersistenceAPI::UpdateCutoutBox(RefID const& refID, const CutoutBox& boxInfo)
+	{
+		using namespace SceneAPIDetails;
+
+		auto thdata = GetImpl().thdata_.GetAutoLock();
+		auto it = thdata->jsonCutoutsMap_.find(refID);
+		if (it != thdata->jsonCutoutsMap_.end())
+		{
+			SJsonCutoutInfo& jsonCutoutInfo = it->second;
+			jsonCutoutInfo.cutout.transformFromClip = boxInfo.transformFromClip;
+			BE_ASSERT(jsonCutoutInfo.cutout.box.has_value());
+			if (jsonCutoutInfo.cutout.box)
+			{
+				CutoutBoxToJson(boxInfo, *jsonCutoutInfo.cutout.box);
+				InvalidateCutoutLink(refID);
+			}
+		}
+		else
+		{
+			BE_ISSUE("No Json cutout found for refID ", refID.ID(), " while updating cutout box info");
+		}
+	}
+
+	void ScenePersistenceAPI::UpdateCutoutPlane(RefID const& refID, const CutoutPlane& planeInfo, bool inverse)
+	{
+		using namespace SceneAPIDetails;
+
+		auto thdata = GetImpl().thdata_.GetAutoLock();
+		auto it = thdata->jsonCutoutsMap_.find(refID);
+		if (it != thdata->jsonCutoutsMap_.end())
+		{
+			SJsonCutoutInfo& jsonCutoutInfo = it->second;
+			BE_ASSERT(jsonCutoutInfo.cutout.plane.has_value());
+			if (jsonCutoutInfo.cutout.plane)
+			{
+				CutoutPlaneToJson(planeInfo, *jsonCutoutInfo.cutout.plane, inverse);
+				InvalidateCutoutLink(refID);
+			}
+		}
+		else
+		{
+			BE_ISSUE("No Json cutout found for refID ", refID.ID(), " while updating cutout plane info");
+		}
+	}
+
+	void ScenePersistenceAPI::UpdateCutoutPolygonTransform(RefID const& refID, const std::array<double, 16>& transform)
+	{
+		using namespace SceneAPIDetails;
+		auto thdata = GetImpl().thdata_.GetAutoLock();
+		auto it = thdata->jsonCutoutsMap_.find(refID);
+		if (it != thdata->jsonCutoutsMap_.end())
+		{
+			SJsonCutoutInfo& jsonCutoutInfo = it->second;
+			jsonCutoutInfo.cutout.transformFromClip = transform;
+			InvalidateCutoutLink(refID);
+		}
+		else
+		{
+			BE_ISSUE("No Json cutout found for refID ", refID.ID(), " while updating cutout polygon transform");
+		}
+	}
+
+	void ScenePersistenceAPI::UpdateCutoutPolygonPoint(RefID const& refID, size_t polygonIndex, size_t pointIndex, double3 const& position)
+	{
+		using namespace SceneAPIDetails;
+
+		auto thdata = GetImpl().thdata_.GetAutoLock();
+		auto it = thdata->jsonCutoutsMap_.find(refID);
+		if (it != thdata->jsonCutoutsMap_.end())
+		{
+			SJsonCutoutInfo& jsonCutoutInfo = it->second;
+			BE_ASSERT(jsonCutoutInfo.cutout.polygons.has_value());
+			if (jsonCutoutInfo.cutout.polygons
+				&& polygonIndex < jsonCutoutInfo.cutout.polygons->size()
+				&& pointIndex < jsonCutoutInfo.cutout.polygons->at(polygonIndex).positions.size())
+			{
+				Double3ToJsonVector(position,
+					jsonCutoutInfo.cutout.polygons->at(polygonIndex).positions.at(pointIndex));
+				InvalidateCutoutLink(refID);
+			}
+			else
+			{
+				BE_ISSUE("Invalid polygon or point index for refID ", refID.ID(), " while updating cutout polygon point");
+			}
+		}
+		else
+		{
+			BE_ISSUE("No Json cutout found for refID ", refID.ID(), " while updating cutout polygon");
+		}
+	}
+
+	void ScenePersistenceAPI::RemoveCutout(RefID const& refID)
+	{
+		LinkAPIPtr link = GetImpl().FindLinkByID(refID);
+		if (link)
+		{
+			link->Delete();
+		}
+	}
+
+	bool ScenePersistenceAPI::HasCutouts() const
+	{
+		auto thdata = GetImpl().thdata_.GetRAutoLock();
+		return !thdata->jsonCutoutsMap_.empty();
+	}
+
+	ECutoutType ScenePersistenceAPI::FindCutoutType(RefID const& refID) const
+	{
+		auto thdata = GetImpl().thdata_.GetRAutoLock();
+		auto it = thdata->jsonCutoutsMap_.find(refID);
+		if (it != thdata->jsonCutoutsMap_.end())
+		{
+			return SceneAPIDetails::StrToCutoutType(it->second.cutout.cutoutType);
+		}
+		return ECutoutType::ENUM_END;
+	}
+
+	std::map<RefID, Cutout> ScenePersistenceAPI::GetCutouts(std::set<ECutoutType> const& filteredTypes /*= {}*/) const
+	{
+		using namespace SceneAPIDetails;
+
+		auto thdata = GetImpl().thdata_.GetRAutoLock();
+
+		std::map<RefID, Cutout> res;
+
+		const bool bFilterType = !filteredTypes.empty();
+		for (auto const& [refId, jsonCutoutInfo] : thdata->jsonCutoutsMap_)
+		{
+			// Skip removed cutouts.
+			LinkAPIPtr link = GetImpl().FindLinkByID(refId);
+			if (!link || link->ShouldDelete())
+				continue;
+			auto const& jsonCutout = jsonCutoutInfo.cutout;
+			const ECutoutType cutoutType = StrToCutoutType(jsonCutout.cutoutType);
+			if (cutoutType == ECutoutType::ENUM_END)
+				continue;
+			if (bFilterType && !filteredTypes.contains(cutoutType))
+				continue;
+
+			Cutout cutout;
+			cutout.cutoutType = cutoutType;
+			cutout.appliesTo = jsonCutoutInfo.appliesTo;
+			cutout.enabled = jsonCutout.enabled.value_or(true);
+			cutout.inverse = jsonCutout.inverse.value_or(false);
+
+			bool hasValidData = false;
+			switch (cutoutType)
+			{
+			case ECutoutType::Box:
+				if (jsonCutout.box)
+				{
+					CutoutBox cutoutBox;
+					cutoutBox.transformFromClip = jsonCutout.transformFromClip;
+					JsonVectorToDouble3(jsonCutout.box->center, cutoutBox.center);
+					JsonVectorToDouble3(jsonCutout.box->halfExtents, cutoutBox.halfExtents);
+					if (jsonCutout.box->rotation)
+					{
+						JsonQuatToDouble4(*jsonCutout.box->rotation, cutoutBox.rotation);
+					}
+					cutout.cutoutData = cutoutBox;
+					hasValidData = true;
+				}
+				break;
+			case ECutoutType::Plane:
+				if (jsonCutout.plane)
+				{
+					CutoutPlane cutoutPlane;
+					JsonVectorToDouble3(jsonCutout.plane->normal, cutoutPlane.normal);
+					cutoutPlane.distance = jsonCutout.plane->distance;
+					cutout.cutoutData = cutoutPlane;
+					hasValidData = true;
+				}
+				break;
+			case ECutoutType::Polygons:
+				if (jsonCutout.polygons)
+				{
+					CutoutPolygonSet polygonSet;
+					polygonSet.transformFromClip = jsonCutout.transformFromClip;
+					polygonSet.polygons.reserve(jsonCutout.polygons->size());
+					for (const auto& jsonPolygon : *jsonCutout.polygons)
+					{
+						CutoutPolygon polygon;
+						polygon.positions.reserve(jsonPolygon.positions.size());
+						for (const auto& jsonPoint : jsonPolygon.positions)
+						{
+							double3 point;
+							JsonVectorToDouble3(jsonPoint, point);
+							polygon.positions.push_back(point);
+						}
+						polygonSet.polygons.push_back(polygon);
+					}
+					cutout.cutoutData = polygonSet;
+					hasValidData = true;
+				}
+				break;
+			default:
+				break;
+			}
+			if (!hasValidData)
+			{
+				BE_ISSUE("Invalid cutout data for refID ", refId.ID());
+				continue;
+			}
+			res.emplace(refId, cutout);
+		}
+		return res;
+	}
+
 	bool ScenePersistenceAPI::ShouldSave() const
 	{
 		auto thdata = GetImpl().thdata_.GetRAutoLock();
@@ -1482,7 +1990,7 @@ namespace AdvViz::SDK {
 		thdata->jsonScene_.name = name;
 		thdata->jsonScene_.itwinid = itwinid;
 		ITwinAtmosphereSettings defaultAtmo;
-		defaultAtmo.heliodonDate = "2024-06-16T18:00:00Z";
+		defaultAtmo.heliodonDate = "2024-03-18T12:00:00Z";
 		defaultAtmo.useHeliodon = true;
 		defaultAtmo.heliodonLongitude = -77.90736389160156;
 		defaultAtmo.heliodonLatitude= 35.857818603515625;
@@ -1569,13 +2077,30 @@ namespace AdvViz::SDK {
 
 		for (auto link : links)
 		{
-			// RealityData and iModel links are saved separately, in Itwin Engage TS. We don't want to save them here as well.
-			if (!enableExportOfResources &&(link->GetType() == "RealityData" || link->GetType() == "iModel"))
+			// RealityData and iModel links are saved separately, in Itwin Engage TS. We don't want to save
+			// them here as well.
+			if (!enableExportOfResources && (link->GetType() == "RealityData" || link->GetType() == "iModel"))
 			{
 				continue;
 			}
+
 			RefID const linkId = link->GetId();
 			BE_ASSERT(bSubLink || !link->GetImpl().parentLink_);
+
+			// Do not save cutout links if the related cutout has not changed since last save, or if we
+			// cannot find the related cutout info (which should not happen, but just in case).
+			if (link->GetType() == "cutout")
+			{
+				if (!link->ShouldSave())
+					continue; // cutout has not changed, skip it
+				auto itCutout = thdata->jsonCutoutsMap_.find(linkId);
+				if (itCutout == thdata->jsonCutoutsMap_.end())
+				{
+					BE_ASSERT(link->ShouldDelete(), "No cutout info found for cutout link with id ", linkId.ID());
+					continue;
+				}
+			}
+
 			if (!linkId.HasDBIdentifier() && !link->ShouldDelete())
 			{
 				// New link - use POST request
@@ -1803,6 +2328,8 @@ namespace AdvViz::SDK {
 
 	std::string ScenePersistenceAPI::GenerateBody(const std::shared_ptr<LinkAPI>& link, bool forPatch,bool ignoreTimelineID)
 	{
+		using namespace SceneAPIDetails;
+
 		if (link->GetType() == "RealityData" || link->GetType() == "iModel")
 		{
 			std::string itwinid;
@@ -1888,12 +2415,6 @@ namespace AdvViz::SDK {
 		}
 		else if (link->GetType() == "camera")
 		{
-			struct JsonVector
-			{
-				double x = 0.0;
-				double y = 0.0;
-				double z = 0.0;
-			};
 			struct SJsonInData
 			{
 				JsonVector up;
@@ -2079,12 +2600,7 @@ namespace AdvViz::SDK {
 			auto clipp = tl->GetClipByRefID(link->GetImpl().GetId());
 			if (!clipp)
 				return "";
-			struct JsonVector
-			{
-				double x = 0.0;
-				double y = 0.0;
-				double z = 0.0;
-			};
+
 			struct SJsonCamera
 			{
 				JsonVector up;
@@ -2302,6 +2818,40 @@ namespace AdvViz::SDK {
 				Jin.data = data;
 				Jin.displayName = link->GetType();
 				Jin.relatedId = link->GetRef();
+				return ToPostString(Jin);
+			}
+		}
+		else if (link->GetType() == "cutout")
+		{
+			// Find the cutout info related to this link.
+			auto thdata = GetImpl().thdata_.GetRAutoLock();
+			auto itCutout = thdata->jsonCutoutsMap_.find(link->GetId());
+			if (itCutout == thdata->jsonCutoutsMap_.end())
+			{
+				BE_ISSUE("No cutout info found for cutout link with id ", link->GetId().ID());
+				return "";
+			}
+			if (forPatch)
+			{
+				struct SJsonIn
+				{
+					SJsonCutoutInfo data;
+					std::optional<std::string> displayName;
+				};
+				SJsonIn Jin;
+				Jin.data = itCutout->second;
+				return Json::ToString(Jin);
+			}
+			else
+			{
+				struct SJsonIn
+				{
+					std::string version = "2.0.0";
+					std::string kind = "Cutout";
+					SJsonCutoutInfo data;
+				};
+				SJsonIn Jin;
+				Jin.data = itCutout->second;
 				return ToPostString(Jin);
 			}
 		}

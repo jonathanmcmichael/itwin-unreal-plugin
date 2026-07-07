@@ -86,7 +86,7 @@ if (BE_CODE_COVERAGE)
 	endif ()
 endif ()
 
-function (be_add_test target)
+function (be_add_sdk_test target)
 	# When code coverage is enabled, we have to filter the stdout and exit code of OpenCppCoverage.
 	# We use FixStdoutForVS.py to do this.
 	# Since add_test() does not support redirection, we use a cmd file.

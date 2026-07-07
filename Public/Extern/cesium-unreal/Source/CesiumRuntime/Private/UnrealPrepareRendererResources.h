@@ -1,8 +1,16 @@
 #pragma once
 
+#include "CoreMinimal.h"
+
+THIRD_PARTY_INCLUDES_START
 #include <Cesium3DTilesSelection/IPrepareRendererResources.h>
+THIRD_PARTY_INCLUDES_END
 
 class ACesium3DTileset;
+
+namespace CesiumImage {
+struct ImageAsset;
+}
 
 /**
  * An implementation of Cesium Native's IPrepareRendererResources that creates
@@ -31,7 +39,7 @@ public:
       void* pMainThreadResult) noexcept override;
 
   virtual void* prepareRasterInLoadThread(
-      CesiumGltf::ImageAsset& image,
+      CesiumImage::ImageAsset& image,
       const std::any& rendererOptions) override;
 
   virtual void* prepareRasterInMainThread(

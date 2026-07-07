@@ -10,8 +10,8 @@
 
 #include <BeUtils/Gltf/ExtensionITwinMaterial.h>
 #include <CesiumGltf/ExtensionKhrTextureTransform.h>
-#include <CesiumGltfContent/ImageManipulation.h>
 #include <CesiumGltfReader/GltfReader.h>
+#include <CesiumImage/ImageManipulation.h>
 
 #include <fstream>
 #include <spdlog/fmt/fmt.h>
@@ -128,14 +128,14 @@ namespace BeUtils
 
 
 	using ReadImageResult = AdvViz::expected<
-		CesiumUtility::IntrusivePointer<CesiumGltf::ImageAsset>,
+		CesiumUtility::IntrusivePointer<CesiumImage::ImageAsset>,
 		GenericFailureDetails>;
 
 	static ReadImageResult DecodeImageCesium(std::vector<std::byte> const& imageData, std::string_view const& imageDesc)
 	{
-		using namespace CesiumGltfReader;
+		using namespace CesiumImage;
 
-		ImageReaderResult imgReadResult = ImageDecoder::readImage(imageData, CesiumGltf::Ktx2TranscodeTargets{});
+		ImageReaderResult imgReadResult = ImageDecoder::readImage(imageData, CesiumImage::Ktx2TranscodeTargets{});
 		if (!imgReadResult.pImage)
 		{
 			// propagate errors
@@ -227,7 +227,7 @@ namespace BeUtils
 		std::filesystem::path const& outputTexPath,
 		bool bOverwriteExisting = false)
 	{
-		using namespace CesiumGltfContent;
+		using namespace CesiumImage;
 		using ESaveImageAction = GltfMaterialTuner::ESaveImageAction;
 
 		// Save the texture to PNG if needed.
@@ -288,7 +288,7 @@ namespace BeUtils
 		WLock const& lock) const
 	{
 		using namespace CesiumGltfReader;
-		using namespace CesiumGltfContent;
+		using namespace CesiumImage;
 
 		isTranslucencyNeeded = false;
 
@@ -348,7 +348,7 @@ namespace BeUtils
 		targetImg.pixelData.resize(static_cast<size_t>(
 			nbPixels * targetImg.channels * targetImg.bytesPerChannel), defaultPixComponent);
 
-		CesiumGltf::ImageAsset targetAlphaImg = targetImg;
+		CesiumImage::ImageAsset targetAlphaImg = targetImg;
 
 		// Resize color and alpha to the final size
 		if (hasColorTexture)
@@ -461,7 +461,7 @@ namespace BeUtils
 		WLock const& lock) const
 	{
 		using namespace CesiumGltfReader;
-		using namespace CesiumGltfContent;
+		using namespace CesiumImage;
 
 		if (srcTextures.GetData().empty())
 		{
@@ -471,7 +471,7 @@ namespace BeUtils
 
 		struct ImageWithInfo
 		{
-			CesiumUtility::IntrusivePointer<CesiumGltf::ImageAsset> img;
+			CesiumUtility::IntrusivePointer<CesiumImage::ImageAsset> img;
 			MergeImageInput chanInfo;
 		};
 		using ImageWithInfoVec = boost::container::small_vector<ImageWithInfo, 4>;
@@ -514,11 +514,11 @@ namespace BeUtils
 		targetImg.pixelData.resize(static_cast<size_t>(
 			nbPixels * targetImg.channels * targetImg.bytesPerChannel), std::byte(255));
 
-		auto const resizeAndExtractChannel = [&](CesiumGltf::ImageAsset const& srcImage, MergeImageInput const& chanInfo)
+		auto const resizeAndExtractChannel = [&](CesiumImage::ImageAsset const& srcImage, MergeImageInput const& chanInfo)
 			-> AdvViz::expected<bool, GenericFailureDetails>
 		{
 			// Resize source image if needed
-			CesiumGltf::ImageAsset resizedSrcImage;
+			CesiumImage::ImageAsset resizedSrcImage;
 			bool const needResizing = srcImage.width != targetImg.width
 				|| srcImage.height != targetImg.height;
 			if (needResizing)
@@ -616,7 +616,7 @@ namespace BeUtils
 		uint32_t desiredSize,
 		std::string const& contextInfo)
 	{
-		using namespace CesiumGltfContent;
+		using namespace CesiumImage;
 
 		if (desiredSize < 2)
 		{
@@ -1319,13 +1319,29 @@ namespace BeUtils
 		// No merge needed. Just convert the texture to Cesium format if needed (we no longer use
 		// GltfReader::#resolveExternalData for individual files (using file:/// protocol) as we need now a
 		// common base URL (since merge with cesium-unreal 2.14.1)
+		bool const isITwinTexture = chanTex.eSource == AdvViz::SDK::ETextureSource::ITwin;
 		if (chanTex.HasTexture()
-			&& chanTex.eSource == AdvViz::SDK::ETextureSource::LocalDisk)
+			&& (chanTex.eSource == AdvViz::SDK::ETextureSource::LocalDisk
+				||
+				(channelJustEdited == AdvViz::SDK::EChannelType::Color
+				&& isITwinTexture)
+			))
 		{
-			auto texAccess = materialHelper_->GetTextureAccess(chanTex.texture, chanTex.eSource, lock);
+			auto texAccess = materialHelper_->GetTextureAccess(chanTex, lock);
 			if (!texAccess.cesiumImage)
 			{
-				auto imgResult = ReadImageCesium(chanTex.texture,
+				std::filesystem::path texturePath(chanTex.texture);
+				if (isITwinTexture)
+				{
+					texturePath = materialHelper_->GetTextureLocalPath(chanTex, lock);
+					if (texturePath.empty())
+					{
+						BE_LOGW("ITwinMaterial", GetMaterialContextInfo(lock)
+							<< "iTwin texture " << chanTex.texture << " not found in cache");
+						return {};
+					}
+				}
+				auto imgResult = ReadImageCesium(texturePath,
 					AdvViz::SDK::GetChannelName(channelJustEdited));
 				if (imgResult)
 				{
@@ -1369,6 +1385,16 @@ namespace BeUtils
 		if (alphaMap && alphaMap->HasTexture())
 		{
 			ConvertChannelTextureToGltf(itwinMatId, AdvViz::SDK::EChannelType::Alpha, needTranslucency, lock);
+		}
+		else if (DefinesChannel(matDefinition, AdvViz::SDK::EChannelType::Color))
+		{
+			auto const colorMap = matDefinition.GetChannelColorMapOpt(AdvViz::SDK::EChannelType::Color);
+			if (colorMap && colorMap->HasTexture())
+			{
+				// If ones customize the color of a material having an iTwin texture, we need to resolve
+				// the latter (see comment in GltfMaterialTuner::#ConvertITwinMaterial).
+				ConvertChannelTextureToGltf(itwinMatId, AdvViz::SDK::EChannelType::Color, needTranslucency, lock);
+			}
 		}
 
 		auto const metallicMap = matDefinition.GetChannelIntensityMapOpt(AdvViz::SDK::EChannelType::Metallic);

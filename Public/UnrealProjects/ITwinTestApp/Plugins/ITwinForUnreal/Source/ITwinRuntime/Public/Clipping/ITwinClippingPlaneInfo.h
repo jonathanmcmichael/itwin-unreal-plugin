@@ -14,7 +14,7 @@
 
 
 USTRUCT()
-struct FITwinClippingPlaneInfo : public FITwinClippingInfoBase
+struct FITwinClippingPlaneInfo final : public FITwinClippingInfoBase
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -26,20 +26,20 @@ struct FITwinClippingPlaneInfo : public FITwinClippingInfoBase
 		double PlaneW = 0.;
 	};
 
-	void BeforeDestroy();
+	FPlaneEquation const& GetPlaneEquation() const { return PlaneEquation; }
+
+	void SetPlaneEquation(FVector const& PlaneOrientation, double PlaneW, bool bPropagateToTileExcluders = true);
 
 protected:
 	virtual void DoSetInvertEffect(bool bInvert) override;
 
+	virtual int32 CountRequiredEdgeSplines() const override;
+	virtual void DoCreateEdgeSplines(TArray<TObjectPtr<AITwinSplineHelper>>& OutEdgeSplines, AITwinSplineTool& SplineTool) override;
+
 private:
 	/**
-	 * Whether to invert the effect specified by the clipping primitive.
-	 *
-	 * Typically for a box, if this is true, only the areas outside of the box will be
-	 * visible.
+	 * Whether to invert the effect of the clipping plane.
 	 */
 	bool bInvertEffect = false;
 	FPlaneEquation PlaneEquation;
-
-	friend class AITwinClippingTool;
 };

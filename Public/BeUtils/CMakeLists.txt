@@ -48,6 +48,7 @@ target_include_directories (BeUtils PUBLIC
 )
 target_link_libraries (BeUtils PRIVATE
 	Cesium3DTilesSelection
+	CesiumImage
 	Visualization
 	Async++
 )

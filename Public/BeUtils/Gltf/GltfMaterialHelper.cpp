@@ -1603,6 +1603,12 @@ bool GltfMaterialHelper::GetCustomRequirements(uint64_t matID, AdvViz::SDK::EMat
 		if (GetCurrentAlphaMode(matID, alphaMode, lock))
 		{
 			bOutRequiresTranslucency = (alphaMode == CesiumGltf::Material::AlphaMode::BLEND);
+			// If we turn a glass material 100% opaque, we should enforce masked mode, as done for PBR.
+			// (see Unreal troubles with 100% opaque translucent materials: AzDev#1539818, AzDev#2088618)
+			if (!bOutRequiresTranslucency && outKind == AdvViz::SDK::EMaterialKind::Glass)
+			{
+				outKind = AdvViz::SDK::EMaterialKind::PBR;
+			}
 		}
 		return true;
 	}

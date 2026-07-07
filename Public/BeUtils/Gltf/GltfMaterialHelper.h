@@ -275,7 +275,7 @@ public:
 	std::filesystem::path const& GetTextureLocalPath(TextureKey const& textureKey) const;
 
 	inline std::filesystem::path const& GetTextureLocalPath(AdvViz::SDK::ITwinChannelMap const& texMap,
-		RLock const& lock) const {
+		RWLockBase const& lock) const {
 		return GetTextureLocalPath(TextureKey{ texMap.texture, texMap.eSource }, lock);
 	}
 

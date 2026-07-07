@@ -8,6 +8,8 @@
 
 #include <Clipping/ITwinClipping3DTilesetHelper.h>
 
+#include <Clipping/ITwinClippingEffectManager.inl>
+#include <Clipping/ITwinClippingRenderer.h>
 #include <Clipping/ITwinClippingTool.h>
 #include <Compil/IsUsingBentleyUnreal.h>
 #include <Helpers/WorldSingleton.h>
@@ -57,7 +59,14 @@ void UITwinClipping3DTilesetHelper::SetModelIdentifier(const ITwin::ModelLink& I
 
 void UITwinClipping3DTilesetHelper::SetClippingTool(const AITwinClippingTool* InClippingTool)
 {
-	ClippingToolPtr = InClippingTool;
+	if (InClippingTool)
+	{
+		ClippingRenderer = InClippingTool->GetRenderer();
+	}
+	else
+	{
+		ClippingRenderer = nullptr;
+	}
 }
 
 void UITwinClipping3DTilesetHelper::SetCutoutOverlay(const UCesiumPolygonRasterOverlay* InPolygonRasterOverlay)
@@ -65,35 +74,35 @@ void UITwinClipping3DTilesetHelper::SetCutoutOverlay(const UCesiumPolygonRasterO
 	CutoutOverlayPtr = InPolygonRasterOverlay;
 }
 
-bool UITwinClipping3DTilesetHelper::UpdateCPDFlagsFromClippingSelection(AITwinClippingTool const& ClippingTool)
+bool UITwinClipping3DTilesetHelper::UpdateCPDFlagsFromClippingSelection(UITwinClippingEffectManager const& EffectManager)
 {
-	const int32 NumPlanes = ClippingTool.NumEffects(EITwinClippingPrimitiveType::Plane);
+	const int32 NumPlanes = EffectManager.NumEffects(EITwinClippingPrimitiveType::Plane);
 	int ActivePlanes_0_15 = 0;
 	for (int32 i = 0; i < std::min(16, NumPlanes); i++)
 	{
-		if (ClippingTool.ShouldEffectInfluenceModel(EITwinClippingPrimitiveType::Plane, i, ModelIdentifier))
+		if (EffectManager.ShouldEffectInfluenceModel(EITwinClippingPrimitiveType::Plane, i, ModelIdentifier))
 			ActivePlanes_0_15 |= (1 << i);
 	}
 
 	int ActivePlanes_16_31 = 0;
 	for (int32 i = 0; i < std::min(16, NumPlanes - 16); i++)
 	{
-		if (ClippingTool.ShouldEffectInfluenceModel(EITwinClippingPrimitiveType::Plane, 16 + i, ModelIdentifier))
+		if (EffectManager.ShouldEffectInfluenceModel(EITwinClippingPrimitiveType::Plane, 16 + i, ModelIdentifier))
 			ActivePlanes_16_31 |= (1 << i);
 	}
 
-	const int32 NumBoxes = ClippingTool.NumEffects(EITwinClippingPrimitiveType::Box);
+	const int32 NumBoxes = EffectManager.NumEffects(EITwinClippingPrimitiveType::Box);
 	int ActiveBoxes_0_15 = 0;
 	for (int32 i = 0; i < std::min(16, NumBoxes); i++)
 	{
-		if (ClippingTool.ShouldEffectInfluenceModel(EITwinClippingPrimitiveType::Box, i, ModelIdentifier))
+		if (EffectManager.ShouldEffectInfluenceModel(EITwinClippingPrimitiveType::Box, i, ModelIdentifier))
 			ActiveBoxes_0_15 |= (1 << i);
 	}
 
 	int ActiveBoxes_16_31 = 0;
 	for (int32 i = 0; i < std::min(16, NumBoxes - 16); i++)
 	{
-		if (ClippingTool.ShouldEffectInfluenceModel(EITwinClippingPrimitiveType::Box, 16 + i, ModelIdentifier))
+		if (EffectManager.ShouldEffectInfluenceModel(EITwinClippingPrimitiveType::Box, 16 + i, ModelIdentifier))
 			ActiveBoxes_16_31 |= (1 << i);
 	}
 	bool bModified = false;
@@ -141,12 +150,9 @@ void UITwinClipping3DTilesetHelper::OnTileMeshPrimitiveLoaded(ICesiumLoadedTileP
 	for (auto const& pCollisionMesh : MeshComponent.GetBodySetup()->TriMeshGeometries)
 	{
 		pCollisionMesh->SetTriangleHitFilter([this, &MeshComponent]
-			(FVector const& /*Position*/, uint32/*FaceIndex*/, uint32, uint32, uint32 /*VertexIndex A, B and C*/)
+			(FVector const& Position, uint32/*FaceIndex*/, uint32, uint32, uint32 /*VertexIndex A, B and C*/)
 			{
-#if 0 // Still needs testing...
 				return !ShouldCutOut(MeshComponent.GetComponentTransform().TransformPosition(Position));
-#endif
-				return true;
 			});
 	}
 #endif
@@ -155,6 +161,6 @@ void UITwinClipping3DTilesetHelper::OnTileMeshPrimitiveLoaded(ICesiumLoadedTileP
 
 bool UITwinClipping3DTilesetHelper::ShouldCutOut(FVector const& AbsoluteWorldPosition) const
 {
-	return ClippingToolPtr.IsValid()
-		&& ClippingToolPtr->ShouldCutOut(AbsoluteWorldPosition, ModelIdentifier, CutoutOverlayPtr.Get());
+	return ClippingRenderer.IsValid()
+		&& ClippingRenderer->ShouldCutOut(AbsoluteWorldPosition, ModelIdentifier, CutoutOverlayPtr.Get());
 }

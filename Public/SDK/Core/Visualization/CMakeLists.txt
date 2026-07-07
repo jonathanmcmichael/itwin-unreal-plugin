@@ -11,6 +11,8 @@ add_library(Visualization ${libtype}
 		Config.h
 		Config.cpp
 		ConstantIDs.h
+		Cutout.h
+		Cutout.cpp
 		Instance.h
 		Instance.cpp
 		InstancesGroup.h
@@ -51,6 +53,9 @@ add_library(Visualization ${libtype}
 		SaveStatus.h
 )
 target_compile_features(Visualization PRIVATE ${DefaultCXXSTD})
+if ( MSVC )
+	set_source_files_properties ( ScenePersistenceAPI.cpp PROPERTIES COMPILE_FLAGS " /bigobj" )
+endif ()
 target_link_libraries(Visualization PUBLIC
 						ITwinAPI
 						Network
@@ -113,5 +118,5 @@ if(SDK_ADDUNITTEST)
 	endif()
 	configure_advviz_library(VisualizationTest)
 
-	be_add_test (VisualizationTest)
+	be_add_sdk_test (VisualizationTest)
 endif()

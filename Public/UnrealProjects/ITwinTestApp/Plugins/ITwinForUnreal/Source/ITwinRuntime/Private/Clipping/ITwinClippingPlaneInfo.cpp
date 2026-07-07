@@ -9,10 +9,33 @@
 #include <Clipping/ITwinClippingPlaneInfo.h>
 
 #include <Clipping/ITwinPlaneTileExcluder.h>
+#include <Spline/ITwinSplineHelper.h>
+#include <Spline/ITwinSplineTool.h>
 
 //---------------------------------------------------------------------------------------
 // struct FITwinClippingPlaneInfo
 //---------------------------------------------------------------------------------------
+
+void FITwinClippingPlaneInfo::SetPlaneEquation(FVector const& PlaneOrientation, double PlaneW,
+	bool bPropagateToTileExcluders /*= true*/)
+{
+	PlaneEquation.PlaneOrientation = PlaneOrientation;
+	PlaneEquation.PlaneW = PlaneW;
+
+	if (bPropagateToTileExcluders)
+	{
+		// Update the plane equation in all tile excluders created from this plane.
+		for (auto const& TileExcluder : TileExcluders)
+		{
+			if (TileExcluder.IsValid())
+			{
+				UITwinPlaneTileExcluder* PlaneExcluder = Cast<UITwinPlaneTileExcluder>(TileExcluder.Get());
+				PlaneExcluder->PlaneEquation.PlaneOrientation = PlaneOrientation;
+				PlaneExcluder->PlaneEquation.PlaneW = PlaneW;
+			}
+		}
+	}
+}
 
 void FITwinClippingPlaneInfo::DoSetInvertEffect(bool bInvert)
 {
@@ -31,7 +54,25 @@ void FITwinClippingPlaneInfo::DoSetInvertEffect(bool bInvert)
 	}
 }
 
-void FITwinClippingPlaneInfo::BeforeDestroy()
+int32 FITwinClippingPlaneInfo::CountRequiredEdgeSplines() const
 {
-	// Nothing to do for now (as we don't use additional actors to display edges as for boxes...)
+	// We use 1 spline of 4 points to represent the edges of the plane.
+	return 1;
+}
+
+void FITwinClippingPlaneInfo::DoCreateEdgeSplines(TArray<TObjectPtr<AITwinSplineHelper>>& OutEdgeSplines, AITwinSplineTool& SplineTool)
+{
+	static const TArray<FVector> Face =
+	{
+		{ -0.5, -0.5, 0. },
+		{ -0.5,  0.5, 0. },
+		{  0.5,  0.5, 0. },
+		{  0.5, -0.5, 0. }
+	};
+	auto EdgeSpline = SplineTool.AddSpline(FVector::ZeroVector, Face);
+	OutEdgeSplines.Add(EdgeSpline);
+#if WITH_EDITOR
+	EdgeSpline->SetActorLabel(TEXT("PlaneEdgeSpline"));
+#endif
+	EdgeSpline->SetActorHiddenInGame(true);
 }

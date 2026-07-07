@@ -9,14 +9,10 @@
 
 #pragma once
 
-#include <Clipping/ITwinClippingBoxInfo.h>
-#include <Clipping/ITwinClippingCartographicPolygonInfo.h>
-#include <Clipping/ITwinClippingPlaneInfo.h>
+#include <Clipping/ITwinClippingEventHub.h>
+#include <ITwinModelType.h>
 #include <Containers/Array.h>
 #include <Containers/Map.h>
-#include <GameFramework/Actor.h>
-#include <Misc/EnumRange.h>
-#include <Templates/PimplPtr.h>
 
 #include <ITwinRuntime/Private/Compil/BeforeNonUnrealIncludes.h>
 	#include <glm/ext/matrix_double3x3.hpp>
@@ -29,13 +25,14 @@
 #include "ITwinClippingTool.generated.h"
 
 
-class UMaterialParameterCollection;
-class UMaterialParameterCollectionInstance;
-class ACesium3DTileset;
+struct FITwinClippingInfoBase;
 class FITwinTilesetAccess;
-class UITwinClippingMPCHolder;
+class UITwinClippingToolImpl;
+class UITwinClippingPersistence;
+class UITwinClippingRenderer;
 class UCesiumPolygonRasterOverlay;
 
+class AITwinInteractiveTool;
 class AITwinPopulation;
 class AITwinPopulationTool;
 enum class EITwinInstantiatedObjectType : uint8;
@@ -46,95 +43,14 @@ namespace AdvViz::SDK
 	class RefID;
 }
 
-/// Supported primitive types for clipping.
-UENUM(BlueprintType)
-enum class EITwinClippingPrimitiveType : uint8
-{
-	Box,
-	Plane,
-	Polygon, /* stands for Cesium Cartographic Polygon (2.5D) */
-
-	Count UMETA(Hidden)
-};
-ENUM_RANGE_BY_COUNT(EITwinClippingPrimitiveType, EITwinClippingPrimitiveType::Count);
-
-
-/// Clipping effects usually work both at the tileset level (tile exclusion) and the
-/// shader level (to clip more precisely inside a given tile).
-UENUM(BlueprintType)
-enum class EITwinClippingEffectLevel : uint8
-{
-	Shader,
-	Tileset,
-};
-
-namespace ITwin
-{
-	// The number of planes & boxes is currently limited, due to the way it is coded in the material graph:
-	// see Shaders/ITwin/GetPlanesClipping.ush for details, and the way it is connected to the material
-	// parameter collection (MPC_Clipping) in the material function (MF_GlobalClipping).
-	// (I have quickly looked for a way to manipulate these parameters with an index instead, but found
-	// nothing, hence the ridiculous number of connections in the graph...)
-	static constexpr int MAX_CLIPPING_PLANES = 32;
-
-	static constexpr int MAX_CLIPPING_BOXES = 32;
-}
-
 
 /// Class managing Clipping Tools.
 /// For this prototype, those tools are linked to the population tool, with dedicated objects.
 UCLASS()
-class ITWINRUNTIME_API AITwinClippingTool : public AActor
+class ITWINRUNTIME_API AITwinClippingTool : public AITwinClippingEventHub
 {
 	GENERATED_BODY()
-
 public:
-
-	DECLARE_DYNAMIC_MULTICAST_DELEGATE(FEffectListModifiedEvent);
-	UPROPERTY()
-	FEffectListModifiedEvent EffectListModifiedEvent;
-
-	DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FEffectAddedEvent, EITwinClippingPrimitiveType, EffectType, int32, EffectIndex);
-	UPROPERTY()
-	FEffectAddedEvent EffectAddedEvent;
-
-	DECLARE_DYNAMIC_MULTICAST_DELEGATE(FRemoveEffectStartedEvent);
-	UPROPERTY()
-	FRemoveEffectStartedEvent RemoveEffectStartedEvent;
-
-	DECLARE_DYNAMIC_MULTICAST_DELEGATE(FRemoveEffectCompletedEvent);
-	UPROPERTY()
-	FRemoveEffectCompletedEvent RemoveEffectCompletedEvent;
-
-	DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FEffectRemovedEvent, EITwinClippingPrimitiveType, EffectType, int32, EffectIndex, bool, bTriggeredFromITS);
-	UPROPERTY()
-	FEffectRemovedEvent EffectRemovedEvent;
-
-	DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FEffectSelectedEvent, EITwinClippingPrimitiveType, EffectType, int32, EffectIndex);
-	UPROPERTY()
-	FEffectSelectedEvent EffectSelectedEvent;
-
-	DECLARE_DYNAMIC_MULTICAST_DELEGATE(FSplinePointSelectedEvent);
-	UPROPERTY()
-	FSplinePointSelectedEvent SplinePointSelectedEvent;
-
-	DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FSplinePointMovedEvent, bool, bMovedInITS);
-	UPROPERTY()
-	FSplinePointMovedEvent SplinePointMovedEvent;
-
-	DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FActivationEvent, bool, bActivated);
-	UPROPERTY()
-	FActivationEvent ActivationEvent;
-
-	DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FInteractiveCreationAbortedEvent, bool, bTriggeredFromITS);
-	UPROPERTY()
-	FInteractiveCreationAbortedEvent InteractiveCreationAbortedEvent;
-
-	DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FEffectModifiedEvent, EITwinClippingPrimitiveType, EffectType, int32, EffectIndex, bool, bTriggeredFromITS);
-	UPROPERTY()
-	FEffectModifiedEvent EffectModifiedEvent;
-
-
 	AITwinClippingTool();
 
 	virtual void Tick(float DeltaTime) override;
@@ -144,6 +60,9 @@ public:
 
 	/// Connect the Spline Tool (mandatory to manage cutout polygon effects).
 	void ConnectSplineTool(class AITwinSplineTool* SplineTool);
+
+	/// Connect the scene persistence manager.
+	void ConnectPersistenceManager(class AITwinDecorationHelper* DecorationHelper);
 
 	/// Register tileset in the clipping system (for tile excluder mechanism).
 	void RegisterTileset(const FITwinTilesetAccess& TilesetAccess);
@@ -159,7 +78,7 @@ public:
 	/// Deactivate the cutout tool. This also aborts any cutout creation, if any.
 	void Deactivate();
 
-	/// For first prototype, the clipping primitives are created/modified from the population tool, as it
+	/// The clipping cube and plane primitives are created/modified from the population tool, as it
 	/// is already compatible with gizmo edition...
 	void OnClippingInstanceAdded(AITwinPopulation* Population, EITwinInstantiatedObjectType ObjectType, int32 InstanceIndex);
 
@@ -173,11 +92,24 @@ public:
 	/// Update the clipping information upon the removal of clipping primitives.
 	void OnClippingInstancesRemoved(EITwinInstantiatedObjectType ObjectType, const TArray<int32>& InstanceIndices);
 
-	/// Update the clipping information upon the loading of clipping primitives.
-	void OnClippingInstancesLoaded(AITwinPopulation* Population, EITwinInstantiatedObjectType ObjectType);
+	/// Returns true if we are allowed to load legacy cutout instances, those retrieved from the Decoration
+	/// Service.
+	bool AllowLoadingLegacyInstances() const;
+
+	/// Update the clipping information and/or rendering data upon the loading of clipping primitives.
+	void OnClippingInstancesLoaded(AITwinPopulation* Population, bool bUpdateEffectInfos);
+
+	/// Perform some automatic conversions when the loading is complete (such as migration to Scene API).
+	void OnLoadComplete();
 
 	/// Return the number of clipping effects for the given primitive type.
 	int32 NumEffects(EITwinClippingPrimitiveType Type) const;
+
+	/// Return a mutable reference to the clipping effect of given type and index, to modify it.
+	FITwinClippingInfoBase& GetMutableEffect(EITwinClippingPrimitiveType Type, int32 Index);
+
+	/// Return a const reference to the clipping effect of given type and index, to read its info.
+	const FITwinClippingInfoBase& GetEffect(EITwinClippingPrimitiveType Type, int32 Index) const;
 
 	/// Remove an individual clipping primitive. Returns true if the effect was actually removed.
 	bool RemoveEffect(EITwinClippingPrimitiveType Type, int32 PrimitiveIndex, bool bTriggeredFromITS);
@@ -208,6 +140,8 @@ public:
 	/// restoring the normal visibility of effect proxies.
 	void DeSelectAll(bool bExitIsolationMode = true);
 
+	virtual void BroadcastSelection() override;
+
 	/// Return the index of the selected polygon point, if any (if a cutout polygon point is selected) and if
 	/// yes, fills its coordinates (latitude and longitude).
 	/// If no polygon is selected, or if none of its points is selected, INDEX_NONE is returned.
@@ -224,8 +158,6 @@ public:
 	void SetEffectRotation(EITwinClippingPrimitiveType EffectType, int32 Index,
 		double InRotX, double InRotY, double InRotZ,
 		bool bTriggeredFromITS) const;
-
-	bool RecenterPlaneProxy(int32 PlaneIndex);
 
 	/// Called when we activate/deactivate picking of clipping effects in the viewport.
 	void OnActivatePicking(bool bActivate);
@@ -283,23 +215,19 @@ public:
 	int32 GetEffectIndex(EITwinClippingPrimitiveType EffectType, AdvViz::SDK::RefID const& RefID) const;
 
 	UFUNCTION()
-	void OnSplineHelperAdded(AITwinSplineHelper* NewSpline);
+	void OnSceneLoaded(bool bSuccess);
 
 	UFUNCTION()
-	void OnSplineHelperRemoved(AITwinSplineHelper* SplineBeingRemoved);
+	void OnItemCreationAbortedInTool(const AITwinInteractiveTool* Tool, bool bTriggeredFromITS);
 
 	UFUNCTION()
-	void OnPopulationsLoaded(bool bSuccess);
+	void OnItemCreatedInTool(const AITwinInteractiveTool* Tool, bool bTriggeredFromITS);
 
 	UFUNCTION()
-	void OnItemCreationAbortedInTool(bool bTriggeredFromITS);
+	void OnCutoutPolygonSelected();
 
-	UFUNCTION()
-	void OnCutoutCreationCompleted(bool bTriggeredFromITS);
-
-	/// Returns whether a cutout effect is excluding (cutting) the given position, for the given type of layer.
-	bool ShouldCutOut(FVector const& AbsoluteWorldPosition, ITwin::ModelLink const& ModelIdentifier,
-		UCesiumPolygonRasterOverlay const* RasterOverlay) const;
+	/// Returns the renderer used to manage cutout effects in the scene.
+	const UITwinClippingRenderer* GetRenderer() const;
 
 
 #if WITH_EDITOR
@@ -318,21 +246,6 @@ public:
 
 
 private:
-	UFUNCTION()
-	void BroadcastSelection();
-
-
-private:
-	UPROPERTY(Category = "iTwin",
-		VisibleAnywhere)
-	UITwinClippingMPCHolder* ClippingMPCHolder = nullptr;
-
 	UPROPERTY()
-	TWeakObjectPtr<AITwinPopulation> ClippingPlanePopulation;
-
-	UPROPERTY()
-	TWeakObjectPtr<AITwinPopulation> ClippingBoxPopulation;
-
-	class FImpl;
-	TPimplPtr<FImpl> Impl;
+	TObjectPtr<UITwinClippingToolImpl> Impl;
 };

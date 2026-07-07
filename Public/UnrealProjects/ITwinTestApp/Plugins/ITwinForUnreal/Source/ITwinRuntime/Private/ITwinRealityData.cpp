@@ -42,6 +42,7 @@ public:
 	virtual AITwinDecorationHelper* GetDecorationHelper() const override;
 	virtual UITwinClipping3DTilesetHelper* GetClippingHelper() const override;
 	virtual FBox GetBoundingBox() const override;
+	virtual std::optional<FCartographicProps> GetNativeGeoreference() const override;
 
 private:
 	TWeakObjectPtr<AITwinRealityData> RealityData;
@@ -170,11 +171,8 @@ public:
 	{
 		if (DecorationPersistenceMgr)
 			return;
-		//Look if a helper already exists:
-		for (TActorIterator<AITwinDecorationHelper> DecoIter(Owner.GetWorld()); DecoIter; ++DecoIter)
-		{
-			DecorationPersistenceMgr = *DecoIter;
-		}
+		// Look if a helper already exists:
+		DecorationPersistenceMgr = AITwinDecorationHelper::GetInstance(Owner.GetWorld());
 		if (DecorationPersistenceMgr)
 		{
 			DecorationPersistenceMgr->OnSceneLoaded.AddDynamic(&Owner, &AITwinRealityData::OnSceneLoaded);
@@ -340,6 +338,13 @@ FBox AITwinRealityData::FTilesetAccess::GetBoundingBox() const
 	return BoundingBox;
 }
 
+std::optional<FCartographicProps> AITwinRealityData::FTilesetAccess::GetNativeGeoreference() const
+{
+	if (!RealityData.IsValid())
+		return std::nullopt;
+	return RealityData->GetNativeGeoreference();
+}
+
 TUniquePtr<FITwinTilesetAccess> AITwinRealityData::MakeTilesetAccess()
 {
 	return MakeUnique<FTilesetAccess>(this);
@@ -397,9 +402,9 @@ std::optional<FCartographicProps> AITwinRealityData::GetNativeGeoreference() con
 		FCartographicProps Props;
 		Props.Latitude = Impl->Latitude;
 		Props.Longitude = Impl->Longitude;
-		return std::optional<FCartographicProps>(Props);
+		return Props;
 	}
-	return std::optional<FCartographicProps>();
+	return std::nullopt;
 }
 
 void AITwinRealityData::FImpl::DestroyTileset()

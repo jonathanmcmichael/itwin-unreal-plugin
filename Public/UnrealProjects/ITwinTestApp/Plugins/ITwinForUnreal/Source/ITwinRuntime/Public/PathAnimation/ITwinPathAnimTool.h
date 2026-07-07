@@ -28,6 +28,7 @@
 
 #include "ITwinPathAnimTool.generated.h"
 
+class AITwinInteractiveTool;
 class AITwinPopulation;
 class AITwinSplineHelper;
 class AITwinAnimPathHelper;
@@ -247,13 +248,17 @@ public:
 	void OnSplineHelperRemoved(AITwinSplineHelper* SplineBeingRemoved);
 
 	UFUNCTION()
-	void OnItemCreationAbortedInTool(bool bTriggeredFromITS);
+	void OnItemCreationAbortedInTool(const AITwinInteractiveTool* Tool, bool bTriggeredFromITS);
 
 	UFUNCTION()
 	void OnSplineEditedInTool();
 	
 	UFUNCTION()
 	void OnSplinePointMovedInTool(bool bTriggeredFromITS);
+
+protected:
+	//virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 private:
 	void BroadcastSelection();

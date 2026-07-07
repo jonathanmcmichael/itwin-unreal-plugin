@@ -49,6 +49,10 @@ class ITWINRUNTIME_API AITwinSplineHelper : public AActor
 public:
 	static bool Is2DDrawingEnabled();
 
+	static AITwinSplineHelper* FindClosestSplineToScreenPosition(const FVector2D& ScreenPosition,
+		FVector::FReal& OutClosestDistance,
+		const TFunction<bool(const AITwinSplineHelper&)>& IgnoreSpline = {});
+
 	// Quick workaround to pass SplineUsage parameter to the constructor
 	struct [[nodiscard]] FSpawnContext
 	{

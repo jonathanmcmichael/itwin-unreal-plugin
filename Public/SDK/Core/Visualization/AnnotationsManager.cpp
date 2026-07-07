@@ -26,7 +26,7 @@ namespace AdvViz::SDK
 
 	struct SJsonAnnotation
 	{
-		std::array<double, 3> position;
+		double3 position = { 0., 0., 0. };
 		std::string text;
 		std::optional<int> fontSize;
 		std::optional<std::string> name;

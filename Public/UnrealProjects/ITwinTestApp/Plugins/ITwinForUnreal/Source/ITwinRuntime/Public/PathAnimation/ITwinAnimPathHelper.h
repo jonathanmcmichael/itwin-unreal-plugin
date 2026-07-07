@@ -160,11 +160,13 @@ public:
 	virtual float GetLaneDensity(int /*laneIdx*/) const { return GetDensity(); }
 	// Offset to apply to the lane compared to the center of the spline. When placing vehicles,
 	// variation can be added to avoid having all lanes perfectly aligned, which would look unnatural.
-	virtual float GetLaneOffset(int /*laneIdx*/, bool bAddRandomVariation) const { return 0.f; } 
+	virtual float GetLaneOffset(int /*laneIdx*/, bool /*bAddRandomVariation*/) const { return 0.f; } 
 	// Whether the lane at the specified index is allowed to have trucks (traffic only).
-	virtual bool IsSlowLane(int laneIdx) const { return true; }
+	virtual bool IsSlowLane(int /*laneIdx*/) const { return true; }
 	// Whether the lane at the specified index is in the opposite direction of the spline.
-	virtual bool IsInvDirLane(int laneIdx) const { return HasInvDirection(); }
+	virtual bool IsInvDirLane(int /*laneIdx*/) const { return HasInvDirection(); }
+	// Minimum allowed distance between objects
+	virtual float GetMinInterObjectDistance(int /*laneIdx*/, bool /*bDrive*/ = false) const { return 0.f; }
 };
 
 UCLASS()
@@ -211,6 +213,7 @@ public:
 	float GetLaneOffset(int laneIdx, bool bAddRandomVariation) const override;
 	bool IsSlowLane(int laneIdx) const override;
 	bool IsInvDirLane(int laneIdx) const override;
+	virtual float GetMinInterObjectDistance(int /*laneIdx*/, bool /*bDrive*/ = false) const override { return 50.f; }
 
 	// Index of the first opposite direction lane. Currently we can only have same number of lanes in each direction.
 	int GetFirstRightLaneIndex() const { return GetLaneCount(); }
@@ -235,4 +238,6 @@ public:
 
 	float GetLaneSpeed(int laneIdx) const override;
 	float GetLaneDensity(int laneIdx) const override;
+
+	float GetMinInterObjectDistance(int laneIdx, bool bDrive = false) const override;
 };

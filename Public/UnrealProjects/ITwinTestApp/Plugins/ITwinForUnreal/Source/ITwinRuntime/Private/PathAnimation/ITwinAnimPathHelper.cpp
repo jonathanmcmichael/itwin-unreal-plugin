@@ -204,7 +204,7 @@ void UITwinAnimPathHelper::Get3DObjects(TArray<FString>& Assets) const
 {
 	Assets.Empty();
 	std::vector<std::string> paths;
-	auto pathProp = Impl->PathProp->GetAutoLock();
+	auto pathProp = Impl->PathProp->GetRAutoLock();
 	pathProp->GetObjects(paths);
 	for (auto path : paths)
 	{
@@ -273,7 +273,7 @@ void UITwinAnimPathHelper::SetPaused(bool bInIsPaused)
 
 bool UITwinAnimPathHelper::IsVisible() const
 {
-	auto pathProp = Impl->PathProp->GetAutoLock();
+	auto pathProp = Impl->PathProp->GetRAutoLock();
 	return pathProp->IsEnabled();
 }
 
@@ -285,7 +285,7 @@ void UITwinAnimPathHelper::SetVisible(bool bInIsVisible)
 
 bool UITwinAnimPathHelper::HasInvDirection() const
 {
-	auto pathProp = Impl->PathProp->GetAutoLock();
+	auto pathProp = Impl->PathProp->GetRAutoLock();
 	return pathProp->HasInvDir();
 }
 
@@ -297,7 +297,7 @@ void UITwinAnimPathHelper::SetInvDirection(bool bInInvDirection)
 
 bool UITwinAnimPathHelper::IsLoop() const
 {
-	auto pathProp = Impl->PathProp->GetAutoLock();
+	auto pathProp = Impl->PathProp->GetRAutoLock();
 	return pathProp->IsLooping();
 }
 
@@ -312,7 +312,7 @@ void UITwinAnimPathHelper::SetIsLoop(bool bInIsLoop)
 
 float UITwinObjectAnimPathHelper::GetSpeed() const
 {
-	auto pathProp = Impl->PathProp->GetAutoLock();
+	auto pathProp = Impl->PathProp->GetRAutoLock();
 	return pathProp->GetSpeed();
 }
 
@@ -325,7 +325,7 @@ void UITwinObjectAnimPathHelper::SetSpeed(float InSpeed)
 
 float UITwinObjectAnimPathHelper::GetDelay() const
 {
-	auto pathProp = Impl->PathProp->GetAutoLock();
+	auto pathProp = Impl->PathProp->GetRAutoLock();
 	return pathProp->GetStartTime();
 }
 
@@ -337,7 +337,7 @@ void UITwinObjectAnimPathHelper::SetDelay(float InDelay)
 
 EITwinAnimPathRepeatMode UITwinObjectAnimPathHelper::GetRepeatMode() const
 {
-	auto pathProp = Impl->PathProp->GetAutoLock();
+	auto pathProp = Impl->PathProp->GetRAutoLock();
 	return static_cast<EITwinAnimPathRepeatMode>(pathProp->GetRepeatMode());
 }
 
@@ -358,7 +358,7 @@ float UITwinCrowdAnimPathHelper::GetSpeed() const
 
 bool UITwinCrowdAnimPathHelper::IsOneWay() const
 {
-	auto pathProp = Impl->PathProp->GetAutoLock();
+	auto pathProp = Impl->PathProp->GetRAutoLock();
 	return pathProp->IsOneWay();
 }
 
@@ -370,7 +370,7 @@ void UITwinCrowdAnimPathHelper::SetOneWay(bool bInOneWay)
 
 int UITwinCrowdAnimPathHelper::GetLaneCount() const
 {
-	auto pathProp = Impl->PathProp->GetAutoLock();
+	auto pathProp = Impl->PathProp->GetRAutoLock();
 	return pathProp->GetLaneCount();
 }
 
@@ -382,7 +382,7 @@ void UITwinCrowdAnimPathHelper::SetLaneCount(int InLaneCount)
 
 float UITwinCrowdAnimPathHelper::GetLaneWidth() const
 {
-	auto pathProp = Impl->PathProp->GetAutoLock();
+	auto pathProp = Impl->PathProp->GetRAutoLock();
 	return pathProp->GetLaneWidth();
 }
 
@@ -394,7 +394,7 @@ void UITwinCrowdAnimPathHelper::SetLaneWidth(float InLaneWidth)
 
 float UITwinCrowdAnimPathHelper::GetDensity() const
 {
-	auto pathProp = Impl->PathProp->GetAutoLock();
+	auto pathProp = Impl->PathProp->GetRAutoLock();
 	return pathProp->GetDensity();
 }
 
@@ -411,7 +411,7 @@ void UITwinCrowdAnimPathHelper::SetDensity(float InDensity)
 
 float UITwinTrafficAnimPathHelper::GetSeparatorWidth() const
 {
-	auto pathProp = Impl->PathProp->GetAutoLock();
+	auto pathProp = Impl->PathProp->GetRAutoLock();
 	return pathProp->GetSepWidth();
 }
 
@@ -434,7 +434,7 @@ void UITwinTrafficAnimPathHelper::SetSpeed(float InSpeed)
 
 float UITwinTrafficAnimPathHelper::GetMinSpeed() const
 {
-	auto pathProp = Impl->PathProp->GetAutoLock();
+	auto pathProp = Impl->PathProp->GetRAutoLock();
 	return pathProp->GetMinSpeed();
 }
 
@@ -447,7 +447,7 @@ void UITwinTrafficAnimPathHelper::SetMinSpeed(float InMinSpeed)
 
 float UITwinTrafficAnimPathHelper::GetMaxSpeed() const
 {
-	auto pathProp = Impl->PathProp->GetAutoLock();
+	auto pathProp = Impl->PathProp->GetRAutoLock();
 	return pathProp->GetMaxSpeed();
 }
 
@@ -553,5 +553,16 @@ float UITwinCrowdAnimPathHelper::GetLaneOffset(int laneIdx, bool bAddRandomVaria
 	}
 
 	return posOffset;
+}
+
+float UITwinTrafficAnimPathHelper::GetMinInterObjectDistance(int laneIdx, bool bDrive/* = false*/) const
+{
+	// Minimum allowed distance between objects depends on object speed;
+	// that means that 100% lane density at low speed will result in more instances
+	// that at high speed.
+	float speed = std::clamp(0.036f * GetLaneSpeed(laneIdx), 1.f, 130.f); // convert speed from cm/s to km/h and clamp to [1,130]
+	float lowSpeedDistance(50.f); // at least 0.5m when speed is 1km/h or less
+	float highSpeedDistance(bDrive ? 300.f : 500.f); // at least 5m when speed is 130km/h or more (3m if driving a vehicle)
+	return (highSpeedDistance * (speed - 1.f) + lowSpeedDistance * (130.f - speed)) / 129.f;
 }
 

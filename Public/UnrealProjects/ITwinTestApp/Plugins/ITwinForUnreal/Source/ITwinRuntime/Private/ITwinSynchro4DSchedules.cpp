@@ -1022,6 +1022,22 @@ void FITwinSynchro4DSchedulesInternals::OnDownloadProgressed(double PercentCompl
 	}
 }
 
+void FITwinSynchro4DSchedulesInternals::UpdateS4DClassDefaults()
+{
+	auto* Settings = GetMutableDefault<UITwinIModelSettings>();
+	Settings->Synchro4DMaxTimelineUpdateMilliseconds = Owner.MaxTimelineUpdateMilliseconds;
+	Settings->Synchro4DQueriesDefaultPagination = Owner.ScheduleQueriesServerPagination;
+	Settings->Synchro4DQueriesBindingsPagination = Owner.ScheduleQueriesBindingsPagination;
+	Settings->IModelDataQueriesPagination = Owner.IModelDataQueriesPagination;
+	Settings->Synchro4DGlTFTranslucencyRule = Owner.GlTFTranslucencyRule;
+	Settings->bSynchro4DDisableColoring = Owner.bDisableColoring;
+	Settings->bSynchro4DDisableVisibilities = Owner.bDisableVisibilities;
+	Settings->bSynchro4DDisablePartialVisibilities = Owner.bDisablePartialVisibilities;
+	Settings->bSynchro4DDisableCuttingPlanes = Owner.bDisableCuttingPlanes;
+	Settings->bSynchro4DFavorNextGenSchedule = Owner.bFavorNextGenSchedule;
+	Settings->bSynchro4DUseAPIM = Owner.bStream4DFromAPIM;
+}
+
 //---------------------------------------------------------------------------------------
 // class UITwinSynchro4DSchedules
 //---------------------------------------------------------------------------------------
@@ -1571,8 +1587,8 @@ void UITwinSynchro4DSchedules::PostEditChangeProperty(FPropertyChangedEvent& Pro
 		bUpdateClassDefaults = true;
 	}
 	else if (Name == GET_MEMBER_NAME_CHECKED(UITwinSynchro4DSchedules, MaxTimelineUpdateMilliseconds)
-		|| Name == GET_MEMBER_NAME_CHECKED(UITwinSynchro4DSchedules, ScheduleQueriesServerPagination)
-		|| Name == GET_MEMBER_NAME_CHECKED(UITwinSynchro4DSchedules, ScheduleQueriesBindingsPagination))
+		  || Name == GET_MEMBER_NAME_CHECKED(UITwinSynchro4DSchedules, ScheduleQueriesServerPagination)
+		  || Name == GET_MEMBER_NAME_CHECKED(UITwinSynchro4DSchedules, ScheduleQueriesBindingsPagination))
 	{
 		bUpdateClassDefaults = true;
 	}
@@ -1602,18 +1618,8 @@ void UITwinSynchro4DSchedules::PostEditChangeProperty(FPropertyChangedEvent& Pro
 	}
 	if (bUpdateClassDefaults)
 	{
-		auto* Settings = GetMutableDefault<UITwinIModelSettings>();
-		Settings->Synchro4DMaxTimelineUpdateMilliseconds = MaxTimelineUpdateMilliseconds;
-		Settings->Synchro4DQueriesDefaultPagination = ScheduleQueriesServerPagination;
-		Settings->Synchro4DQueriesBindingsPagination = ScheduleQueriesBindingsPagination;
-		Settings->IModelDataQueriesPagination = IModelDataQueriesPagination;
-		Settings->Synchro4DGlTFTranslucencyRule = GlTFTranslucencyRule;
-		Settings->bSynchro4DDisableColoring = bDisableColoring;
-		Settings->bSynchro4DDisableVisibilities = bDisableVisibilities;
-		Settings->bSynchro4DDisablePartialVisibilities = bDisablePartialVisibilities;
-		Settings->bSynchro4DDisableCuttingPlanes = bDisableCuttingPlanes;
-		Settings->bSynchro4DUseAPIM = bStream4DFromAPIM;
-		Settings->bSynchro4DFavorNextGenSchedule = bFavorNextGenSchedule;
+		Impl->Internals.UpdateS4DClassDefaults();
 	}
 }
+
 #endif // WITH_EDITOR

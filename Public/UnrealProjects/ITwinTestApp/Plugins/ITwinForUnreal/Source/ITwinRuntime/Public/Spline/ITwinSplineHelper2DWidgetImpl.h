@@ -10,7 +10,9 @@
 
 #include "CoreMinimal.h"
 #include <Blueprint/UserWidget.h>
+#include <Templates/Function.h>
 #include <Templates/PimplPtr.h>
+#include <optional>
 
 #include "ITwinSplineHelper2DWidgetImpl.generated.h"
 
@@ -27,7 +29,30 @@ class ITWINRUNTIME_API UITwinSplineHelper2DWidgetImpl : public UUserWidget
 {
     GENERATED_BODY()
 public:
+	static UITwinSplineHelper2DWidgetImpl* GetMasterInstance() { return sMasterInstance; }
+
+	//! Set the master instance of the 2D widget to be used for all spline helpers.
+	static void SetMasterInstance(UITwinSplineHelper2DWidgetImpl* InMasterInstance);
+
+	//! Set the visibility of the master instance.
+	static void SetMasterInstanceVisibility(ESlateVisibility InVisibility);
+
+	//! Register a slave widget (UITwinSplineWithPin2DWidgetImpl) to be managed by the master instance.
+	static void RegisterSlaveWidget(UITwinSplineHelper2DWidgetImpl* InSlaveWidget);
+
+	//! Unregister a slave widget (UITwinSplineWithPin2DWidgetImpl) from the master instance.
+	static void UnregisterSlaveWidget(UITwinSplineHelper2DWidgetImpl* InSlaveWidget);
+
+	//! Find the closest spline helper to the given screen position.
+	static AITwinSplineHelper* FindClosestSplineToScreenPosition(const FVector2D& ScreenPosition,
+		FVector::FReal& OutClosestDistance,
+		const TFunction<bool(const AITwinSplineHelper&)>& IgnoreSpline = {});
+
 	UITwinSplineHelper2DWidgetImpl(const FObjectInitializer& ObjectInitializer);
+
+	virtual void BeginDestroy() override;
+
+	void OnVisibilityUpdated();
 
 	UFUNCTION(BlueprintCallable, Category = "iTwin Spline")
 	void SetTint(const FLinearColor& InTint);
@@ -63,6 +88,7 @@ public:
 		int32 ChunkIndex,
 		int32 NumSubdivisions) const;
 
+
 protected:
 	virtual void NativeConstruct() override;
 	virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
@@ -86,6 +112,29 @@ private:
 		const bool bLinearTangents) const;
 
 	inline bool IsPointInsertionAllowed() const;
+
+
+	struct FClosestImpactInfo
+	{
+		std::optional<FVector2D> ClosestPoint2D;
+		std::optional<FVector::FReal> ClosestDistanceSquared;
+
+		bool HasNewClosestImpact(const FVector2D& InPoint2D, const FVector::FReal InDistanceSquared)
+		{
+			if (!ClosestDistanceSquared || InDistanceSquared < *ClosestDistanceSquared)
+			{
+				ClosestPoint2D = InPoint2D;
+				ClosestDistanceSquared = InDistanceSquared;
+				return true;
+			}
+			return false;
+		}
+	};
+
+	const UITwinSplineWithPin2DWidgetImpl* FindClosestSplineChunk(
+		const FVector2D& ScreenPosition,
+		FClosestImpactInfo& OutImpactInfo,
+		FVector::FReal ExtraTolerance) const;
 
 	const UITwinSplineWithPin2DWidgetImpl* FindSplineChunkUnderMouse(
 		const FPointerEvent& InMouseEvent,
@@ -125,4 +174,8 @@ private:
 
 	struct FImpl;
 	TPimplPtr<FImpl> Impl;
+
+	// To avoid z-fighting with other widgets, we use a static instance of this widget to contain all the
+	// spline chunk widgets.
+	static UITwinSplineHelper2DWidgetImpl* sMasterInstance;
 };

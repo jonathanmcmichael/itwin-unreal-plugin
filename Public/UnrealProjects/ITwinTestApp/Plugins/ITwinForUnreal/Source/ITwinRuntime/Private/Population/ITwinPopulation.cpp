@@ -75,9 +75,10 @@ void FITwinFoliageComponentHolder::InitFoliageMeshComponent(AITwinPopulation& Po
 	if (!InstancedMeshComponent)
 	{
 		// There will be a very limited number of clipping primitives: simplify things (and avoid render
-		// issues (ADO#1973505) by instantiating a more basic component. In the future, we could probably
+		// issues - ADO#1973505) by instantiating a more basic component. In the future, we could probably
 		// get rid of UFoliageInstancedStaticMeshComponent totally, as we now activate Nanite, but this
-		// has to be tested carefully...
+		// has to be tested carefully... By the way, vehicles do *not* activate Nanite on the glass parts, so
+		// we would need to test performance carefully with them.
 		if (PopulationActor.IsClippingPrimitive())
 		{
 			InstancedMeshComponent = NewObject<UInstancedStaticMeshComponent>(&PopulationActor, UInstancedStaticMeshComponent::StaticClass());
@@ -145,6 +146,24 @@ FBoxSphereBounds FITwinFoliageComponentHolder::GetMasterMeshBounds() const
 	}
 }
 
+bool FITwinFoliageComponentHolder::IsTreeFullyBuilt() const
+{
+	if (GetInstanceCount() == 0
+		|| !(InstancedMeshComponent && InstancedMeshComponent->GetStaticMesh()))
+	{
+		return false;
+	}
+	if (bIsFoliageComponent)
+	{
+		return Cast<UITwinInstancedStaticMeshComponent const>(InstancedMeshComponent)->IsTreeFullyBuilt();
+	}
+	else
+	{
+		// For non-foliage components, we can consider the tree as fully built if the instanced mesh
+		// component is valid and has a static mesh assigned.
+		return true;
+	}
+}
 
 
 //---------------------------------------------------------------------------------------
@@ -403,6 +422,22 @@ AdvViz::SDK::IInstancePtr AITwinPopulation::GetAVizInstance(int32 instanceIndex)
 		return instances[instanceIndex];
 	}
 	return {};
+}
+
+bool AITwinPopulation::IsTreeFullyBuilt() const
+{
+	if (FoliageComponents.IsEmpty())
+	{
+		return false;
+	}
+	for (auto const& FoliageComp : FoliageComponents)
+	{
+		if (!FoliageComp.IsTreeFullyBuilt())
+		{
+			return false;
+		}
+	}
+	return true;
 }
 
 bool AITwinPopulation::ToggleAutoRebuildTree(std::optional<bool> const& bSuspendAutoRebuildOpt /*= std::nullopt*/)
@@ -733,7 +768,16 @@ int32 AITwinPopulation::AddInstance(const FTransform& Transform, EAddInstanceCon
 
 	// Create a local UnrealInstanceInfo
 	UnrealInstanceInfo ueInstanceInfo;
-	ueInstanceInfo.transform = BaseTransform * Transform;
+	if (Context == EAddInstanceContext::LoadScene)
+	{
+		// When loading a scene, we need to keep the transform as it is, without applying the base transform,
+		// which has *already* been applied upon creation, in an earlier session.
+		ueInstanceInfo.transform = Transform;
+	}
+	else
+	{
+		ueInstanceInfo.transform = BaseTransform * Transform;
+	}
 	ueInstanceInfo.colorShift = GetRandomColorShift(objectType);
 	ueInstanceInfo.name = TEXT("inst");
 
@@ -759,7 +803,8 @@ int32 AITwinPopulation::AddInstance(const FTransform& Transform, EAddInstanceCon
 		return INDEX_NONE;
 	}
 
-	if (IsClippingPrimitive() && Context == EAddInstanceContext::Default)
+	if (IsClippingPrimitive() && (Context == EAddInstanceContext::Default
+								|| Context == EAddInstanceContext::LoadScene))
 	{
 		// Perform additional operations for the clipping tool.
 		FinalizeAddedInstance(instIndex);
@@ -777,10 +822,9 @@ int32 AITwinPopulation::AddInstance(const FTransform& Transform, EAddInstanceCon
 		SignalInstanceCreation( UTF8_TO_TCHAR(GetObjectRef().c_str()));
 	}
 
-	// For cutout cube, we notify the clipping tool now, to add the splines used to visualize the edges
-	// - but we disable the effect to make it easier for the user to see where he is placing the cube.
-	if (Context == EAddInstanceContext::InteractivePlacement
-		&& objectType == EITwinInstantiatedObjectType::ClippingBox)
+	// For cutout primitives, we notify the clipping tool now, to add the splines used to visualize the edges
+	// - but we disable the effect to make it easier for the user to see where he is placing the cube/plane.
+	if (Context == EAddInstanceContext::InteractivePlacement && IsClippingPrimitive())
 	{
 		if (AvizInstance)
 		{
@@ -966,7 +1010,20 @@ void AITwinPopulation::UpdateInstancesFromAVizToUE()
 {
 	const AdvViz::SDK::SharedInstVect& instances = Impl->instancesManager_->GetInstancesByObjectRef(objectRef, Impl->GetGpId());
 
-	size_t numInst = instances.size(); 
+	AITwinClippingTool* ClippingTool = nullptr;
+	if (IsClippingPrimitive())
+	{
+		ClippingTool = TWorldSingleton<AITwinClippingTool>().Get(GetWorld());
+		if (ensure(ClippingTool) && !ClippingTool->AllowLoadingLegacyInstances())
+		{
+			// Skip legacy cutout instances if they were already converted to to Scene API.
+			// No need to delete them from the data base: just remove them from the manager.
+			Impl->instancesManager_->SetInstanceCountByObjectRef(objectRef, Impl->GetGpId(), 0);
+			return;
+		}
+	}
+
+	const size_t numInst = instances.size();
 	TArray<FTransform> instancesTM;
 	instancesTM.SetNum(numInst);
 	TArray<float> instancesColorVar;
@@ -1028,10 +1085,9 @@ void AITwinPopulation::UpdateInstancesFromAVizToUE()
 		SetHiddenInGame(true);
 
 		// Notify the Clipping Tool.
-		auto ClippingActor = TWorldSingleton<AITwinClippingTool>().Get(GetWorld());
-		if (ensure(ClippingActor))
+		if (ensure(ClippingTool))
 		{
-			ClippingActor->OnClippingInstancesLoaded(this, objectType);
+			ClippingTool->OnClippingInstancesLoaded(this, true /*bUpdateEffectInfos*/);
 		}
 	}
 
@@ -1156,7 +1212,7 @@ FString AITwinPopulation::GetObjectTypeName() const
 	case EITwinInstantiatedObjectType::ClippingPlane:	return TEXT("plane");
 	case EITwinInstantiatedObjectType::ClippingBox:		return TEXT("cube");
 	case EITwinInstantiatedObjectType::Crane:			return TEXT("crane");
-	BE_NO_UNCOVERED_ENUM_ASSERT_AND_FALLTHROUGH
+	BE_UNCOVERED_ENUM_ASSERT_AND_FALLTHROUGH(case EITwinInstantiatedObjectType::Count:)
 	case EITwinInstantiatedObjectType::Other:			return TEXT("object");
 	}
 }

@@ -65,20 +65,6 @@ namespace AdvViz::SDK
 
 		void RequestDeleteITwinMaterialsInDB(std::optional<std::string> const& specificIModelID = std::nullopt);
 
-		/// Start the (asynchronous) upload of given texture if needed.
-		/// Returns true if an upload request was actually started.
-		bool AsyncUploadChannelTextureIfNeeded(
-			std::shared_ptr<AsyncRequestGroupCallback> const& callbackPtr,
-			ITwinChannelMap& texMap,
-			std::string const& decorationId);
-
-		/// Start the (asynchronous) upload of all textures needing it.
-		/// Returns the number of upload requests started.
-		size_t AsyncUploadTexuresIfNeeded(
-			std::shared_ptr<AsyncRequestGroupCallback> const& callbackPtr,
-			ITwinMaterial& material,
-			std::string const& decorationId);
-
 		void BuildDecorationFilesURL(std::string const& decorationId);
 
 		std::string GetBaseURL(ETextureSource texSource) const;
@@ -173,12 +159,40 @@ namespace AdvViz::SDK
 		void AsyncSaveMaterials(const std::string& decorationId,
 			std::shared_ptr<IModelMaterialMap> dataIO,
 			std::function<void(bool)>&& onDataSavedFunc = {});
+
+		/// Start the (asynchronous) upload of given texture if needed.
+		/// Returns true if an upload request was actually started.
+		bool AsyncUploadChannelTextureIfNeeded(
+			std::shared_ptr<AsyncRequestGroupCallback> const& callbackPtr,
+			ITwinChannelMap& texMap,
+			std::string const& decorationId);
+
+		/// Start the (asynchronous) upload of all textures needing it.
+		/// Returns the number of upload requests started.
+		size_t AsyncUploadTexturesIfNeeded(
+			std::shared_ptr<AsyncRequestGroupCallback> const& callbackPtr,
+			ITwinMaterial& material,
+			std::string const& decorationId);
+
+		void GatherUploadedTextures(ITwinMaterial& material);
+
+		template <typename Func>
+		void VisitMaterialTextures(ITwinMaterial& material, Func const& func);
+
+
 		struct SThreadSafeData
 		{
 			IModelMaterialMap data_;
+			//! The map of local texture paths to decoration texture IDs (used to avoid uploading the same
+			//! texture several times when saving the scene repeatedly).
 			std::unordered_map<std::string, std::string> localToDecoTexId_;
+			//! The set of texture IDs which are currently being uploaded to the server (to avoid starting
+			//! several uploads for the same texture inside the same scene saving session).
+			std::unordered_set<std::string> texturesBeingUploaded_;
+			//! Maps iModel IDs to the set of decoration texture IDs used by materials in that iModel.
 			PerIModelTextureSet perIModelTextures_;
-			std::unordered_set<std::string> loadedIModelIds_; // fully loaded model IDs.
+			//! Fully loaded model IDs.
+			std::unordered_set<std::string> loadedIModelIds_;
 			std::set<std::string> iModelsForMaterialCollection_;
 			std::unordered_map<uint64_t, std::string> matIDToDisplayName_;
 		};
@@ -612,7 +626,7 @@ namespace AdvViz::SDK
 		{
 			// See if this texture has been uploaded before (typically if a same texture is used in multiple
 			// materials).
-			auto thdata = thdata_.GetRAutoLock();
+			auto thdata = thdata_.GetAutoLock();
 			auto itDecoId = thdata->localToDecoTexId_.find(filePath);
 			if (itDecoId != thdata->localToDecoTexId_.end())
 			{
@@ -620,6 +634,13 @@ namespace AdvViz::SDK
 				texMap.eSource = ETextureSource::Decoration;
 				return false;
 			}
+			if (thdata->texturesBeingUploaded_.contains(filePath))
+			{
+				// Already being uploaded in this saving session.
+				return false;
+			}
+			// Mark this texture as being uploaded.
+			thdata->texturesBeingUploaded_.insert(filePath);
 		}
 
 		// For the destination filename, we will encode the full path and append the basename, for easier
@@ -647,6 +668,7 @@ namespace AdvViz::SDK
 
 				auto thdata = thdata_.GetAutoLock();
 				thdata->localToDecoTexId_.emplace(filePath, basename);
+				thdata->texturesBeingUploaded_.erase(filePath);
 
 				BE_LOGI("ITwinDecoration", "Uploaded texture " << filePath);
 			}
@@ -663,13 +685,10 @@ namespace AdvViz::SDK
 		return true;
 	}
 
-	size_t MaterialPersistenceManager::Impl::AsyncUploadTexuresIfNeeded(
-		std::shared_ptr<AsyncRequestGroupCallback> const& callbackPtr,
-		ITwinMaterial& material,
-		std::string const& decorationId)
+	template <typename Func>
+	void MaterialPersistenceManager::Impl::VisitMaterialTextures(ITwinMaterial& material, Func const& func)
 	{
-		size_t nUploadStarted = 0;
-		for (uint8_t chanIndex(0) ; chanIndex < (uint8_t)EChannelType::ENUM_END; ++chanIndex)
+		for (uint8_t chanIndex(0); chanIndex < (uint8_t)EChannelType::ENUM_END; ++chanIndex)
 		{
 			EChannelType const chan = static_cast<EChannelType>(chanIndex);
 			auto const chanMap = material.GetChannelMapOpt(chan);
@@ -677,14 +696,44 @@ namespace AdvViz::SDK
 			{
 				// We need a mutable ITwinChannelMap here, as we may change the map's ID or source.
 				ITwinChannelMap& chanMapRef = material.GetMutableChannelMap(chan);
-				if (AsyncUploadChannelTextureIfNeeded(
-					callbackPtr, chanMapRef, decorationId))
-				{
-					nUploadStarted++;
-				}
+				func(chanMapRef);
 			}
 		}
+	}
+
+	size_t MaterialPersistenceManager::Impl::AsyncUploadTexturesIfNeeded(
+		std::shared_ptr<AsyncRequestGroupCallback> const& callbackPtr,
+		ITwinMaterial& material,
+		std::string const& decorationId)
+	{
+		size_t nUploadStarted = 0;
+
+		VisitMaterialTextures(material, [this, &callbackPtr, &decorationId, &nUploadStarted](ITwinChannelMap& chanMapRef)
+		{
+			if (AsyncUploadChannelTextureIfNeeded(callbackPtr, chanMapRef, decorationId))
+			{
+				nUploadStarted++;
+			}
+		});
 		return nUploadStarted;
+	}
+
+	void MaterialPersistenceManager::Impl::GatherUploadedTextures(ITwinMaterial& material)
+	{
+		auto thdata = thdata_.GetAutoLock();
+		VisitMaterialTextures(material, [this, &thdata](ITwinChannelMap& texMap)
+		{
+			if (texMap.eSource == ETextureSource::LocalDisk)
+			{
+				// See if this texture has been uploaded successfully.
+				auto itDecoId = thdata->localToDecoTexId_.find(texMap.texture);
+				if (itDecoId != thdata->localToDecoTexId_.end())
+				{
+					texMap.texture = itDecoId->second;
+					texMap.eSource = ETextureSource::Decoration;
+				}
+			}
+		});
 	}
 
 	void MaterialPersistenceManager::Impl::BuildDecorationFilesURL(const std::string& decorationId)
@@ -919,6 +968,15 @@ namespace AdvViz::SDK
 		{
 			if (*isValidLambda)
 			{
+				// Merge the result of texture uploads (useful when a same texture is used in multiple materials).
+				for (auto& [iModelID, materialMap] : *dataIO)
+				{
+					for (auto& [matID, matInfo] : materialMap)
+					{
+						GatherUploadedTextures(matInfo.settings);
+					}
+				}
+
 				if (bSuccess)
 					AsyncSaveMaterials(decorationId, dataIO, std::move(callback));
 				else if (callback)
@@ -933,7 +991,7 @@ namespace AdvViz::SDK
 		{
 			for (auto& [matID, matInfo] : materialMap)
 			{
-				AsyncUploadTexuresIfNeeded(onUploadFinished, matInfo.settings, decorationId);
+				AsyncUploadTexturesIfNeeded(onUploadFinished, matInfo.settings, decorationId);
 			}
 		}
 

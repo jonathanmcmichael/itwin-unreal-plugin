@@ -59,8 +59,11 @@
 #include <GameFramework/PlayerStart.h>
 #include <HAL/FileManager.h>
 #include <HAL/PlatformFileManager.h>
+#include <HttpManager.h>
 #include <HttpModule.h>
 #include <Interfaces/IHttpResponse.h>
+#include <LevelSequenceActor.h>
+#include <LevelSequencePlayer.h>
 #include <JsonObjectConverter.h>
 #include <Kismet/GameplayStatics.h>
 #include <Materials/MaterialInstanceDynamic.h>
@@ -231,6 +234,7 @@ public:
 	virtual AITwinDecorationHelper* GetDecorationHelper() const override;
 	virtual UITwinClipping3DTilesetHelper* GetClippingHelper() const override;
 	virtual FBox GetBoundingBox() const override;
+	virtual std::optional<FCartographicProps> GetNativeGeoreference() const override;
 
 	virtual void OnModelOffsetLoaded() const override;
 
@@ -296,6 +300,15 @@ public:
 	std::optional<FTransform> LastTilesetTransformUpdated;
 
 	bool bForcedShadowUpdate = false;
+	bool bIsCaptureMovieMode = false;
+
+	bool bHasSchedulePropertiesToRestore = false;
+	FString ScheduleIdToRestore;
+	FString ScheduleNameToRestore;
+	bool ScheduleDisableCachingToRestore = false;
+	FDateTime ScheduleTimeToRestore;
+	FTimespan ScheduleReplaySpeedToRestore;
+	double Max4DTimelinesUpdateMilliseconds = 50;
 
 	// For auto-refresh system
 	enum class EAutoRefreshState : uint8 {
@@ -352,8 +365,9 @@ public:
 	void Initialize();
 	void OnWorldDestroyed(UWorld* InWorld);
 	void ResetSceneMapping();
+	void RestartQueriesIfNeeded();
 	void HandleTilesHavingChangedVisibility();
-	void HandleTilesRenderReadiness();
+	bool HandleTilesRenderReadiness();
 
 	void ForceShadowUpdatesIfNeeded();
 
@@ -409,11 +423,8 @@ public:
 	{
 		if (DecorationPersistenceMgr)
 			return;
-		//Look if a helper already exists:
-		for (TActorIterator<AITwinDecorationHelper> DecoIter(Owner.GetWorld()); DecoIter; ++DecoIter)
-		{
-			DecorationPersistenceMgr = *DecoIter;
-		}
+		// Look if a helper already exists:
+		DecorationPersistenceMgr = AITwinDecorationHelper::GetInstance(Owner.GetWorld());
 		if (IsValid(DecorationPersistenceMgr))
 		{
 			DecorationPersistenceMgr->OnSceneLoaded.AddDynamic(&Owner, &AITwinIModel::OnSceneLoaded);
@@ -441,6 +452,16 @@ public:
 		Owner.Synchro4DSchedules->RegisterComponent();
 		GetInternals(*Owner.Synchro4DSchedules).SetGltfTuner(Tuner);
 		SetupSynchro4DSchedules(*GetDefault<UITwinIModelSettings>());
+		if (bHasSchedulePropertiesToRestore)
+		{
+			Owner.Synchro4DSchedules->ScheduleId = ScheduleIdToRestore;
+			Owner.Synchro4DSchedules->ScheduleName = ScheduleNameToRestore;
+			Owner.Synchro4DSchedules->bDisableCaching = ScheduleDisableCachingToRestore;
+			Owner.Synchro4DSchedules->ScheduleTime = ScheduleTimeToRestore;
+			Owner.Synchro4DSchedules->ReplaySpeed = ScheduleReplaySpeedToRestore;
+			bHasSchedulePropertiesToRestore = false;
+			// Note: SetupSynchro4DSchedules as already restored the properties stored in the iModel settings class
+		}
 		ACesium3DTileset* Tileset = Owner.GetTileset();
 		// Note: this will trigger a refresh of the tileset, thus unloading and reloading all tiles,
 		// so we don't need to bother updating the materials and meshes already received and displayed
@@ -655,16 +676,29 @@ public:
 		}
 		if (PercentComplete)
 			LastSchedule4DPercentComplete = *PercentComplete;
-		Owner.ScheduleDownloadPercentComplete = (1. - SchedProgressCombinedMetadataRatio
-													- SchedProgressConstructionDetailingRatio
-													- SchedProgressElemBBoxesRatio)
-			* LastSchedule4DPercentComplete;
-		Owner.ScheduleDownloadPercentComplete +=
-			SchedProgressCombinedMetadataRatio * GetQueryingSubprogress(ElementsMetadataQuerying);
-		Owner.ScheduleDownloadPercentComplete +=
-			SchedProgressElemBBoxesRatio * GetQueryingSubprogress(ElementsBBoxesQuerying);//nullptr handled
-		Owner.ScheduleDownloadPercentComplete +=
-			SchedProgressConstructionDetailingRatio * GetQueryingSubprogress(ConstructionDetailingQuerying);
+		double const MetadataSubprogress = GetQueryingSubprogress(ElementsMetadataQuerying);
+		double const BBoxesSubprogress = GetQueryingSubprogress(ElementsBBoxesQuerying);//nullptr handled
+		double const ConstructionDetailingSubprogress = GetQueryingSubprogress(ConstructionDetailingQuerying);
+		// Protect against floating point precision errors! The value 100. is set exactly on 4D and iModel queries
+		// subprogress values when the subtasks finished or cancelled: make sure we also get exactly 100.0 here
+		// (or whatever value 'double(100.)' actually is...)
+		if ((LastSchedule4DPercentComplete == 100. || !Owner.bSynchro4DAutoLoadSchedule)
+			&& MetadataSubprogress == 100. && BBoxesSubprogress == 100.
+			&& ConstructionDetailingSubprogress == 100.)
+		{
+			Owner.ScheduleDownloadPercentComplete = 100.;
+		}
+		else
+		{
+			Owner.ScheduleDownloadPercentComplete = (1. - SchedProgressCombinedMetadataRatio
+														- SchedProgressConstructionDetailingRatio
+														- SchedProgressElemBBoxesRatio)
+				* LastSchedule4DPercentComplete;
+			Owner.ScheduleDownloadPercentComplete += SchedProgressCombinedMetadataRatio * MetadataSubprogress;
+			Owner.ScheduleDownloadPercentComplete += SchedProgressElemBBoxesRatio * BBoxesSubprogress;
+			Owner.ScheduleDownloadPercentComplete +=
+				SchedProgressConstructionDetailingRatio * ConstructionDetailingSubprogress;
+		}
 		Internals.LogScheduleDownloadProgressed();
 	}
 
@@ -757,6 +791,28 @@ static FVector RadialIntersectionOnEllipsoidWGS84(FVector const& IModelEcef)
 	return IModelEcef * sqrt(1.0 / SquaredNorm);
 }
 
+void AITwinIModel::FImpl::RestartQueriesIfNeeded()
+{
+	if (Owner.bSynchro4DAutoLoadSchedule)
+	{
+		if (ElementsMetadataQuerying)
+			ElementsMetadataQuerying->Restart();
+		if (ElementsBBoxesQuerying)
+			ElementsBBoxesQuerying->Restart();
+		if (ConstructionDetailingQuerying)
+			ConstructionDetailingQuerying->Restart();
+	}
+	else
+	{
+		if (ElementsMetadataQuerying)
+			ElementsMetadataQuerying->Cancel();
+		if (ElementsBBoxesQuerying)
+			ElementsBBoxesQuerying->Cancel();
+		if (ConstructionDetailingQuerying)
+			ConstructionDetailingQuerying->Cancel();
+	}
+}
+
 void AITwinIModel::FImpl::MakeTileset(std::optional<FITwinExportInfo> const& ExportInfo /*= {}*/)
 {
 	if (!ensure(ExportInfo || ExportInfoPendingLoad))
@@ -807,12 +863,9 @@ void AITwinIModel::FImpl::MakeTileset(std::optional<FITwinExportInfo> const& Exp
 	ResetSceneMapping();
 
 	// We need to query these metadata of iModel Elements using several "paginated" requests sent
-	// successively, but we also need to support interrupting and restart queries from scratch
+	// successively, but we also need to support interrupting and restarting queries from scratch
 	// because this code path can be executed several times for an iModel, eg. upon UpdateIModel
-	ElementsMetadataQuerying->Restart();
-	if (ElementsBBoxesQuerying)
-		ElementsBBoxesQuerying->Restart();
-	ConstructionDetailingQuerying->Restart();
+	RestartQueriesIfNeeded();
 	// It seems risky to NOT do a ResetSchedules here: for example, FITwinElement::AnimationKeys are
 	// not set, MainTimeline::NonAnimatedDuplicates is empty, etc.
 	// TODO_GCO: We could just "reinterpret" the known schedule data, to avoid reparsing the local cache, which
@@ -888,28 +941,38 @@ void AITwinIModel::FImpl::MakeTileset(std::optional<FITwinExportInfo> const& Exp
 
 	auto const Settings = GetDefault<UITwinIModelSettings>();
 	Owner.bSynchro4DAutoLoadSchedule = Settings->bIModelAutoLoadSynchro4DSchedules;
-	// TODO_GCO: Necessary for picking, unless there is another method that does
-	// not require the Physics data? Note that pawn collisions need to be disabled to
-	// still allow navigation through meshes (see SetActorEnableCollision).
-	Tileset->SetCreatePhysicsMeshes(Settings->IModelCreatePhysicsMeshes);
-	Tileset->SetEnableDoubleSidedCollisions(true); // AdvViz #1927793
-	Tileset->SetMaximumScreenSpaceError(Settings->TilesetMaximumScreenSpaceError);
 	// connect mesh creation callback
 	Tileset->SetLifecycleEventReceiver(SceneMappingBuilder.Get());
 	Tileset->SetGltfModifier(GetTuner());
 	Tileset->SetTilesetSource(ETilesetSource::FromUrl);
 	Tileset->SetUrl(CompleteInfo.MeshUrl);
 
+	// The tileset may have been (re)created for a movie capture and Cesium3DTileset::PlayMovieSequencer called,
+	// in which case we don't want to change the LOD transition settings nor (more importantly!) the
+	// LoadingDescendantLimit, which would break the movie capture by making updateGroupOffline freeze in an endless
+	// loop (#2089027)! But we still want to force our settings to be restored after the movie capture.
+	// Only UseLodTransitions and LoadingDescendantLimit below are actually modified by Play/StopMovieSequencer, but
+	// I am "protecting" a larger set of settings just in case Cesium changes its implementation in the future.
+	if (bIsCaptureMovieMode)
+		Tileset->StopMovieSequencer();
+	// TODO_GCO: Necessary for picking, unless there is another method that does
+	// not require the Physics data? Note that pawn collisions need to be disabled to
+	// still allow navigation through meshes (see SetActorEnableCollision).
+	Tileset->SetCreatePhysicsMeshes(Settings->IModelCreatePhysicsMeshes);
+	Tileset->SetEnableDoubleSidedCollisions(true); // AdvViz #1927793
+	Tileset->SetMaximumScreenSpaceError(Settings->TilesetMaximumScreenSpaceError);
 	Tileset->MaximumCachedBytes = std::max(0ULL, Settings->CesiumMaximumCachedMegaBytes * (1024 * 1024ULL));
 	// Avoid unloading/reloading tiles when merely rotating the camera - implied by SetUseLodTransitions(true)
 	// according to the documentation and the first lines of Tileset::updateView, but rotating still seems to
-	// cycles tiles, so I must be missing something...
+	// cycle tiles, so I must be missing something...
 	//Tileset->EnableFrustumCulling = false;
 	Tileset->SetUseLodTransitions(true);
 	Tileset->LodTransitionLength = 1.f;
-	Tileset->MaximumSimultaneousTileLoads = Settings->CesiumMaximumSimultaneousTileLoads;
 	Tileset->LoadingDescendantLimit = Settings->CesiumLoadingDescendantLimit;
+	Tileset->MaximumSimultaneousTileLoads = Settings->CesiumMaximumSimultaneousTileLoads;
 	Tileset->ForbidHoles = Settings->CesiumForbidHoles;
+	if (bIsCaptureMovieMode)
+		Tileset->PlayMovieSequencer();
 
 	if (IModelProperties->EcefLocation) // iModel is geolocated
 	{
@@ -1098,7 +1161,8 @@ void AITwinIModel::Tick(float Delta)
 		auto SceneMappingLock = Impl->Internals.SceneMapping->GetAutoLock();
 		SceneMappingLock->ConvertElemBBoxesIfNeeded();
 	}
-	if (bSynchro4DAutoLoadSchedule && bResolvedChangesetIdValid)
+	bool const bCanTryLoadingSchedule = bSynchro4DAutoLoadSchedule && bResolvedChangesetIdValid;
+	if (bCanTryLoadingSchedule)
 	{
 		// Could also use the Component tick, overriding ShouldTickIfViewportsOnly like for iModels, only
 		// enabling ticking here when above queries are indeed finished but no longer needing a custom
@@ -1150,6 +1214,21 @@ void AITwinIModel::FImpl::Initialize()
 
 	std::shared_ptr<BeUtils::GltfTuner> GltfTunerPtr = std::make_shared<FITwinIModelGltfTuner>(Owner);
 	FITwinIModelMaterialHandler::Initialize(GltfTunerPtr, &Owner);
+
+	for (auto SequenceActorIt = TActorIterator<ALevelSequenceActor>(Owner.GetWorld()); SequenceActorIt;
+		 ++SequenceActorIt)
+	{
+		ALevelSequenceActor* SequenceActor = *SequenceActorIt;
+		if (!IsValid(SequenceActor->GetSequencePlayer()))
+			continue;
+		FScriptDelegate PlayMovieSequencerDelegate;
+		PlayMovieSequencerDelegate.BindUFunction(&Owner, FName("PlayMovieSequencer"));
+		SequenceActor->GetSequencePlayer()->OnPlay.Add(PlayMovieSequencerDelegate);
+		FScriptDelegate StopOrPauseMovieSequencerDelegate;
+		StopOrPauseMovieSequencerDelegate.BindUFunction(&Owner, FName("StopOrPauseMovieSequencer"));
+		SequenceActor->GetSequencePlayer()->OnStop.Add(StopOrPauseMovieSequencerDelegate);
+		SequenceActor->GetSequencePlayer()->OnPause.Add(StopOrPauseMovieSequencerDelegate);
+	}
 
 	// create a callback to fill our scene mapping when meshes are loaded
 	SceneMappingBuilder =
@@ -1205,7 +1284,7 @@ void AITwinIModel::FImpl::Initialize()
 		// need to fetch a new changesetId if we have saved one but user asks to always use latest
 		if (UseLatestChangeset())
 		{
-			Owner.SetResolvedChangesetId(FString());
+			Owner.ResetResolvedChangesetId();
 			Owner.ExportId = FString();
 		}
 
@@ -1234,6 +1313,71 @@ void AITwinIModel::FImpl::Initialize()
 	}
 }
 
+void AITwinIModel::StopOrPauseMovieSequencer()
+{
+	if (!Impl->bIsCaptureMovieMode)
+		return;
+	Impl->bIsCaptureMovieMode = false;
+	if (!IsValid(Synchro4DSchedules))
+		return;
+	Synchro4DSchedules->MaxTimelineUpdateMilliseconds = Impl->Max4DTimelinesUpdateMilliseconds;
+}
+
+void AITwinIModel::PlayMovieSequencer()
+{
+	if (Impl->bIsCaptureMovieMode)
+		return;
+	Impl->bIsCaptureMovieMode = true;
+	// From #2089027 = https://github.com/iTwin/itwin-unreal-plugin/issues/113
+	// If we don't do that, an in-flight iModel properties request will be processed in UnrealAssetAccessor::tick
+	// *inside* Cesium3DTilesSelection::Tileset::updateViewGroupOffline, which will crash because the handling destroys
+	// the tileset that it is being used.
+	FHttpModule::Get().GetHttpManager().Flush(EHttpFlushReason::FullFlush);
+
+	if (!IsValid(Synchro4DSchedules))
+		return;
+	Impl->Max4DTimelinesUpdateMilliseconds = Synchro4DSchedules->MaxTimelineUpdateMilliseconds;
+	Synchro4DSchedules->MaxTimelineUpdateMilliseconds = 10'000; // 10s, to avoid inconsistent 4D in the movie capture
+	if (100. != GetScheduleDownloadPercentComplete())
+	{
+		// Finish loading schedule and iModel data
+		while (100. != GetScheduleDownloadPercentComplete())
+		{
+			Synchro4DSchedules->TickSchedules(0.1f);
+			// This should enforce processing of the HTTP requests sent by TickSchedules, and also those
+			// related to iModel Elements metadata querying (among all others)...
+			FHttpModule::Get().GetHttpManager().Flush(EHttpFlushReason::FullFlush);
+			// ... BUT some of the latter are scheduled to be launched using a "delay call" which uses
+			// an Unreal timer only processed by the engine's tick, which is currently blocked by us!
+			FTSTicker::GetCoreTicker().Tick(0.1);
+		}
+		ACesium3DTileset* Tileset = GetTileset();
+		if (Tileset)
+		{
+			// Force unloading all current tiles and reload them **with the proper tuning rules**
+			Tileset->RefreshTileset();
+			Tileset->SetLifecycleEventReceiver(Impl->SceneMappingBuilder.Get());
+			Tileset->SetGltfModifier(Impl->GetTuner());
+			// Load the tiles needed for the current view: they will not be renderable yet, because normally the iModel
+			// tick handles some of the finalizations, which are thus repeated here:
+			do
+			{
+				Tileset->Tick(0.1f);
+				Impl->HandleTilesHavingChangedVisibility();
+				{	auto SceneMappingLock = Impl->Internals.SceneMapping->GetAutoLock();
+					while (SceneMappingLock->HandleNewSelectingAndHidingTextures())
+						FPlatformProcess::Sleep(0.1f);// let RHI thread process remaining "initial" texture updates
+					SceneMappingLock->ConvertElemBBoxesIfNeeded();
+				}
+				Synchro4DSchedules->TickSchedules(0.1f);//in case of new tiles? not sure it is needed...
+			} while (Impl->HandleTilesRenderReadiness());
+
+			SetNeedForcedShadowUpdate();
+			Impl->ForceShadowUpdatesIfNeeded();
+		}
+	}
+}
+
 void AITwinIModel::UpdateIModel()
 {
 	if (IModelId.IsEmpty())
@@ -1250,7 +1394,7 @@ void AITwinIModel::UpdateIModel()
 		return;
 	}
 
-	SetResolvedChangesetId(FString()); // Reset resolved changeset ID.
+	ResetResolvedChangesetId();
 	ExportStatus = EITwinExportStatus::Unknown;
 	Impl->Update();
 	UpdateSavedViews();
@@ -1583,10 +1727,15 @@ FString AITwinIModel::GetSelectedChangeset() const
 		return Impl->UseLatestChangeset() ? FString() : ChangesetId;
 }
 
-void AITwinIModel::SetResolvedChangesetId(FString const& InChangesetId)
+void AITwinIModel::SetResolvedChangesetId(FString const& InChangesetId, bool bValidId /*= true*/)
 {
 	ResolvedChangesetId = InChangesetId;
-	bResolvedChangesetIdValid = !InChangesetId.IsEmpty();
+
+	// Warning: if an empty ID is passed here because the iModel has no changeset, we should still consider
+	// this ID as valid (if we don't, we are going to repeat the get iModel changesets request again and
+	// again, without ever loading anything...)
+	// See AzDev#2089172
+	bResolvedChangesetIdValid = bValidId || !InChangesetId.IsEmpty();
 
 	if (AutoRefreshChangeset())
 	{
@@ -1605,6 +1754,11 @@ void AITwinIModel::SetResolvedChangesetId(FString const& InChangesetId)
 			Impl->AutoRefreshInfo.State = FImpl::EAutoRefreshState::NotStarted;
 		}
 	}
+}
+
+void AITwinIModel::ResetResolvedChangesetId()
+{
+	SetResolvedChangesetId(FString(), false);
 }
 
 UITwinSynchro4DSchedules* AITwinIModel::GetSynchro4DSchedules()
@@ -2549,6 +2703,26 @@ FBox AITwinIModel::FTilesetAccess::GetBoundingBox() const
 	return IModelBBox;
 }
 
+std::optional<FCartographicProps> AITwinIModel::FTilesetAccess::GetNativeGeoreference() const
+{
+	if (!IModel.IsValid())
+		return std::nullopt;
+
+	const FEcefLocation* EcefLocation = IModel->GetEcefLocation();
+	if (EcefLocation)
+	{
+		if (EcefLocation->bHasCartographicOrigin)
+		{
+			return EcefLocation->CartographicOrigin;
+		}
+		else if (EcefLocation->bHasProjectExtentsCenterGeoCoords)
+		{
+			return EcefLocation->ProjectExtentsCenterGeoCoords;
+		}
+	}
+	return std::nullopt;
+}
+
 void AITwinIModel::FTilesetAccess::OnModelOffsetLoaded() const
 {
 	if (IModel.IsValid())
@@ -3061,12 +3235,7 @@ void AITwinIModel::RefreshTileset()
 		// otherwise Element ranks stored in 4D animation optim structures would be obsolete, which was
 		// the underlying cause for azdev#1621189.
 		Impl->ResetSceneMapping();
-		if (Impl->ElementsMetadataQuerying)
-			Impl->ElementsMetadataQuerying->Restart();
-		if (Impl->ElementsBBoxesQuerying)
-			Impl->ElementsBBoxesQuerying->Restart();
-		if (Impl->ConstructionDetailingQuerying)
-			Impl->ConstructionDetailingQuerying->Restart();
+		Impl->RestartQueriesIfNeeded();
 		if (IsValid(Synchro4DSchedules) && ensure(bResolvedChangesetIdValid))
 		{
 			Synchro4DSchedules->ResetSchedules();
@@ -3231,6 +3400,13 @@ void AITwinIModel::PostEditChangeProperty(struct FPropertyChangedEvent& e)
 	{
 		ToggleMLMaterialPrediction(bActivateMLMaterialPrediction);
 	}
+	else if (PropertyName == GET_MEMBER_NAME_CHECKED(AITwinIModel, bSynchro4DAutoLoadSchedule))
+	{
+		if (bSynchro4DAutoLoadSchedule)
+		{
+			Impl->RestartQueriesIfNeeded();
+		}
+	}
 }
 
 #endif // WITH_EDITOR
@@ -3303,7 +3479,8 @@ void AITwinIModel::FImpl::HandleTilesHavingChangedVisibility()
 // stick to, and ApplyTimeline as well, in order to handle extraction in a non-blocking manner (at least to the
 // granularity of individual Elements...). Then we could call ApplyTimeline from this method until it is
 // finished, and notify the render-readiness only then.
-void AITwinIModel::FImpl::HandleTilesRenderReadiness()
+/// \return Whether there are still tiles pending render-readiness (ie not all tiles have been processed yet)
+bool AITwinIModel::FImpl::HandleTilesRenderReadiness()
 {
 	decltype(Internals.TilesPendingRenderReadiness) StillNotReady;
 	for (auto&& TileRank : Internals.TilesPendingRenderReadiness)
@@ -3329,6 +3506,7 @@ void AITwinIModel::FImpl::HandleTilesRenderReadiness()
 		}
 	}
 	Internals.TilesPendingRenderReadiness.swap(StillNotReady);
+	return !Internals.TilesPendingRenderReadiness.empty();
 }
 
 void AITwinIModel::PostLoad()
@@ -3339,9 +3517,24 @@ void AITwinIModel::PostLoad()
 	// (how? Diffing properties between saved CDO and current CDO??) on any new iModel instance, but many
 	// methods being inlined (MarkAsGarbage, etc.) it's hardly possible to set a breakpoint to confirm what's
 	// happening...
-	// Note that if we want to preserve properties from the saved level's component, we can store them here
-	// and restore them on the "final" component when it is recreated in  CreateSynchro4DSchedulesComponent
-	if (Synchro4DSchedules) Synchro4DSchedules = nullptr;
+	if (Synchro4DSchedules)
+	{
+		Impl->bHasSchedulePropertiesToRestore = true;
+		// To preserve properties from the saved level's component, store them here and restore them on the
+		// "final" component when it is recreated in CreateSynchro4DSchedulesComponent.
+		// Some properties are saved in the iModel settings class (by UpdateS4DClassDefaults),
+		// for the others we have adhoc storage members:
+		if (Synchro4DSchedules->HasValidId())
+		{
+			Impl->ScheduleIdToRestore = Synchro4DSchedules->ScheduleId;
+			Impl->ScheduleNameToRestore = Synchro4DSchedules->ScheduleName;
+		}
+		Impl->ScheduleDisableCachingToRestore = Synchro4DSchedules->bDisableCaching;
+		Impl->ScheduleTimeToRestore = Synchro4DSchedules->ScheduleTime;
+		Impl->ScheduleReplaySpeedToRestore = Synchro4DSchedules->ReplaySpeed;
+		GetInternals(*Synchro4DSchedules).UpdateS4DClassDefaults();
+		Synchro4DSchedules = nullptr;
+	}
 	ensure(!Impl->bInitialized);
 	Impl->bWasLoadedFromDisk = true;
 }

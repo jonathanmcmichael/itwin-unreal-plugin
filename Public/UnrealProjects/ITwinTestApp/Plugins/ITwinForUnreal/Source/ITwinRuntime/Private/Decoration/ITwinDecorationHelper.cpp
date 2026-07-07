@@ -500,7 +500,7 @@ private:
 	bool bIsDisplayingConfirmMsg = false;
 	AITwinDecorationHelper& Owner;
 	bool bIsDeletingCustomMaterials = false;
-	std::function<void()> OnSceneSavedCallback = {}; // used when iTS requests Unreal to close.
+	std::function<void(bool)> OnSceneSavedCallback = {}; // used when iTS requests Unreal to close.
 	TMap<FString, TWeakObjectPtr<AITwinIModel>> PendingIModelsForMaterials;
 	bool bLoadingMaterialsForSpecificModels = false;
 	std::set<std::string> SpecificIModelsForMaterialLoading;
@@ -1328,6 +1328,14 @@ bool AITwinDecorationHelper::FImpl::LoadSplineIfAllLinkedModelsReady(
 	return true;
 }
 
+namespace AdvViz::SDK
+{
+	ISplinePtr ConvertCutoutToSpline(Cutout const& Cutout,
+		RefID const& RefId,
+		IScenePersistence const& Scene,
+		ISplinesManager& SplinesManager);
+}
+
 void AITwinDecorationHelper::FImpl::LoadSplinesInGame(bool bHasLoadedSplines)
 {
 	checkSlow(IsInGameThread());
@@ -1350,6 +1358,42 @@ void AITwinDecorationHelper::FImpl::LoadSplinesInGame(bool bHasLoadedSplines)
 	{
 		BE_LOGW("ITwinDecoration", "Splines can't be loaded because there is no SplineTool actor.");
 		return;
+	}
+
+	// New persistence system for cutouts: now loaded within the scene.
+	// Let's create the equivalent AdvViz splines in the manager.
+	if (DecorationIO->scene)
+	{
+		auto const Cutouts = DecorationIO->scene->GetCutouts({ AdvViz::SDK::ECutoutType::Polygons });
+
+		// If cutouts are present in the scene, it means that that we are using the new persistence system
+		// and thus we should ignore the cutout splines coming from the Decoration Service.
+		if (!Cutouts.empty())
+		{
+			// Use this lambda to make sure we release the lock before trying to remove the spline, in case
+			// the removal also requires a lock in the manager.
+			auto IsCutoutSpline = [](AdvViz::SDK::ISplinePtr const& SplinePtr)
+			{
+				auto Spline = SplinePtr->GetRAutoLock();
+				return Spline->GetUsage() == AdvViz::SDK::ESplineUsage::MapCutout;
+			};
+			auto const SplinePtrs = splinesManager->GetSplines();
+			for (auto const& SplinePtr : SplinePtrs)
+			{
+				if (IsCutoutSpline(SplinePtr))
+				{
+					splinesManager->RemoveSpline(SplinePtr);
+				}
+			}
+		}
+
+		// Convert cutouts coming from the Scene to splines.
+		for (auto const& [RefId, Cutout] : Cutouts)
+		{
+			BE_ASSERT(Cutout.cutoutType == AdvViz::SDK::ECutoutType::Polygons);
+			// Create a new spline for each cutout polygon
+			AdvViz::SDK::ConvertCutoutToSpline(Cutout, RefId, *DecorationIO->scene, *splinesManager);
+		}
 	}
 
 	for (auto const& splinePtr : splinesManager->GetSplines())
@@ -1416,6 +1460,19 @@ void AITwinDecorationHelper::FImpl::LoadPathAnimationsInGame(bool bHasLoadePathA
 bool AITwinDecorationHelper::UseComponentCenter()
 {
 	return bHasComponentCenterOpt.value_or(false);
+}
+
+/*static*/
+AITwinDecorationHelper* AITwinDecorationHelper::GetInstance(const UWorld* InWorld)
+{
+	AITwinDecorationHelper* FoundHelper = nullptr;
+	for (TActorIterator<AITwinDecorationHelper> It(InWorld); It; ++It)
+	{
+		FoundHelper = *It;
+		// For compatibility with former implementations, we do not break the loop here, but we keep the last
+		// found helper in case of several ones in the world (which is not supposed to happen).
+	}
+	return FoundHelper;
 }
 
 void AITwinDecorationHelper::InitContentManager()
@@ -1532,8 +1589,10 @@ bool AITwinDecorationHelper::FImpl::ShouldSaveScene() const
 		&& DecorationIO->splinesManager->HasSplinesToSave();
 	bool const saveAnnotations = DecorationIO->annotationsManager
 		&& DecorationIO->annotationsManager->HasAnnotationToSave();
+	bool const savePathAnimation = DecorationIO->pathAnimManager
+		&& DecorationIO->pathAnimManager->HasAnimPathsToSave();
 
-	if (!saveInstances && !saveMaterials && !saveScenes && !saveTimeline && !saveSplines && !saveAnnotations)
+	if (!saveInstances && !saveMaterials && !saveScenes && !saveTimeline && !saveSplines && !saveAnnotations && !savePathAnimation)
 		return false;
 	return true;
 }
@@ -1570,10 +1629,11 @@ void AITwinDecorationHelper::FImpl::OnDecorationSaved_GameThread(bool bSaved, bo
 			IModelIter->ReloadCustomizedMaterials();
 		}
 	}
-	// Execute custom save callback, if any (used when iTwin Studio requests closing Unreal)
+	// Execute custom save callback, if any (used when iTwin Studio requests closing Unreal, or when a
+	// regular save is performed)
 	if (OnSceneSavedCallback)
 	{
-		OnSceneSavedCallback();
+		OnSceneSavedCallback(bSaved);
 		OnSceneSavedCallback = {};
 	}
 
@@ -1975,7 +2035,6 @@ void AITwinDecorationHelper::SetSceneInfo(const ModelIdentifier& Key, const ITwi
 	}
 }
 
-
 void AITwinDecorationHelper::CreateLinkIfNeeded(EITwinModelType ct, const FString& id) const
 {
 	auto const Key = std::make_pair(ct, id);
@@ -2243,9 +2302,16 @@ FTransform AITwinDecorationHelper::GetHomeCamera() const
 	return FTransform::Identity;
 }
 
+std::shared_ptr<AdvViz::SDK::IScenePersistence> AITwinDecorationHelper::GetScenePersistence() const
+{
+	if (Impl->DecorationIO)
+		return Impl->DecorationIO->scene;
+	else
+		return {};
+}
+
 FString AITwinDecorationHelper::GetSceneID() const
 {
-	
 	if (Impl->DecorationIO && Impl->DecorationIO->scene)
 		return FString(Impl->DecorationIO->scene->GetId().c_str());
 	else

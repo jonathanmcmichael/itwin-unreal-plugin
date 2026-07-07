@@ -19,10 +19,10 @@ namespace AdvViz::SDK
 	{
 	public:
 		RefID id_; // identifies the point (and may hold id defined by the server)
-		double3 position_;
-		double3 upVector_;
-		double3 inTangent_;
-		double3 outTangent_;
+		double3 position_ = { 0.0, 0.0, 0.0 };
+		double3 upVector_ = { 0.0, 0.0, 0.0 };
+		double3 inTangent_ = { 0.0, 0.0, 0.0 }; // Important for test HasUndefinedTangent
+		double3 outTangent_ = { 0.0, 0.0, 0.0 };
 		ESplineTangentMode inTangentMode_ = ESplineTangentMode::Linear;
 		ESplineTangentMode outTangentMode_ = ESplineTangentMode::Linear;
 		ESaveStatus saveStatus_ = ESaveStatus::NeverSaved;
@@ -42,9 +42,22 @@ namespace AdvViz::SDK
 		const double3& GetOutTangent() const { return outTangent_; }
 		void SetOutTangent(const double3& tangent) { outTangent_ = tangent; }
 
+		bool HasUndefinedTangent() const { return inTangent_ == double3{ 0., 0., 0. }; }
+
 		ESaveStatus GetSaveStatus() const { return saveStatus_; }
 		void SetSaveStatus(ESaveStatus status) { saveStatus_ = status; }
 	};
+
+	SplinePoint::SplinePoint() :impl_(new Impl())
+	{}
+
+	SplinePoint::~SplinePoint()
+	{}
+
+	SplinePoint::Impl& SplinePoint::GetImpl()
+	{
+		return *impl_;
+	}
 
 	const RefID& SplinePoint::GetId() const { return impl_->GetId(); }
 	void SplinePoint::SetId(const RefID& id) { impl_->SetId(id); };
@@ -79,19 +92,13 @@ namespace AdvViz::SDK
 	const double3& SplinePoint::GetOutTangent() const { return impl_->GetOutTangent(); }
 	void SplinePoint::SetOutTangent(const double3& tangent) { impl_->SetOutTangent(tangent); }
 
+	bool SplinePoint::HasUndefinedTangent() const
+	{
+		return impl_->HasUndefinedTangent();
+	}
+
 	ESaveStatus SplinePoint::GetSaveStatus() const { return impl_->GetSaveStatus(); }
 	void SplinePoint::SetSaveStatus(ESaveStatus status) { impl_->SetSaveStatus(status); }
-
-	SplinePoint::SplinePoint():impl_(new Impl())
-	{}
-
-	SplinePoint::~SplinePoint() 
-	{}
-
-	SplinePoint::Impl& SplinePoint::GetImpl()
-	{
-		return *impl_;
-	}
 
 	ISplinePointPtr SplinePoint::Clone() const
 	{
@@ -131,7 +138,9 @@ namespace AdvViz::SDK
 		bool enableEffect_ = true;
 		bool invertEffect_ = false; // introduced for MapCutout
 
-		dmat3x4 transform_;
+		dmat3x4 transform_ = { 1., 0., 0., 0.,
+							   0., 1., 0., 0.,
+							   0., 0., 1., 0. };
 		ISplinePointPtrVect points_;
 		ISplinePointPtrVect removedPoints_; // used by the spline manager for the saving.
 
