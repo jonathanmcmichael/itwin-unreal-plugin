@@ -67,7 +67,6 @@ AITwinAnnotation::AITwinAnnotation()
 	widgetComponent->SetPivot(FVector2D(0.0f, 0.0f)); // Pivot at bottom center (pin position)
 	widgetComponent->SetVisibility(false); // Hidden by default until BeginPlay
 
-	BuildWidget();
 }
 
 void AITwinAnnotation::BeginPlay()
@@ -75,6 +74,7 @@ void AITwinAnnotation::BeginPlay()
 	Super::BeginPlay();
 	SetTickGroup(ETickingGroup::TG_PostUpdateWork);
 	
+	BuildWidget();
 	// Build the appropriate widget type based on settings
 	InitWorldSpaceWidget();
 	
@@ -89,11 +89,27 @@ void AITwinAnnotation::BeginPlay()
 	}
 }
 
+	void AITwinAnnotation::EndPlay(const EEndPlayReason::Type EndPlayReason)
+	{
+	  ReleaseWidget();
+	  Super::EndPlay(EndPlayReason);
+	}
+
 void AITwinAnnotation::BuildWidget()
 {
+	  if (onScreen)
+		  return;
+
+	  UWorld* World = GetWorld();
+	  if (!World)
+		  return;
+
 	// Build viewport-based widget (legacy approach)
-	onScreen = CreateWidget<UITwin2DAnnotationWidgetImpl>(GetWorld(), LoadClass <UITwin2DAnnotationWidgetImpl> (nullptr,
-		TEXT("/Script/UMGEditor.WidgetBlueprint'/ITwinForUnreal/ITwin/Annotations/ITwin2DAnnotationWidget.ITwin2DAnnotationWidget_C'")));
+	  TSubclassOf<UITwin2DAnnotationWidgetImpl> WidgetClass = LoadClass<UITwin2DAnnotationWidgetImpl>(nullptr,
+		  TEXT("/ITwinForUnreal/ITwin/Annotations/ITwin2DAnnotationWidget.ITwin2DAnnotationWidget_C"));
+	  if (!WidgetClass)
+		  return;
+	  onScreen = CreateWidget<UITwin2DAnnotationWidgetImpl>(World, WidgetClass);
 	if (onScreen)
 	{
 		if (CustomFontObject)
@@ -101,6 +117,15 @@ void AITwinAnnotation::BuildWidget()
 			onScreen->SetFontObject(CustomFontObject);
 		}
 		onScreen->SetText(content);
+	}
+}
+
+void AITwinAnnotation::ReleaseWidget()
+{
+	if (onScreen)
+	{
+					onScreen->RemoveFromParent();
+					onScreen = nullptr;
 	}
 }
 
