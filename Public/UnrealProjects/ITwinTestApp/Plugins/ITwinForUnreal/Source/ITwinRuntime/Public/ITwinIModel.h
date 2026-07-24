@@ -286,6 +286,16 @@ public:
 		BlueprintCallable)
 	void UpdateConstructionData();
 
+	bool TryHideElementsWithoutScheduleTasks(int32& OutAffectedElementCount, bool bForceUpdate = true);
+
+	UFUNCTION(Category = "iTwin|Schedules Querying", BlueprintCallable)
+	int32 HideElementsWithoutScheduleTasks(bool bForceUpdate = true);
+
+	UFUNCTION(Category = "iTwin|Schedules Querying", BlueprintCallable)
+	int32 ShowElementsWithoutScheduleTasks(bool bForceUpdate = true);
+
+	bool HasAnyScheduledElements() const;
+
 	void HideCategories(std::vector<std::string> const& InCategoryIDs, bool forceUpdate);
 
 	void HideModels(std::vector<std::string> const& InModelIDs, bool forceUpdate);

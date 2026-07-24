@@ -91,6 +91,32 @@
 #include <optional>
 #include <unordered_set>
 
+namespace
+{
+  int32 CountElementsWithValidIDs(FITwinSceneMapping const& SceneMapping)
+  {
+	  int32 ElementCount = 0;
+	  for (auto const& Elem : SceneMapping.GetElements())
+	  {
+		  if (Elem.ElementID != ITwin::NOT_ELEMENT)
+			  ++ElementCount;
+	  }
+	  return ElementCount;
+  }
+
+  std::unordered_set<ITwinElementID> GetElementsWithoutScheduleTasks(FITwinSceneMapping const& SceneMapping)
+  {
+	  std::unordered_set<ITwinElementID> ElementIDs;
+	  auto const& AllElems = SceneMapping.GetElements();
+	  ElementIDs.reserve(AllElems.size());
+	  for (auto const& Elem : AllElems)
+	  {
+		  if (Elem.ElementID != ITwin::NOT_ELEMENT && Elem.AnimationKeys.empty())
+			  ElementIDs.insert(Elem.ElementID);
+	  }
+	  return ElementIDs;
+  }
+}
 
 namespace ITwin
 {
@@ -2891,6 +2917,67 @@ void AITwinIModel::UpdateConstructionData()
 		hiddenElements = &GeometryIDToElementIDs.at(1); //ConstructionDataElements
 	GetInternals(*this).HideElements(*hiddenElements,
 		true, true);
+}
+
+bool AITwinIModel::TryHideElementsWithoutScheduleTasks(int32& OutAffectedElementCount, bool bForceUpdate)
+{
+  OutAffectedElementCount = 0;
+  if (ScheduleDownloadPercentComplete < 100.)
+  {
+	  UE_LOG(LogITwin, Warning,
+		  TEXT("Cannot hide elements without schedule tasks before 4D download is complete for iModel %s"),
+		  *IModelId);
+	  return false;
+  }
+
+  auto& Internals = GetInternals(*this);
+  auto ElementIDs = GetElementsWithoutScheduleTasks(Internals.SceneMapping);
+  const int32 TotalElementCount = CountElementsWithValidIDs(Internals.SceneMapping);
+  if (TotalElementCount > 0 && static_cast<int32>(ElementIDs.size()) >= TotalElementCount)
+  {
+	  UE_LOG(LogITwin, Warning,
+		  TEXT("Refusing to hide elements without schedule tasks for iModel %s because it would hide all %d loaded elements"),
+		  *IModelId, TotalElementCount);
+	  return false;
+  }
+
+  Internals.HideElements(ElementIDs, false, bForceUpdate);
+  OutAffectedElementCount = static_cast<int32>(ElementIDs.size());
+  return true;
+}
+
+int32 AITwinIModel::HideElementsWithoutScheduleTasks(bool bForceUpdate)
+{
+  int32 HiddenElementCount = 0;
+  TryHideElementsWithoutScheduleTasks(HiddenElementCount, bForceUpdate);
+  return HiddenElementCount;
+}
+
+int32 AITwinIModel::ShowElementsWithoutScheduleTasks(bool bForceUpdate)
+{
+  if (ScheduleDownloadPercentComplete < 100.)
+  {
+	  UE_LOG(LogITwin, Warning,
+		  TEXT("Cannot show elements without schedule tasks before 4D download is complete for iModel %s"),
+		  *IModelId);
+	  return 0;
+  }
+
+  auto& Internals = GetInternals(*this);
+  auto ElementIDs = GetElementsWithoutScheduleTasks(Internals.SceneMapping);
+  Internals.ShowElements(ElementIDs, bForceUpdate);
+  return static_cast<int32>(ElementIDs.size());
+}
+
+bool AITwinIModel::HasAnyScheduledElements() const
+{
+  auto& SceneMapping = GetInternals(*const_cast<AITwinIModel*>(this)).SceneMapping;
+  for (auto const& Elem : SceneMapping.GetElements())
+  {
+	  if (Elem.ElementID != ITwin::NOT_ELEMENT && !Elem.AnimationKeys.empty())
+		  return true;
+  }
+  return false;
 }
 
 void AITwinIModel::HideCategories(std::vector<std::string> const& InCategoryIDs, bool forceUpdate)
