@@ -19,11 +19,11 @@ struct FITwinIModel3DInfo
 
 public:
 	UPROPERTY(BlueprintReadOnly, Category = "iTwin")
-		FVector BoundingBoxMin = FVector(0, 0, 0);
+	FVector BoundingBoxMin = FVector(0, 0, 0);
 
 	UPROPERTY(BlueprintReadOnly, Category = "iTwin")
-		FVector BoundingBoxMax = FVector(0, 0, 0);
+	FVector BoundingBoxMax = FVector(0, 0, 0);
 
 	UPROPERTY(BlueprintReadOnly, Category = "iTwin")
-		FVector ModelCenter = FVector(0, 0, 0);
+	FVector ModelCenter = FVector(0, 0, 0);
 };

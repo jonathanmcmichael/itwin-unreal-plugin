@@ -7,7 +7,6 @@
 +--------------------------------------------------------------------------------------*/
 
 
-
 #pragma once
 
 #include <IncludeCesium3DTileset.h>
@@ -21,6 +20,7 @@
 #include <ITwinGoogle3DTileset.generated.h>
 
 class FITwinTilesetAccess;
+
 namespace AdvViz::SDK
 {
 	struct ITwinGoogleCuratedContentAccess;
@@ -31,6 +31,7 @@ UCLASS()
 class ITWINRUNTIME_API AITwinGoogle3DTileset : public ACesium3DTileset
 {
 	GENERATED_BODY()
+
 public:
 	UPROPERTY(Category = "iTwin",
 		EditAnywhere,
@@ -59,9 +60,9 @@ public:
 	virtual void Tick(float DeltaTime) override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void SetActorHiddenInGame(bool bNewHidden) override;
-#if WITH_EDITOR
+	#if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
-#endif
+	#endif
 
 	UFUNCTION()
 	void OnSceneLoaded(bool bSuccess);

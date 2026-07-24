@@ -14,10 +14,11 @@
 template<typename BindingIndexIterator>
 bool FITwinSchedule::HasOnlyNeutralBindings(BindingIndexIterator First, BindingIndexIterator Last) const
 {
-	return AnimationBindings.end() == std::find_if(
-		AnimationBindings.begin(), AnimationBindings.end(), [this](FAnimationBinding const& Binding)
+	return Last == std::find_if(
+		First, Last, [this](const auto& BindingIndex)
 		{
-			return EProfileAction::Neutral != this->AppearanceProfiles[Binding.AppearanceProfileInVec].ProfileType;
+			return EProfileAction::Neutral
+				!= this->AppearanceProfiles[this->AnimationBindings[BindingIndex].AppearanceProfileInVec].ProfileType;
 		});
 }
 
@@ -33,7 +34,7 @@ namespace Detail
 	};
 	using OptTimedProfile = std::optional<TimedProfile>;
 
-	void UpdateTimedProfiles(FScheduleTask const& Task, FScheduleTask const& OtherTask,
+	inline void UpdateTimedProfiles(FScheduleTask const& Task, FScheduleTask const& OtherTask,
 		FAppearanceProfile const& OtherProfile,
 		OptTimedProfile& LatestBefore, OptTimedProfile& EarliestAfter,
 		FTransformAssignment const* TransfoAssignment)
@@ -61,7 +62,7 @@ namespace Detail
 		}
 	}
 
-	void SetTransfoAssignmentDataDeps(FITwinSchedule const& Schedule,
+	inline void SetTransfoAssignmentDataDeps(FITwinSchedule const& Schedule,
 		ITwin::Timeline::FTaskDependenciesData& TaskDeps, TimedProfile const& Profile)
 	{
 		if (!Profile.TransfoAssignment)

@@ -9,14 +9,36 @@
 // From vue.git/viewer/Code/Tools/UnitTests/ScheduleTests.cpp
 
 #include <CoreMinimal.h>
+#include <ITwinSceneMapping.h>
+#include <ITwinSynchro4DSchedulesTimelineBuilder.h>
+#include <ITwinUtilityLibrary.h>
 #include <Math/Vector.h>
 #include <Misc/AutomationTest.h>
 #include <Misc/LowLevelTestAdapter.h>
 
+#include <array>
+
 #include <Hashing/UnrealMath.h>
+#include <Timeline/SchedulesStructs.h>
+#include <Timeline/SchedulesStructs.inl>
 #include <Timeline/Definition.h>
 
-#ifdef WITH_TESTS
+#if WITH_TESTS
+
+class FScheduleTimelineBuilderTestAccess
+{
+public:
+	static bool CreateTimelineKeyframesWithTaskDependencies(
+		FITwinScheduleTimelineBuilder& Builder,
+		FITwinSceneMapping& SceneMapping,
+		FITwinSchedule& Schedule,
+		FITwinElementTimeline& ElemTimeline,
+		std::unordered_set<FElementsGroup>& KeyframedSubgroups)
+	{
+		return Builder.TestOnlyCreateTimelineKeyframesWithTaskDependencies(
+			SceneMapping, Schedule, ElemTimeline, KeyframedSubgroups);
+	}
+};
 
 namespace ITwin::Timeline {
 
@@ -478,6 +500,181 @@ void MainTimelineAddSpec::Define()
 		});
 	It("should span the right time range", [this]() {
 			TestTrue("get time range", std::make_pair(100., 300.) == Timeline->GetTimeRange());
+		});
+}
+
+BEGIN_DEFINE_SPEC(HasOnlyNeutralBindingsSpec, "Bentley.ITwinForUnreal.ITwinRuntime.Timeline",
+				  EAutomationTestFlags::EngineFilter | EAutomationTestFlags_ApplicationContextMask)
+	FITwinSchedule Schedule;
+END_DEFINE_SPEC(HasOnlyNeutralBindingsSpec)
+
+void HasOnlyNeutralBindingsSpec::Define()
+{
+	BeforeEach([this]()
+		{
+			Schedule = {};
+			Schedule.AppearanceProfiles.resize(3);
+			Schedule.AppearanceProfiles[0].ProfileType = EProfileAction::Neutral;
+			Schedule.AppearanceProfiles[1].ProfileType = EProfileAction::Neutral;
+			Schedule.AppearanceProfiles[2].ProfileType = EProfileAction::Install;
+
+			Schedule.AnimationBindings.resize(3);
+			Schedule.AnimationBindings[0].AppearanceProfileInVec = 0;
+			Schedule.AnimationBindings[1].AppearanceProfileInVec = 1;
+			Schedule.AnimationBindings[2].AppearanceProfileInVec = 2;
+		});
+
+	It("checks only the provided binding range", [this]()
+		{
+			const std::array<size_t, 2> NeutralBindings{ 0, 1 };
+
+			TestTrue(
+				"neutral-only subset should stay neutral even if another binding elsewhere is non-neutral",
+				Schedule.HasOnlyNeutralBindings(NeutralBindings.begin(), NeutralBindings.end()));
+		});
+
+	It("returns false when the provided binding range contains a non-neutral task", [this]()
+		{
+			const std::array<size_t, 2> MixedBindings{ 0, 2 };
+
+			TestFalse(
+				"subset containing a non-neutral binding should not be treated as neutral-only",
+				Schedule.HasOnlyNeutralBindings(MixedBindings.begin(), MixedBindings.end()));
+	});
+}
+
+BEGIN_DEFINE_SPEC(TimelineBuilderRegressionSpec, "Bentley.ITwinForUnreal.ITwinRuntime.Timeline",
+				  EAutomationTestFlags::EngineFilter | EAutomationTestFlags_ApplicationContextMask)
+END_DEFINE_SPEC(TimelineBuilderRegressionSpec)
+
+void TimelineBuilderRegressionSpec::Define()
+{
+	It("hashes equal element groups independently of insertion order", [this]()
+		{
+			FElementsGroup GroupA{ ITwinElementID(1), ITwinElementID(2), ITwinElementID(3) };
+			FElementsGroup GroupB{ ITwinElementID(3), ITwinElementID(1), ITwinElementID(2) };
+			std::hash<FElementsGroup> Hasher;
+
+			TestTrue("equal groups should compare equal", GroupA == GroupB);
+			TestEqual("equal groups should share the same hash",
+				static_cast<int64>(Hasher(GroupA)), static_cast<int64>(Hasher(GroupB)));
+
+			std::unordered_set<FElementsGroup> SeenGroups;
+			SeenGroups.insert(GroupA);
+			SeenGroups.insert(GroupB);
+			TestEqual("unordered_set should deduplicate equal groups", static_cast<int32>(SeenGroups.size()), 1);
+		});
+
+	It("can uninitialize a unit-test timeline builder without an owner", [this]()
+		{
+			FITwinCoordConversions CoordConversions;
+			FITwinScheduleTimelineBuilder Builder =
+				FITwinScheduleTimelineBuilder::CreateForUnitTesting(CoordConversions);
+			Builder.Initialize(FOnElementsTimelineModified{});
+			Builder.Uninitialize();
+			TestTrue("unit-test builder cleanup should not require an owner", true);
+		});
+
+	It("keeps the first divergent element in the split subgroup", [this]()
+		{
+			FITwinCoordConversions CoordConversions;
+			FITwinScheduleTimelineBuilder Builder =
+				FITwinScheduleTimelineBuilder::CreateForUnitTesting(CoordConversions);
+			FITwinSceneMapping SceneMapping(false);
+			FITwinSchedule Schedule;
+
+			Schedule.AppearanceProfiles.resize(2);
+			Schedule.AppearanceProfiles[0].ProfileType = EProfileAction::Neutral;
+			Schedule.AppearanceProfiles[1].ProfileType = EProfileAction::Install;
+
+			Schedule.Tasks.resize(2);
+			Schedule.Tasks[0].TimeRange = { 10., 20. };
+			Schedule.Tasks[1].TimeRange = { 30., 40. };
+
+			Schedule.AnimationBindings.resize(2);
+			Schedule.AnimationBindings[0].AppearanceProfileInVec = 0;
+			Schedule.AnimationBindings[0].TaskInVec = 0;
+			Schedule.AnimationBindings[1].AppearanceProfileInVec = 1;
+			Schedule.AnimationBindings[1].TaskInVec = 1;
+
+			FIModelElementsKey const ExistingAnimationKey(ITwinElementID(100));
+			FIModelElementsKey const DivergentAnimationKey(ITwinElementID(200));
+			FElementsGroup AllElements{ ITwinElementID(1), ITwinElementID(2), ITwinElementID(3) };
+
+			auto& BaseTimeline = Builder.Timeline().ElementTimelineFor(ExistingAnimationKey, AllElements);
+			BaseTimeline.AnimationBindings().push_back(0);
+			auto& DivergentTimeline =
+				Builder.Timeline().ElementTimelineFor(DivergentAnimationKey, FElementsGroup{});
+			DivergentTimeline.AnimationBindings().push_back(1);
+			(void)DivergentTimeline;
+
+			SceneMapping.ElementForSLOW(ITwinElementID(1)).AnimationKeys = { ExistingAnimationKey };
+			SceneMapping.ElementForSLOW(ITwinElementID(2)).AnimationKeys = {
+				ExistingAnimationKey, DivergentAnimationKey
+			};
+			SceneMapping.ElementForSLOW(ITwinElementID(3)).AnimationKeys = {
+				ExistingAnimationKey, DivergentAnimationKey
+			};
+
+			std::unordered_set<FElementsGroup> KeyframedSubgroups;
+			TestTrue("mixed animation keys should trigger timeline splitting",
+				FScheduleTimelineBuilderTestAccess::CreateTimelineKeyframesWithTaskDependencies(
+					Builder, SceneMapping, Schedule, BaseTimeline, KeyframedSubgroups));
+
+			TestEqual("split should create one additional subgroup timeline",
+				static_cast<int32>(Builder.GetTimeline().GetContainer().size()), 2);
+			TestEqual("reused base timeline should keep only reference elements",
+				static_cast<int32>(BaseTimeline.GetIModelElements().size()), 1);
+			TestTrue("reference subgroup should keep element 1",
+				BaseTimeline.GetIModelElements().contains(ITwinElementID(1)));
+
+			FElementsGroup const ExpectedSplitGroup{ ITwinElementID(2), ITwinElementID(3) };
+			auto* SplitTimeline = Builder.GetTimeline().GetElementTimelineFor(FIModelElementsKey(size_t(0)));
+			TestTrue("split subgroup timeline should be created", nullptr != SplitTimeline);
+			if (!SplitTimeline)
+				return;
+
+			TestEqual("first divergent element should stay in the split subgroup",
+				static_cast<int32>(SplitTimeline->GetIModelElements().size()), 2);
+			TestTrue("split subgroup should contain element 2",
+				SplitTimeline->GetIModelElements().contains(ITwinElementID(2)));
+			TestTrue("split subgroup should contain element 3",
+				SplitTimeline->GetIModelElements().contains(ITwinElementID(3)));
+			TestTrue("split subgroup should be tracked as keyframed",
+				KeyframedSubgroups.contains(ExpectedSplitGroup));
+			TestEqual("split subgroup should inherit both relevant bindings",
+				static_cast<int32>(SplitTimeline->GetAnimationBindings().size()), 2);
+		});
+
+	It("skips task dependency splitting for timelines without resolved elements", [this]()
+		{
+			FITwinCoordConversions CoordConversions;
+			FITwinScheduleTimelineBuilder Builder =
+				FITwinScheduleTimelineBuilder::CreateForUnitTesting(CoordConversions);
+			FITwinSceneMapping SceneMapping(false);
+			FITwinSchedule Schedule;
+
+			Schedule.AppearanceProfiles.resize(2);
+			Schedule.AppearanceProfiles[0].ProfileType = EProfileAction::Neutral;
+			Schedule.AppearanceProfiles[1].ProfileType = EProfileAction::Install;
+
+			Schedule.AnimationBindings.resize(2);
+			Schedule.AnimationBindings[0].AppearanceProfileInVec = 0;
+			Schedule.AnimationBindings[1].AppearanceProfileInVec = 1;
+
+			FITwinElementTimeline& EmptyTimeline =
+				Builder.Timeline().ElementTimelineFor(FIModelElementsKey(ITwinElementID(100)), FElementsGroup{});
+			EmptyTimeline.AnimationBindings().push_back(0);
+			EmptyTimeline.AnimationBindings().push_back(1);
+
+			std::unordered_set<FElementsGroup> KeyframedSubgroups;
+			TestFalse("empty element timelines should fall back to normal keyframe creation",
+				FScheduleTimelineBuilderTestAccess::CreateTimelineKeyframesWithTaskDependencies(
+					Builder, SceneMapping, Schedule, EmptyTimeline, KeyframedSubgroups));
+			TestEqual("empty timelines should not create subgroup timelines",
+				static_cast<int32>(Builder.GetTimeline().GetContainer().size()), 1);
+			TestEqual("empty timelines should not mark any subgroup as keyframed",
+				static_cast<int32>(KeyframedSubgroups.size()), 0);
 		});
 }
 

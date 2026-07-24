@@ -218,7 +218,13 @@ bool FITwinDynamicShadingProperty<DataType, NumChannels>::UpdateTexture()
 	{
 		return false;
 	}
-	auto* TextureRHI = ((FTexture2DResource*)Texture->GetResource())->GetTexture2DRHI();
+	FTextureResource* TextureResource = Texture->GetResource();
+	if (!TextureResource)
+	{
+		return true;
+	}
+
+	auto* TextureRHI = static_cast<FTexture2DResource*>(TextureResource)->GetTexture2DRHI();
 	// tested in UpdateTextureRegions too but bNeedUpdate requires this early exit
 	if (!TextureRHI)
 	{

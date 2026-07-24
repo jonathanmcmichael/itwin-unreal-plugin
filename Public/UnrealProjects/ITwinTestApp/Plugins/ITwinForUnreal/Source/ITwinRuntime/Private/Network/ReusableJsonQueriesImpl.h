@@ -26,7 +26,7 @@ class FReusableJsonQueries::FImpl
 	class FRequestHandler
 	{
 		/// JsonQueries and FromPool usable as long as (*IsJsonQueriesValid)
-		std::shared_ptr<bool> IsJsonQueriesValid;
+		std::shared_ptr<std::atomic_bool> IsJsonQueriesValid;
 		FReusableJsonQueries::FImpl& JsonQueries;
 		FPoolRequest& FromPool;
 		FRequestArgs RequestArgs;
@@ -42,7 +42,7 @@ class FReusableJsonQueries::FImpl
 		{
 		}
 
-		bool IsValid() const { return (*IsJsonQueriesValid) == true; }
+		bool IsValid() const { return IsJsonQueriesValid->load(); }
 		[[nodiscard]] TSharedPtr<TPromise<void>> Run(std::shared_ptr<FRequestHandler> This,
 			FHttpRequestPtr CompletedRequest, FHttpResponsePtr Response, bool bConnectedSuccessfully);
 		void ProcessResponse(TSharedPtr<FJsonObject> ResponseJson, FHttpResponsePtr Response,
@@ -85,7 +85,8 @@ class FReusableJsonQueries::FImpl
 	/// Stats: last completion time
 	double LastCompletionTime = 0.;
 
-	std::shared_ptr<bool> IsThisValid;
+	std::atomic_bool bIsShuttingDown{ false };
+	std::shared_ptr<std::atomic_bool> IsThisValid;
 
 	/// \return Whether a pending request was emitted
 	bool HandlePendingQueries();

@@ -37,6 +37,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnAuthorizationChecked, bool, bSuc
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnGetITwinInfoComplete, bool, bSuccess, FITwinInfo, iTwin);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnGetiTwinsComplete, bool, bSuccess, FITwinInfos, iTwins);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnGetiTwiniModelsComplete, bool, bSuccess, FIModelInfos, iModels);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnGetIModelProcessingStatusComplete, bool, bSuccess, FIModelProcessingStatus, ProcessingStatus);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnGetiModelChangesetsComplete, bool, bSuccess, FChangesetInfos, Changesets);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnGetExportsComplete, bool, bSuccess, FITwinExportInfos, Exports);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnGetExportInfoComplete, bool, bSuccess, FITwinExportInfo, Export);
@@ -116,6 +117,9 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "iTwin Web Services")
 	void GetiTwiniModels(FString iTwinId);
+
+	UFUNCTION(BlueprintCallable, Category = "iTwin Web Services")
+	void GetIModelProcessingStatus(FString iModelId);
 
 	UFUNCTION(BlueprintCallable, Category = "iTwin Web Services")
 	void GetiModelChangesets(FString iModelId);
@@ -250,6 +254,9 @@ public:
 
 	UPROPERTY(BlueprintAssignable, Category = "iTwin Web Services")
 	FOnGetiTwiniModelsComplete OnGetiTwiniModelsComplete;
+
+	UPROPERTY(BlueprintAssignable, Category = "iTwin Web Services")
+	FOnGetIModelProcessingStatusComplete OnGetIModelProcessingStatusComplete;
 
 	UPROPERTY(BlueprintAssignable, Category = "iTwin Web Services")
 	FOnGetiModelChangesetsComplete OnGetiModelChangesetsComplete;
