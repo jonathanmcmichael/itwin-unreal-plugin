@@ -111,6 +111,11 @@ void UITwinSynchro4DSchedules::FImpl::UpdateGltfTunerRules()
 	AITwinIModel* IModel = Cast<AITwinIModel>(Owner.GetOwner());
 	if (!ensure(IModel))
 		return;
+  auto const RetuneIfVersionChanged = [this, IModel](int64_t const PreviousVersion)
+  {
+	  if (Internals.MinGltfTunerVersionForAnimation != PreviousVersion)
+		  IModel->Retune();
+  };
 	if (!ensure(Internals.GltfTuner))
 	{
 		// TODO_GCO: but existing tiles will not be setup for 4D :/
@@ -244,7 +249,9 @@ void UITwinSynchro4DSchedules::FImpl::UpdateGltfTunerRules()
 		AnimRules.anim4DGroups_.emplace_back(BeUtils::GltfTuner::Rules::Anim4DGroup{
 			std::move(NodeHandle.mapped()), std::move(NodeHandle.key()) });
 	}
+	auto const PreviousVersion = Internals.MinGltfTunerVersionForAnimation;
 	Internals.MinGltfTunerVersionForAnimation = Internals.GltfTuner->SetAnim4DRules(std::move(AnimRules));
+	RetuneIfVersionChanged(PreviousVersion);
 }
 
 static FITwinCoordConversions const& GetIModel2UnrealCoordConv(UITwinSynchro4DSchedules& Owner)
