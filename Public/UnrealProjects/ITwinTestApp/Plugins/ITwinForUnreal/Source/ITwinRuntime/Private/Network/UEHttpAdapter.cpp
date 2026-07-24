@@ -13,6 +13,49 @@
 #include <Interfaces/IHttpResponse.h>
 #include <HttpModule.h>
 #include <Tasks/Task.h>
+#include <Misc/EngineVersionComparison.h>
+
+namespace
+{
+std::string DescribeTransportFailure(FHttpRequestPtr const& Request, bool const bConnectedSuccessfully,
+	bool const bHasValidResponse, FHttpResponsePtr const& Response = {})
+{
+	TArray<FString> Details;
+	Details.Reserve(8);
+	Details.Emplace(FString::Printf(TEXT("connected=%s"), bConnectedSuccessfully ? TEXT("true") : TEXT("false")));
+	if (Request)
+	{
+		Details.Emplace(FString::Printf(TEXT("verb=%s"), *Request->GetVerb()));
+		Details.Emplace(FString::Printf(TEXT("url=%s"), *Request->GetURL()));
+		Details.Emplace(FString::Printf(TEXT("status=%s"),
+			EHttpRequestStatus::ToString(Request->GetStatus())));
+		Details.Emplace(FString::Printf(TEXT("elapsed=%.3fs"), Request->GetElapsedTime()));
+		FString const Correlation = Request->GetHeader(TEXT("X-Correlation-ID"));
+		if (!Correlation.IsEmpty())
+		{
+			Details.Emplace(FString::Printf(TEXT("correlation=%s"), *Correlation));
+		}
+#if !UE_VERSION_OLDER_THAN(5, 4, 0)
+		if (Request->GetStatus() == EHttpRequestStatus::Failed)
+		{
+			Details.Emplace(FString::Printf(TEXT("reason=%s"),
+				LexToString(Request->GetFailureReason())));
+		}
+#endif
+	}
+	if (Response.IsValid())
+	{
+		Details.Emplace(FString::Printf(TEXT("code=%d"), Response->GetResponseCode()));
+	}
+	if (!bHasValidResponse)
+	{
+		Details.Emplace(TEXT("response=invalid"));
+	}
+
+	return TCHAR_TO_UTF8(*FString::Printf(TEXT("Connection to the server failed (%s)"),
+		*FString::Join(Details, TEXT(", "))));
+}
+}
 
 class FUEHttpRequest::FImpl
 {
@@ -98,9 +141,7 @@ public:
 	{
 		if (response.first == HTTP_CONNECT_ERR)
 		{
-			FString const UEError = TEXT("Connection to the server failed (unreachable?)");
-			//+ EHttpRequestStatus::ToString(CompletedRequest->GetStatus()); <= obviously "Failed", so pointless
-			requestError = TCHAR_TO_UTF8(*UEError);
+			requestError = DescribeTransportFailure(UERequest, false, false, {});
 			return false;
 		}
 		else if (!EHttpResponseCodes::IsOk(response.first))

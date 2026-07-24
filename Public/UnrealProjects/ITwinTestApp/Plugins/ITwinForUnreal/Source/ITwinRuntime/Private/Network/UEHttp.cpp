@@ -38,6 +38,43 @@ namespace
 	static constexpr int MAX_REQUEST_RETRY = 4;
 	static const long HTTP_CONNECT_ERR = -2; // use same code as in #FUEHttpRequest...
 
+	FString DescribeRequestState(FHttpRequestPtr const& Request, FHttpResponsePtr const& Response,
+		bool const bConnectedSuccessfully)
+	{
+		TArray<FString> Details;
+		Details.Reserve(8);
+		Details.Emplace(FString::Printf(TEXT("connected=%s"), bConnectedSuccessfully ? TEXT("true") : TEXT("false")));
+		if (Request)
+		{
+			Details.Emplace(FString::Printf(TEXT("verb=%s"), *Request->GetVerb()));
+			Details.Emplace(FString::Printf(TEXT("url=%s"), *Request->GetURL()));
+			Details.Emplace(FString::Printf(TEXT("status=%s"),
+				EHttpRequestStatus::ToString(Request->GetStatus())));
+			Details.Emplace(FString::Printf(TEXT("elapsed=%.3fs"), Request->GetElapsedTime()));
+			FString const Correlation = Request->GetHeader(TEXT("X-Correlation-ID"));
+			if (!Correlation.IsEmpty())
+			{
+				Details.Emplace(FString::Printf(TEXT("correlation=%s"), *Correlation));
+			}
+#if !UE_VERSION_OLDER_THAN(5, 4, 0)
+			if (Request->GetStatus() == EHttpRequestStatus::Failed)
+			{
+				Details.Emplace(FString::Printf(TEXT("reason=%s"),
+					LexToString(Request->GetFailureReason())));
+			}
+#endif
+		}
+		if (Response.IsValid())
+		{
+			Details.Emplace(FString::Printf(TEXT("code=%d"), Response->GetResponseCode()));
+		}
+		else
+		{
+			Details.Emplace(TEXT("response=invalid"));
+		}
+		return FString::Join(Details, TEXT(", "));
+	}
+
 	inline bool ShouldAbort(FSharedRequest& HttpRequest, EHttpRequestStatus::Type& status, int& retryCount)
 	{
 		status = HttpRequest->GetStatus();
@@ -107,8 +144,13 @@ FUEHttp::Response FUEHttp::Do(FString verb, const std::string& url, const BodyPa
 
 		HttpRequest->OnProcessRequestComplete().BindLambda([callbackFct, asyncCBExecMode]
 			(FHttpRequestPtr pRequest, FHttpResponsePtr pResponse, bool connectedSuccessfully)
-				{
-					auto Response = ConvertUnrealHttpResponse({}, pRequest, pResponse, connectedSuccessfully);
+								{
+					if (!connectedSuccessfully || !pResponse.IsValid())
+					{
+						BE_LOGW("http", "Transport failure in async request: "
+							<< TCHAR_TO_UTF8(*DescribeRequestState(pRequest, pResponse, connectedSuccessfully)));
+					}
+										auto Response = ConvertUnrealHttpResponse({}, pRequest, pResponse, connectedSuccessfully);
 					if (asyncCBExecMode == EAsyncCallbackExecutionMode::GameThread)
 					{
 						callbackFct(Response);
@@ -128,7 +170,8 @@ FUEHttp::Response FUEHttp::Do(FString verb, const std::string& url, const BodyPa
 		bool bStartedRequest = HttpRequest->ProcessRequest();
 		if (!bStartedRequest)
 		{
-			BE_LOGE("http", "Failed to start HTTP Request.");
+			BE_LOGE("http", "Failed to start HTTP Request: "
+				<< TCHAR_TO_UTF8(*DescribeRequestState(HttpRequest, {}, false)));
 		}
 		return Response(0, std::string(""));
 	}
@@ -156,7 +199,8 @@ FUEHttp::Response FUEHttp::Do(FString verb, const std::string& url, const BodyPa
 		bool bStartedRequest = HttpRequest->ProcessRequest();
 		if (!bStartedRequest)
 		{
-			BE_LOGE("http", "Failed to start HTTP Request:" << url);
+			BE_LOGE("http", "Failed to start HTTP Request: "
+				<< TCHAR_TO_UTF8(*DescribeRequestState(HttpRequest, {}, false)));
 			return Response(0, std::string(""));
 		}
 
@@ -306,7 +350,8 @@ FUEHttp::Response FUEHttp::DoFile(FString verb, const std::string& url, const st
 		bool bStartedRequest = HttpRequest->ProcessRequest();
 		if (!bStartedRequest)
 		{
-			BE_LOGE("http", "Failed to start HTTP File Request.");
+			BE_LOGE("http", "Failed to start HTTP File Request: "
+				<< TCHAR_TO_UTF8(*DescribeRequestState(HttpRequest, {}, false)));
 		}
 		return Response(0, std::string(""));
 	}
@@ -317,7 +362,8 @@ FUEHttp::Response FUEHttp::DoFile(FString verb, const std::string& url, const st
 	bool bStartedRequest = HttpRequest->ProcessRequest();
 	if (!bStartedRequest)
 	{
-		BE_LOGE("http", "Failed to start HTTP File Request.");
+		BE_LOGE("http", "Failed to start HTTP File Request: "
+			<< TCHAR_TO_UTF8(*DescribeRequestState(HttpRequest, {}, false)));
 		return Response(0, std::string(""));
 	}
 		
@@ -356,6 +402,12 @@ FUEHttp::Response FUEHttp::DoFile(FString verb, const std::string& url, const st
 
 	if (counter == 0)
 		return Response(408, std::string(""));
+
+	if (status == EHttpRequestStatus::Failed)
+	{
+		BE_LOGW("http", "Transport failure in sync file request: "
+			<< TCHAR_TO_UTF8(*DescribeRequestState(HttpRequest, response, false)));
+	}
 
 	return Response(0, std::string(""));
 }
