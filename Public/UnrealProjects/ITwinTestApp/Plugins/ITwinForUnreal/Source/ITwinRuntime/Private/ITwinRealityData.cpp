@@ -469,7 +469,8 @@ void AITwinRealityData::Destroyed()
 	}
 	const auto ChildrenCopy = Children;
 	for (auto& Child: ChildrenCopy)
-		GetWorld()->DestroyActor(Child);
+		  if (Child)
+			  GetWorld()->DestroyActor(Child);
 }
 
 UITwinClipping3DTilesetHelper* AITwinRealityData::GetClippingHelper() const
