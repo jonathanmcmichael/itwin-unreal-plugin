@@ -556,7 +556,30 @@ void FITwinSchedulesImport::FImpl::RequestSchedules(ReusableJsonQueries::FStacki
 			{
 				const auto& SchedObj = SchedVal->AsObject();
 				FString IModelId;
-				JSON_GETSTR_OR(SchedObj, "iModelId", IModelId, continue)
+				if (!SchedObj->TryGetStringField(TEXT("iModelId"), IModelId) || IModelId.IsEmpty())
+				{
+					FString ScheduleId;
+					FString ScheduleName;
+					SchedObj->TryGetStringField(TEXT("id"), ScheduleId);
+					SchedObj->TryGetStringField(TEXT("name"), ScheduleName);
+					std::string Details;
+					if (!ScheduleId.IsEmpty())
+					{
+						Details += " (id=\"";
+						Details += TCHAR_TO_UTF8(*ScheduleId);
+						Details += "\")";
+					}
+					if (!ScheduleName.IsEmpty())
+					{
+						Details += " (name=\"";
+						Details += TCHAR_TO_UTF8(*ScheduleName);
+						Details += "\")";
+					}
+					BE_LOGW("ITwin4DImp", "Skipping schedule entry missing iModelId"
+						<< Details
+						<< " while querying schedules for iTwinId \"" << TCHAR_TO_UTF8(*ITwinId) << "\"");
+					continue;
+				}
 				if (IModelId == TargetedIModelId)
 				{
 					FString Id;
@@ -2087,8 +2110,9 @@ void FITwinSchedulesImport::FImpl::ResetConnection(FString const& ITwinAkaProjec
 				bool bConnectedSuccessfully, bool const bWillRetry /*= false*/)
 			{
 				FString StrError;
-				if (!AITwinServerConnection::CheckRequest(CompletedRequest, Response, bConnectedSuccessfully,
-					&StrError, bWillRetry))
+				bool const bRequestOK = AITwinServerConnection::CheckRequest(
+					CompletedRequest, Response, bConnectedSuccessfully, &StrError, bWillRetry);
+				if (!bRequestOK)
 				{
 					if (!bHasFetchingErrors && !bWillRetry)
 					{
@@ -2101,7 +2125,7 @@ void FITwinSchedulesImport::FImpl::ResetConnection(FString const& ITwinAkaProjec
 					}
 					return false;
 				}
-				return true;
+				return bRequestOK;
 			},
 			Mutex,
 			(!Owner->Owner || Owner->Owner->DebugRecordSessionQueries.IsEmpty()
@@ -2341,6 +2365,12 @@ FITwinSchedulesImport& FITwinSchedulesImport::operator=(FITwinSchedulesImport&& 
 bool FITwinSchedulesImport::IsReadyToQuery() const
 {
 	return Impl->Queries.Get() != nullptr;
+}
+
+void FITwinSchedulesImport::BeginShutdown()
+{
+	if (Impl->Queries)
+		Impl->Queries->BeginShutdown();
 }
 
 bool FITwinSchedulesImport::HasFinishedPrefetching() const

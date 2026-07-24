@@ -87,6 +87,7 @@ bool FITwinWebServicesTest::RunTest(const FString& /*Parameters*/)
 #define ITWINID_STADIUM_RN_QA "itwinId-Stadium-Ouh-QA"
 #define IMODELID_STADIUM "imodelId-Stadium-023"
 #define CHANGESETID_STADIUM "changesetIdStadium"
+#define IMODELID_SYNC_RUNNING "ef8eb98c-1ba4-4cb9-89f1-5eafcc7c443e"
 
 #define REALITYDATAID_ORLANDO "realityData-Id-Orlando-Magic"
 
@@ -211,6 +212,10 @@ public:
 		if (isUrl(url, "/mesh-export"))
 		{
 			return ProcessMeshExportTest(url, method, data, urlArguments, headers);
+		}
+		if (isUrl(url, "/synchronization"))
+		{
+			return ProcessSynchronizationTest(url, urlArguments, headers);
 		}
 		if (isUrl(url, "/savedviews"))
 		{
@@ -495,6 +500,38 @@ private:
 				"\"_links\":{\"mesh\":{\"href\":\"https://gltf59.blob.net/expId-Turb-53?sv=2024-05-04&spr=https&se=2024-06-22T23%3A59%3A59Z&sr=c&sp=rl&sig=Nq%2B%2FPjEXu64kgPsYVBjuxTV44Zq4GfsSxqTDDygD4oI%3D\"}}}}"
 			);
 		}
+		return Response(MHD_HTTP_NOT_FOUND, "Page not found.");
+	}
+
+	Response ProcessSynchronizationTest(
+		const std::string& url,
+		const std::vector<UrlArg>& urlArguments,
+		const std::vector<Header>& headers) const
+	{
+		CHECK_ITWIN_HEADERS("v1");
+
+		StringMap argMap = ToArgMap(urlArguments);
+		if (url.ends_with("/connections")
+			&& argMap["iModelId"] == IMODELID_SYNC_RUNNING)
+		{
+			const std::string LastRunUrl =
+				"http://localhost:" + std::to_string(getPort())
+				+ "/synchronization/imodels/manifestconnections/manifestConn-Running-01/runs/run-running-01";
+			return Response(MHD_HTTP_OK, std::string("{\"connections\":[")
+				+ "{\"id\":\"manifestConn-Running-01\",\"displayName\":\"Primary synchronization\","
+				+ "\"iModelId\":\"" IMODELID_SYNC_RUNNING "\","
+				+ "\"_links\":{\"lastRun\":{\"href\":\"" + LastRunUrl + "\"}}},"
+				+ "{\"id\":\"manifestConn-Idle-02\",\"displayName\":\"Secondary synchronization\","
+				+ "\"iModelId\":\"" IMODELID_SYNC_RUNNING "\","
+				+ "\"_links\":{}}]}");
+		}
+		if (url.ends_with("/manifestconnections/manifestConn-Running-01/runs/run-running-01"))
+		{
+			return Response(MHD_HTTP_OK,
+				"{\"run\":{\"id\":\"run-running-01\",\"state\":\"Executing\","
+				"\"phase\":\"Synchronization\",\"startDateTime\":\"2026-04-02T16:45:00Z\"}}");
+		}
+
 		return Response(MHD_HTTP_NOT_FOUND, "Page not found.");
 	}
 
@@ -1062,6 +1099,7 @@ public:
 	IMPLEMENT_OBS_CALLBACK(OnITwinInfoRetrieved, AdvViz::SDK::ITwinInfo);
 	IMPLEMENT_OBS_CALLBACK(OnITwinsRetrieved, FITwinInfos);
 	IMPLEMENT_OBS_CALLBACK(OnIModelsRetrieved, FIModelInfos);
+	IMPLEMENT_OBS_CALLBACK(OnIModelProcessingStatusRetrieved, FIModelProcessingStatus);
 	IMPLEMENT_OBS_CALLBACK(OnChangesetsRetrieved, FChangesetInfos);
 
 	IMPLEMENT_OBS_CALLBACK(OnExportInfosRetrieved, FITwinExportInfos);
@@ -1446,6 +1484,28 @@ bool FITwinWebServicesRequestTest::RunTest(const FString& /*Parameters*/)
 		};
 		// (WindTurbine)
 		WebServices->GetiModelChangesets(TEXT(IMODELID_WIND_TURBINE));
+	}
+
+	SECTION("Get iModel Processing Status")
+	{
+		Observer->AddPendingRequest();
+		Observer->OnIModelProcessingStatusRetrievedFunc =
+			[this](bool bSuccess, FIModelProcessingStatus const& Status)
+		{
+			UTEST_TRUE("Get iModel processing status request result", bSuccess);
+			UTEST_EQUAL("IModelId", Status.IModelId, TEXT(IMODELID_SYNC_RUNNING));
+			UTEST_EQUAL("ProcessingStatus", Status.ProcessingStatus, TEXT("synchronization running"));
+			UTEST_EQUAL("ConnectionId", Status.ConnectionId, TEXT("manifestConn-Running-01"));
+			UTEST_EQUAL("ConnectionType", Status.ConnectionType, TEXT("manifest"));
+			UTEST_EQUAL("ConnectionDisplayName", Status.ConnectionDisplayName, TEXT("Primary synchronization"));
+			UTEST_EQUAL("RunId", Status.RunId, TEXT("run-running-01"));
+			UTEST_EQUAL("RunState", Status.RunState, TEXT("Executing"));
+			UTEST_EQUAL("RunPhase", Status.RunPhase, TEXT("Synchronization"));
+			UTEST_EQUAL("StartDateTime", Status.StartDateTime, TEXT("2026-04-02T16:45:00Z"));
+			UTEST_TRUE("bSynchronizationRunning", Status.bSynchronizationRunning);
+			return true;
+		};
+		WebServices->GetIModelProcessingStatus(TEXT(IMODELID_SYNC_RUNNING));
 	}
 
 	FString const WindTurbine_CesiumExportId = TEXT(EXPORTID_WIND_TURBINE_CESIUM);

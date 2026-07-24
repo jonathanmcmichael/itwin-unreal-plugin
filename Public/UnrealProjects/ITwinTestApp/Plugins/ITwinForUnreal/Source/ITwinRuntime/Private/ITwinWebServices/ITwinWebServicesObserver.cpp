@@ -25,6 +25,10 @@ void FITwinDefaultWebServicesObserver::OnIModelsRetrieved(bool bSuccess, FIModel
 {
 	ensureMsgf(false, TEXT("%s does not handle iModels"), GetObserverName());
 }
+void FITwinDefaultWebServicesObserver::OnIModelProcessingStatusRetrieved(bool bSuccess, FIModelProcessingStatus const& Status)
+{
+	ensureMsgf(false, TEXT("%s does not handle iModel processing status"), GetObserverName());
+}
 void FITwinDefaultWebServicesObserver::OnRealityDataRetrieved(bool bSuccess, FITwinRealityDataInfos const& Infos)
 {
 	ensureMsgf(false, TEXT("%s does not handle RealityData"), GetObserverName());
