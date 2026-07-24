@@ -51,6 +51,7 @@ public:
 	{
 		None,
 		Move,
+		  ApplyVisibility,
 		Rename
 	};
 	AITwinSavedView& Owner;
@@ -66,7 +67,8 @@ public:
 	{
 		const auto ChildrenCopy = Owner.Children;
 		for (auto& Child : ChildrenCopy)
-			Owner.GetWorld()->DestroyActor(Child);
+			  if (AActor* ChildActor = Child.Get())
+				  Owner.GetWorld()->DestroyActor(ChildActor);
 		Owner.Children.Empty();
 	}
 	void ApplyScheduleTime()
@@ -164,6 +166,13 @@ namespace
 
 		return Result;
 	}
+
+	  AITwinIModel* ResolveSavedViewIModel(const AITwinSavedView& SavedViewActor)
+	  {
+		  if (AITwinIModel* const AttachedIModel = Cast<AITwinIModel>(SavedViewActor.GetAttachParentActor()))
+			  return AttachedIModel;
+		  return Cast<AITwinIModel>(SavedViewActor.GetOwner());
+	  }
 
 	FString ToString(FPerModelCategoryVisibilityProps const& PerModelCat)
 	{
@@ -285,6 +294,9 @@ void AITwinSavedView::OnSavedViewRetrieved(bool bSuccess, FSavedView const& Save
 	case FImpl::EPendingOperation::Move:
 		MoveToSavedView();
 		break;
+	  case FImpl::EPendingOperation::ApplyVisibility:
+		  ApplySavedViewVisibility();
+		  break;
 	case FImpl::EPendingOperation::Rename:
 		RenameSavedView();
 		break;
@@ -452,16 +464,33 @@ void AITwinSavedView::MoveToSavedView()
 			}
 		#endif // WITH_EDITOR
 		}
-		AITwinIModel* const iModel = Cast<AITwinIModel>(GetAttachParentActor());
 		BE_LOGI("ITwinAPI",
 			"Applying show/hide requirements from SavedView " << TCHAR_TO_UTF8(*GetActorNameOrLabel()));
-		HideElements(iModel, Impl->SavedViewData);
+		  ApplySavedViewVisibility();
 	}
 	else // fetch the saved view data before we can move to it
 	{
 		Impl->PendingOperation = FImpl::EPendingOperation::Move;
 		UpdateSavedView();
 	}
+}
+
+void AITwinSavedView::ApplySavedViewVisibility()
+{
+	if (SavedViewId.IsEmpty() && !Impl->bSavedViewTransformIsSet)
+	{
+					BE_LOGE("ITwinAPI", "ITwinSavedView has no SavedViewId - cannot apply saved view visibility");
+					return;
+	}
+
+	if (!Impl->bSavedViewTransformIsSet)
+	{
+					Impl->PendingOperation = FImpl::EPendingOperation::ApplyVisibility;
+					UpdateSavedView();
+					return;
+	}
+
+	HideElements(ResolveSavedViewIModel(*this), Impl->SavedViewData);
 }
 
 void AITwinSavedView::DeleteSavedView()
