@@ -2110,9 +2110,8 @@ void FITwinSchedulesImport::FImpl::ResetConnection(FString const& ITwinAkaProjec
 				bool bConnectedSuccessfully, bool const bWillRetry /*= false*/)
 			{
 				FString StrError;
-				bool const bRequestOK = AITwinServerConnection::CheckRequest(
-					CompletedRequest, Response, bConnectedSuccessfully, &StrError, bWillRetry);
-				if (!bRequestOK)
+				if (!AITwinServerConnection::CheckRequest(CompletedRequest, Response, bConnectedSuccessfully,
+					&StrError, bWillRetry))
 				{
 					if (!bHasFetchingErrors && !bWillRetry)
 					{
@@ -2125,7 +2124,7 @@ void FITwinSchedulesImport::FImpl::ResetConnection(FString const& ITwinAkaProjec
 					}
 					return false;
 				}
-				return bRequestOK;
+				return true;
 			},
 			Mutex,
 			(!Owner->Owner || Owner->Owner->DebugRecordSessionQueries.IsEmpty()
