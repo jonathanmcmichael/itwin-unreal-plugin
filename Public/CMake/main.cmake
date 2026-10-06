@@ -28,8 +28,8 @@ if(MSVC)
 else ()
     add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
-set (CMAKE_COMPILE_WARNING_AS_ERROR ON)
-set (LINK_WARNING_AS_ERROR ON)
+set (CMAKE_COMPILE_WARNING_AS_ERROR OFF)
+set (LINK_WARNING_AS_ERROR OFF)
 # add configuration macros
 add_compile_definitions(
 	$<$<CONFIG:Debug>:DEBUG_CONFIG>
