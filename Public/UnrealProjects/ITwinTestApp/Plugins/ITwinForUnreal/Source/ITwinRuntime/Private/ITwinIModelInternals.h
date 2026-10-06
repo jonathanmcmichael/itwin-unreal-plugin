@@ -109,7 +109,7 @@ public:
 
 	enum class E4DScheduleStatus
 	{
-		Unknown, Loading, Finished, NoneOrEmpty
+		Unknown, Loading, Finished, Failed, NoneOrEmpty
 	};
 	void Update4DScheduleDownloadStatus(E4DScheduleStatus Sched4DStatus, double PercentComplete = 0.);
 	bool AreSynchro4DSchedulesMetadataLoadedOrCancelled() const;

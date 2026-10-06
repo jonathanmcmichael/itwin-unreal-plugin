@@ -194,7 +194,8 @@ void AITwinDigitalTwinManager::ResetITwin()
 
 	const auto ChildrenCopy = Children;
 	for (auto& Child : ChildrenCopy)
-		GetWorld()->DestroyActor(Child);
+		if (AActor* ChildActor = Child.Get())
+			GetWorld()->DestroyActor(ChildActor);
 	Children.Empty();
 }
 

@@ -1074,7 +1074,7 @@ void FITwinSceneTile::ShowElements(std::unordered_set<ITwinElementID> const& InE
 		{
 			FeaturesToUnHide = FindElementFeaturesSLOW(InID);
 		}
-		if (FeaturesToUnHide && !FeaturesToUnHide->Features.empty())
+		if (FeaturesToUnHide && !FeaturesToUnHide->Features.empty() && SelectingAndHiding)
 		{
 			CreateAndSetSelectingAndHiding(*FeaturesToUnHide, TextureNeeds, ITwin::COLOR_UNSELECT_ELEMENT_BGRA, false);
 		}
