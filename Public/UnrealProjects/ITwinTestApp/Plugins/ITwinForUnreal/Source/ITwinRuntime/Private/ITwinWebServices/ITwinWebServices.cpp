@@ -20,9 +20,13 @@
 #include <Network/UEHttpAdapter.h>
 
 
+#include <Dom/JsonObject.h>
+#include <Dom/JsonValue.h>
 #include <Kismet/GameplayStatics.h>
 
 #include <Engine/World.h>
+#include <Serialization/JsonReader.h>
+#include <Serialization/JsonSerializer.h>
 
 #include <Compil/BeforeNonUnrealIncludes.h>
 #	include <Core/ITwinAPI/ITwinRequestTypes.h>
@@ -42,6 +46,26 @@ namespace ITwin
 namespace
 {
 	static thread_local UITwinWebServices* WorkingInstance = nullptr;
+
+	struct FProcessingConnectionInfo
+	{
+		FString Id;
+		FString DisplayName;
+		FString Type;
+		FString LastRunUrl;
+	};
+
+	struct FProcessingStatusRequestState
+	{
+		std::mutex Mutex;
+		FString IModelId;
+		bool bSawConnection = false;
+		bool bFinalized = false;
+		bool bHasBestStatus = false;
+		int32 PendingRunRequests = 0;
+		int32 CompletedRunRequests = 0;
+		FIModelProcessingStatus BestStatus;
+	};
 
 	struct [[nodiscard]] ScopedWorkingWebServices
 	{
@@ -71,6 +95,202 @@ namespace
 	{
 		BE_ASSERT(IsEncodingIndifferent(StrId));
 		return TCHAR_TO_ANSI(*StrId);
+	}
+
+	inline bool ParseJsonObject(std::string const& Response, TSharedPtr<FJsonObject>& OutObject)
+	{
+		auto Reader = TJsonReaderFactory<TCHAR>::Create(UTF8_TO_TCHAR(Response.c_str()));
+		return FJsonSerializer::Deserialize(Reader, OutObject) && OutObject.IsValid();
+	}
+
+	inline FString GetOptionalStringField(TSharedPtr<FJsonObject> const& JsonObject, TCHAR const* FieldName)
+	{
+		FString Value;
+		if (JsonObject.IsValid() && JsonObject->TryGetStringField(FieldName, Value))
+		{
+			return Value;
+		}
+		return {};
+	}
+
+	inline FString DeriveConnectionType(FString const& LastRunUrl)
+	{
+		const FString LowerUrl = LastRunUrl.ToLower();
+		if (LowerUrl.Contains(TEXT("/manifestconnections/")))
+		{
+			return TEXT("manifest");
+		}
+		if (LowerUrl.Contains(TEXT("/storageconnections/")))
+		{
+			return TEXT("storage");
+		}
+		return TEXT("connection");
+	}
+
+	inline bool IsSynchronizationRunningState(FString const& RunState)
+	{
+		const FString LowerState = RunState.ToLower();
+		return LowerState == TEXT("queued")
+			|| LowerState == TEXT("waitingtoexecute")
+			|| LowerState == TEXT("waitingtoretry")
+			|| LowerState == TEXT("executing")
+			|| LowerState == TEXT("finalizing");
+	}
+
+	inline FString DeriveProcessingStatus(FString const& RunState, FString const& RunResult,
+		bool bHasRun, bool bHasConnection)
+	{
+		if (!bHasConnection)
+		{
+			return TEXT("not configured");
+		}
+		if (!bHasRun)
+		{
+			return TEXT("not started");
+		}
+		if (IsSynchronizationRunningState(RunState))
+		{
+			return TEXT("synchronization running");
+		}
+
+		const FString LowerResult = RunResult.ToLower();
+		if (LowerResult == TEXT("partialsuccess"))
+		{
+			return TEXT("complete with warnings");
+		}
+		if (LowerResult == TEXT("error") || LowerResult == TEXT("failed") || LowerResult == TEXT("failure"))
+		{
+			return TEXT("failed");
+		}
+		if (LowerResult == TEXT("timedout") || LowerResult == TEXT("timeout"))
+		{
+			return TEXT("timed out");
+		}
+		if (LowerResult == TEXT("canceled") || LowerResult == TEXT("cancelled"))
+		{
+			return TEXT("cancelled");
+		}
+		if (LowerResult == TEXT("success") || LowerResult == TEXT("succeeded"))
+		{
+			return TEXT("complete");
+		}
+
+		const FString LowerState = RunState.ToLower();
+		if (LowerState == TEXT("completed") || LowerState == TEXT("finished"))
+		{
+			return TEXT("complete");
+		}
+		return TEXT("unknown");
+	}
+
+	inline int32 GetProcessingStatusRank(FIModelProcessingStatus const& Status)
+	{
+		if (Status.bSynchronizationRunning)
+		{
+			return 5;
+		}
+
+		const FString LowerStatus = Status.ProcessingStatus.ToLower();
+		if (LowerStatus == TEXT("failed") || LowerStatus == TEXT("timed out")
+			|| LowerStatus == TEXT("cancelled"))
+		{
+			return 4;
+		}
+		if (LowerStatus == TEXT("complete with warnings"))
+		{
+			return 3;
+		}
+		if (LowerStatus == TEXT("not started"))
+		{
+			return 2;
+		}
+		if (LowerStatus == TEXT("complete"))
+		{
+			return 1;
+		}
+		return 0;
+	}
+
+	inline void UpdateBestProcessingStatus(FProcessingStatusRequestState& State,
+		FIModelProcessingStatus const& Candidate)
+	{
+		if (!State.bHasBestStatus)
+		{
+			State.BestStatus = Candidate;
+			State.bHasBestStatus = true;
+			return;
+		}
+
+		const int32 CandidateRank = GetProcessingStatusRank(Candidate);
+		const int32 CurrentRank = GetProcessingStatusRank(State.BestStatus);
+		if (CandidateRank > CurrentRank
+			|| (CandidateRank == CurrentRank
+				&& Candidate.StartDateTime > State.BestStatus.StartDateTime))
+		{
+			State.BestStatus = Candidate;
+		}
+	}
+
+	inline FProcessingConnectionInfo ParseProcessingConnection(TSharedPtr<FJsonObject> const& ConnectionObject)
+	{
+		FProcessingConnectionInfo Connection;
+		Connection.Id = GetOptionalStringField(ConnectionObject, TEXT("id"));
+		Connection.DisplayName = GetOptionalStringField(ConnectionObject, TEXT("displayName"));
+
+		const TSharedPtr<FJsonObject>* LinksObject = nullptr;
+		if (ConnectionObject.IsValid()
+			&& ConnectionObject->TryGetObjectField(TEXT("_links"), LinksObject)
+			&& LinksObject && (*LinksObject).IsValid())
+		{
+			const TSharedPtr<FJsonObject>* LastRunObject = nullptr;
+			if ((*LinksObject)->TryGetObjectField(TEXT("lastRun"), LastRunObject)
+				&& LastRunObject && (*LastRunObject).IsValid())
+			{
+				Connection.LastRunUrl = GetOptionalStringField(*LastRunObject, TEXT("href"));
+			}
+		}
+
+		Connection.Type = DeriveConnectionType(Connection.LastRunUrl);
+		return Connection;
+	}
+
+	inline FIModelProcessingStatus MakeFallbackProcessingStatus(FString const& IModelId, bool bHasConnection)
+	{
+		FIModelProcessingStatus Status;
+		Status.IModelId = IModelId;
+		Status.ProcessingStatus = DeriveProcessingStatus({}, {}, false, bHasConnection);
+		return Status;
+	}
+
+	inline FIModelProcessingStatus MakeConnectionProcessingStatus(FString const& IModelId,
+		FProcessingConnectionInfo const& Connection)
+	{
+		FIModelProcessingStatus Status;
+		Status.IModelId = IModelId;
+		Status.ProcessingStatus = DeriveProcessingStatus({}, {}, false, true);
+		Status.ConnectionId = Connection.Id;
+		Status.ConnectionType = Connection.Type;
+		Status.ConnectionDisplayName = Connection.DisplayName;
+		return Status;
+	}
+
+	inline FIModelProcessingStatus MakeRunProcessingStatus(FString const& IModelId,
+		FProcessingConnectionInfo const& Connection, TSharedPtr<FJsonObject> const& RunObject)
+	{
+		FIModelProcessingStatus Status;
+		Status.IModelId = IModelId;
+		Status.ConnectionId = Connection.Id;
+		Status.ConnectionType = Connection.Type;
+		Status.ConnectionDisplayName = Connection.DisplayName;
+		Status.RunId = GetOptionalStringField(RunObject, TEXT("id"));
+		Status.RunState = GetOptionalStringField(RunObject, TEXT("state"));
+		Status.RunResult = GetOptionalStringField(RunObject, TEXT("result"));
+		Status.RunPhase = GetOptionalStringField(RunObject, TEXT("phase"));
+		Status.StartDateTime = GetOptionalStringField(RunObject, TEXT("startDateTime"));
+		Status.EndDateTime = GetOptionalStringField(RunObject, TEXT("endDateTime"));
+		Status.bSynchronizationRunning = IsSynchronizationRunningState(Status.RunState);
+		Status.ProcessingStatus = DeriveProcessingStatus(Status.RunState, Status.RunResult, true, true);
+		return Status;
 	}
 }
 
@@ -1516,6 +1736,169 @@ void UITwinWebServices::GetiTwins()
 void UITwinWebServices::GetiTwiniModels(FString ITwinId)
 {
 	DoRequest([this, ITwinId]() { Impl->GetITwinIModels(IDToStdString(ITwinId)); });
+}
+
+void UITwinWebServices::GetIModelProcessingStatus(FString IModelId)
+{
+	DoRequest([this, IModelId]()
+	{
+		auto RequestState = MakeShared<FProcessingStatusRequestState>();
+		RequestState->IModelId = IModelId;
+
+		TWeakObjectPtr<UITwinWebServices> WeakThis(this);
+		const auto Finalize =
+			[WeakThis, RequestState](bool bSuccess)
+		{
+			FIModelProcessingStatus Status;
+			{
+				std::lock_guard Lock(RequestState->Mutex);
+				if (RequestState->bFinalized)
+				{
+					return;
+				}
+				RequestState->bFinalized = true;
+				Status = RequestState->bHasBestStatus
+					? RequestState->BestStatus
+					: MakeFallbackProcessingStatus(RequestState->IModelId, RequestState->bSawConnection);
+			}
+
+			if (UITwinWebServices* StrongThis = WeakThis.Get())
+			{
+				StrongThis->OnGetIModelProcessingStatusComplete.Broadcast(bSuccess, Status);
+				if (StrongThis->Impl->observer_)
+				{
+					StrongThis->Impl->observer_->OnIModelProcessingStatusRetrieved(bSuccess, Status);
+				}
+			}
+		};
+
+		AdvViz::SDK::ITwinAPIRequestInfo ConnectionsRequestInfo{
+			"GetIModelProcessingStatus",
+			AdvViz::SDK::EVerb::Get,
+			"/synchronization/imodels/connections?imodelId=" + IDToStdString(IModelId),
+			"application/vnd.bentley.itwin-platform.v1+json"
+		};
+		ConnectionsRequestInfo.CustomHeaders.emplace("Prefer", "return=representation");
+
+		Impl->RunCustomRequest(ConnectionsRequestInfo,
+			[this, IModelId, RequestState, Finalize](long HttpStatus, std::string const& Response,
+				AdvViz::SDK::RequestID const&, std::string& StrError) mutable -> bool
+		{
+			TSharedPtr<FJsonObject> JsonObject;
+			if (HttpStatus < 200 || HttpStatus >= 300 || !ParseJsonObject(Response, JsonObject))
+			{
+				StrError = "Failed to parse synchronization connections response.";
+				Finalize(false);
+				return false;
+			}
+
+			const TArray<TSharedPtr<FJsonValue>>* ConnectionsArray = nullptr;
+			if (!JsonObject->TryGetArrayField(TEXT("connections"), ConnectionsArray) || !ConnectionsArray)
+			{
+				StrError = "Synchronization connections response is missing 'connections'.";
+				Finalize(false);
+				return false;
+			}
+
+			TArray<FProcessingConnectionInfo> ConnectionsWithRuns;
+			{
+				std::lock_guard Lock(RequestState->Mutex);
+				RequestState->bSawConnection = !ConnectionsArray->IsEmpty();
+			}
+
+			for (TSharedPtr<FJsonValue> const& ConnectionValue : *ConnectionsArray)
+			{
+				const TSharedPtr<FJsonObject> ConnectionObject = ConnectionValue ? ConnectionValue->AsObject() : nullptr;
+				if (!ConnectionObject.IsValid())
+				{
+					continue;
+				}
+
+				FProcessingConnectionInfo const Connection = ParseProcessingConnection(ConnectionObject);
+				if (Connection.Id.IsEmpty())
+				{
+					continue;
+				}
+
+				if (Connection.LastRunUrl.IsEmpty())
+				{
+					std::lock_guard Lock(RequestState->Mutex);
+					UpdateBestProcessingStatus(*RequestState, MakeConnectionProcessingStatus(IModelId, Connection));
+				}
+				else
+				{
+					ConnectionsWithRuns.Add(Connection);
+				}
+			}
+
+			if (ConnectionsWithRuns.IsEmpty())
+			{
+				Finalize(true);
+				return true;
+			}
+
+			{
+				std::lock_guard Lock(RequestState->Mutex);
+				RequestState->PendingRunRequests = ConnectionsWithRuns.Num();
+			}
+
+			for (FProcessingConnectionInfo const& Connection : ConnectionsWithRuns)
+			{
+				AdvViz::SDK::ITwinAPIRequestInfo RunRequestInfo{
+					"GetIModelProcessingStatusRun",
+					AdvViz::SDK::EVerb::Get,
+					TCHAR_TO_UTF8(*Connection.LastRunUrl),
+					"application/vnd.bentley.itwin-platform.v1+json"
+				};
+				RunRequestInfo.CustomHeaders.emplace("Prefer", "return=representation");
+				RunRequestInfo.isFullUrl = true;
+
+				Impl->RunCustomRequest(RunRequestInfo,
+					[IModelId, Connection, RequestState, Finalize](long RunHttpStatus, std::string const& RunResponse,
+						AdvViz::SDK::RequestID const&, std::string& RunError) mutable -> bool
+				{
+					TSharedPtr<FJsonObject> RunResponseJson;
+					if (RunHttpStatus < 200 || RunHttpStatus >= 300
+						|| !ParseJsonObject(RunResponse, RunResponseJson))
+					{
+						RunError = "Failed to parse synchronization run response.";
+						Finalize(false);
+						return false;
+					}
+
+					const TSharedPtr<FJsonObject>* RunObject = nullptr;
+					if (!RunResponseJson->TryGetObjectField(TEXT("run"), RunObject)
+						|| !RunObject || !(*RunObject).IsValid())
+					{
+						RunError = "Synchronization run response is missing 'run'.";
+						Finalize(false);
+						return false;
+					}
+
+					bool bShouldFinalize = false;
+					{
+						std::lock_guard Lock(RequestState->Mutex);
+						UpdateBestProcessingStatus(*RequestState,
+							MakeRunProcessingStatus(IModelId, Connection, *RunObject));
+						if (!RequestState->bFinalized)
+						{
+							RequestState->CompletedRunRequests++;
+							bShouldFinalize =
+								RequestState->CompletedRunRequests >= RequestState->PendingRunRequests;
+						}
+					}
+
+					if (bShouldFinalize)
+					{
+						Finalize(true);
+					}
+					return true;
+				});
+			}
+
+			return true;
+		});
+	});
 }
 
 void UITwinWebServices::DoGetiModelChangesets(FString const& IModelId, bool bRestrictToLatest)

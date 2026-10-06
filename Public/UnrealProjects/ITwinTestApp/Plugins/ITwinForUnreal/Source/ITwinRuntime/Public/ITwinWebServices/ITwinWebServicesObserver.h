@@ -16,6 +16,7 @@
 
 struct FChangesetInfos;
 struct FIModelInfos;
+struct FIModelProcessingStatus;
 struct FITwinInfo;
 struct FITwinInfos;
 struct FITwinExportInfos;
@@ -52,6 +53,7 @@ public:
 	virtual void OnITwinInfoRetrieved(bool bSuccess, AdvViz::SDK::ITwinInfo const& Info) = 0;
 
 	virtual void OnIModelsRetrieved(bool bSuccess, FIModelInfos const& Infos) = 0;
+	virtual void OnIModelProcessingStatusRetrieved(bool bSuccess, FIModelProcessingStatus const& Status) = 0;
 
 	virtual void OnRealityDataRetrieved(bool bSuccess, FITwinRealityDataInfos const& Infos) = 0;
 	virtual void OnRealityData3DInfoRetrieved(bool bSuccess, FITwinRealityData3DInfo const& Info) = 0;
@@ -103,6 +105,7 @@ public:
 	virtual void OnITwinsRetrieved(bool bSuccess, FITwinInfos const& Infos) override;
 	virtual void OnITwinInfoRetrieved(bool bSuccess, AdvViz::SDK::ITwinInfo const& Info) override;
 	virtual void OnIModelsRetrieved(bool bSuccess, FIModelInfos const& Infos) override;
+	virtual void OnIModelProcessingStatusRetrieved(bool bSuccess, FIModelProcessingStatus const& Status) override;
 	virtual void OnRealityDataRetrieved(bool bSuccess, FITwinRealityDataInfos const& Infos) override;
 	virtual void OnRealityData3DInfoRetrieved(bool bSuccess, FITwinRealityData3DInfo const& Info) override;
 	virtual void OnChangesetsRetrieved(bool bSuccess, FChangesetInfos const& ChangesetInfos) override;
