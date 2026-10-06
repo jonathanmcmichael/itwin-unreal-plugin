@@ -31,6 +31,77 @@
 
 namespace Detail {
 
+bool LessAnimationKey(FIModelElementsKey const& A, FIModelElementsKey const& B)
+{
+	if (A.Key.index() == B.Key.index())
+	{
+		bool Result = false;
+		std::visit([&B, &Result](auto&& Key)
+			{
+				using T = std::decay_t<decltype(Key)>;
+				Result = Key < std::get<T>(B.Key);
+			},
+			A.Key);
+		return Result;
+	}
+	return A.Key.index() < B.Key.index();
+}
+
+void InsertAnimationKey(FITwinElement::FAnimKeysVec& AnimationKeys, FIModelElementsKey const& AnimationKey)
+{
+	auto const FirstGreaterOrEqual = std::lower_bound(AnimationKeys.begin(), AnimationKeys.end(), AnimationKey,
+		LessAnimationKey);
+	if (FirstGreaterOrEqual == AnimationKeys.end() || AnimationKey != *FirstGreaterOrEqual)
+		AnimationKeys.insert(FirstGreaterOrEqual, AnimationKey);
+}
+
+void ReplaceAnimationKey(FITwinElement::FAnimKeysVec& AnimationKeys,
+	FIModelElementsKey const& ExistingAnimationKey, FIModelElementsKey const& NewAnimationKey)
+{
+	if (ExistingAnimationKey == NewAnimationKey)
+		return;
+	auto ExistingAnimationKeyIt = std::lower_bound(AnimationKeys.begin(), AnimationKeys.end(), ExistingAnimationKey,
+		LessAnimationKey);
+	if (!ensure(ExistingAnimationKeyIt != AnimationKeys.end() && ExistingAnimationKey == *ExistingAnimationKeyIt))
+	{
+		InsertAnimationKey(AnimationKeys, NewAnimationKey);
+		return;
+	}
+	AnimationKeys.erase(ExistingAnimationKeyIt);
+	InsertAnimationKey(AnimationKeys, NewAnimationKey);
+}
+
+void AddAnimationKeyToAnimatedParents(FITwinSceneMapping& SceneMapping, ITwinScene::ElemIdx ParentIdx,
+	FIModelElementsKey const& ExistingAnimationKey, FIModelElementsKey const& NewAnimationKey)
+{
+	while (ITwinScene::NOT_ELEM != ParentIdx)
+	{
+		auto& ParentElem = SceneMapping.ElementFor(ParentIdx);
+		auto const ExistingAnimationKeyIt = std::lower_bound(ParentElem.AnimationKeys.begin(),
+			ParentElem.AnimationKeys.end(), ExistingAnimationKey, LessAnimationKey);
+		if (ExistingAnimationKeyIt == ParentElem.AnimationKeys.end()
+			|| ExistingAnimationKey != *ExistingAnimationKeyIt)
+			break;
+		InsertAnimationKey(ParentElem.AnimationKeys, NewAnimationKey);
+		ParentIdx = ParentElem.ParentInVec;
+	}
+}
+
+void ReassignAnimationKeyForSplit(FITwinSceneMapping& SceneMapping, FElementsGroup const& ElementsSubGroup,
+	FIModelElementsKey const& ExistingAnimationKey, FIModelElementsKey const& NewAnimationKey)
+{
+	for (ITwinElementID const ElemID : ElementsSubGroup)
+	{
+		ITwinScene::ElemIdx ElemIdx = ITwinScene::NOT_ELEM;
+		auto* Elem = SceneMapping.GetElementForSLOW(ElemID, &ElemIdx);
+		if (!ensure(Elem))
+			continue;
+		ReplaceAnimationKey(Elem->AnimationKeys, ExistingAnimationKey, NewAnimationKey);
+		AddAnimationKeyToAnimatedParents(SceneMapping, Elem->ParentInVec,
+			ExistingAnimationKey, NewAnimationKey);
+	}
+}
+
 template<typename ElemDesignationContainer>
 void InsertAnimatedMeshSubElemsRecursively(FIModelElementsKey const& AnimationKey,
 	FITwinSceneMapping& Scene, ElemDesignationContainer const& Elements,
@@ -53,12 +124,7 @@ void InsertAnimatedMeshSubElemsRecursively(FIModelElementsKey const& AnimationKe
 		// Insert without duplication, and using a deterministic ordering, because concurrent 4D queries could
 		// obviously be received in an arbitrary order: necessary for CreateTimelineKeyframesWithTaskDependencies
 		// which can thus compare the Elem.AnimationKeys arrays directly.
-		auto const FirstGreaterOrEqual = std::lower_bound(Elem.AnimationKeys.begin(), Elem.AnimationKeys.end(),
-														  AnimationKey);
-		if (FirstGreaterOrEqual == Elem.AnimationKeys.end() || AnimationKey != (*FirstGreaterOrEqual))
-		{
-			Elem.AnimationKeys.insert(FirstGreaterOrEqual, AnimationKey);
-		}
+		InsertAnimationKey(Elem.AnimationKeys, AnimationKey);
 		// When pre-fetching bindings, bHasMesh is not set at this point, since we may not have received a tile with
 		// it yet. Let's rely on Elem.BBox instead. We used to rely on the list of child elements, assuming only leaves
 		// had geometries, but this proved wrong (ADO#2020662).
@@ -190,36 +256,34 @@ public:
 			return false;
 		ensure(SplitElemGroups->size() > 1);
 		bool bUseExisting = true;
-		FIModelElementsKey const UnsplitAnimKey = ElemTimeline.GetIModelElementsKey();
-		FITwinElementTimeline::FBindings const UnsplitBindings = ElemTimeline.GetAnimationBindings();
+		FIModelElementsKey const ExistingAnimationKey = ElemTimeline.GetIModelElementsKey();
+		FITwinElementTimeline::FBindings const ExistingAnimationBindings = ElemTimeline.GetAnimationBindings();
 		for (auto& [CommonAnimationKeys, ElementsSubGroup] : (*SplitElemGroups))
 		{
 			if (!KeyframedSubgroups.insert(ElementsSubGroup).second) // !inserted = already present thus handled
 				continue;
-			FIModelElementsKey const SubgroupAnimKey(Schedule.NumGroups());
-			for (auto&& Elem : ElementsSubGroup)
-			{
-				auto&& AnimKeys = SceneMapping.ElementForSLOW(Elem).AnimationKeys;
-				std::replace(AnimKeys.begin(), AnimKeys.end(), UnsplitAnimKey, SubgroupAnimKey);
-			}
 			FITwinElementTimeline* pSubgroupTimeline;
-			if (bUseExisting)
+			bool const bReusingExistingTimeline = bUseExisting;
+			if (bReusingExistingTimeline)
 			{
 				bUseExisting = false;
-				MainTimeline.ResetElementTimelineFor(TimelineIndex, SubgroupAnimKey);
 				ElemTimeline.IModelElementsRef() = ElementsSubGroup;
 				pSubgroupTimeline = &ElemTimeline;
 			}
 			else
 			{
-				pSubgroupTimeline = &MainTimeline.ElementTimelineFor(SubgroupAnimKey, ElementsSubGroup);
+				FIModelElementsKey const SubgroupElementsKey(Schedule.NumGroups());
+				ReassignAnimationKeyForSplit(SceneMapping, ElementsSubGroup,
+					ExistingAnimationKey, SubgroupElementsKey);
+				pSubgroupTimeline = &MainTimeline.ElementTimelineFor(SubgroupElementsKey, ElementsSubGroup);
+				pSubgroupTimeline->AnimationBindings() = ExistingAnimationBindings;
 			}
 			for (auto&& AnimationKey : CommonAnimationKeys)
 			{
-				if (AnimationKey == UnsplitAnimKey) // timeline reused ie. no longer mapped to AnimationKey!
+								if (bReusingExistingTimeline && AnimationKey == ExistingAnimationKey)
 				{
 					pSubgroupTimeline->AnimationBindings().insert(pSubgroupTimeline->AnimationBindings().end(),
-						UnsplitBindings.begin(), UnsplitBindings.end());
+						ExistingAnimationBindings.begin(), ExistingAnimationBindings.end());
 				}
 				else if (auto* Timeline = MainTimeline.GetElementTimelineFor(AnimationKey))
 					pSubgroupTimeline->AnimationBindings().insert(pSubgroupTimeline->AnimationBindings().end(),
@@ -228,7 +292,7 @@ public:
 			Schedule.CreateNextGroup(std::move(ElementsSubGroup));
 			bool const bHasOnlyNeutralTasks = Schedule.HasOnlyNeutralBindings(
 				pSubgroupTimeline->AnimationBindings().begin(), pSubgroupTimeline->AnimationBindings().end());
-			for (size_t AnimationBindingIndex : ElemTimeline.AnimationBindings())
+						for (size_t AnimationBindingIndex : pSubgroupTimeline->AnimationBindings())
 			{
 				CreateAnimationBindingKeyframes(Schedule, *pSubgroupTimeline, AnimationBindingIndex,
 												bHasOnlyNeutralTasks);

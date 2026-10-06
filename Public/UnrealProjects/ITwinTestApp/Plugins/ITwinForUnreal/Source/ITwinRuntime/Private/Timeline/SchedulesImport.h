@@ -44,6 +44,7 @@ public:
 
 	/// Tells whether the connection information was set up and the structure is ready to start querying
 	bool IsReadyToQuery() const;
+	void BeginShutdown();
 	/// When pre-fetching everything, including animation bindings, tells whether everything has been queried
 	/// and all replies have been received from the server (including retries, in case of unsuccessful
 	/// requests). This doesn't mean all replies were successful: @see HasFetchingErrors.
