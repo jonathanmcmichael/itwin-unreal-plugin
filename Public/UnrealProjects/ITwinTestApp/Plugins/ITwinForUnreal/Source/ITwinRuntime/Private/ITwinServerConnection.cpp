@@ -14,6 +14,7 @@
 #include <Interfaces/IHttpResponse.h>
 #include <ITwinWebServices/ITwinAuthorizationManager.h>
 #include <ITwinWebServices/ITwinWebServices.h>
+#include <Misc/EngineVersionComparison.h>
 #include <Serialization/JsonReader.h>
 #include <Serialization/JsonSerializer.h>
 
@@ -23,6 +24,48 @@
 #include <Compil/AfterNonUnrealIncludes.h>
 
 DEFINE_LOG_CATEGORY(LogITwinHttp);
+
+namespace
+{
+FString DescribeTransportFailure(FHttpRequestPtr const& Request, bool const bConnectedSuccessfully,
+	bool const bHasValidResponse, FHttpResponsePtr const& Response = {})
+{
+	TArray<FString> Details;
+	Details.Reserve(8);
+	Details.Emplace(FString::Printf(TEXT("connected=%s"), bConnectedSuccessfully ? TEXT("true") : TEXT("false")));
+	if (Request)
+	{
+		Details.Emplace(FString::Printf(TEXT("verb=%s"), *Request->GetVerb()));
+		Details.Emplace(FString::Printf(TEXT("url=%s"), *Request->GetURL()));
+		Details.Emplace(FString::Printf(TEXT("status=%s"),
+			EHttpRequestStatus::ToString(Request->GetStatus())));
+		Details.Emplace(FString::Printf(TEXT("elapsed=%.3fs"), Request->GetElapsedTime()));
+		FString const Correlation = Request->GetHeader(TEXT("X-Correlation-ID"));
+		if (!Correlation.IsEmpty())
+		{
+			Details.Emplace(FString::Printf(TEXT("correlation=%s"), *Correlation));
+		}
+#if !UE_VERSION_OLDER_THAN(5, 4, 0)
+		if (Request->GetStatus() == EHttpRequestStatus::Failed)
+		{
+			Details.Emplace(FString::Printf(TEXT("reason=%s"),
+				LexToString(Request->GetFailureReason())));
+		}
+#endif
+	}
+	if (Response.IsValid())
+	{
+		Details.Emplace(FString::Printf(TEXT("code=%d"), Response->GetResponseCode()));
+	}
+	if (!bHasValidResponse)
+	{
+		Details.Emplace(TEXT("response=invalid"));
+	}
+
+	return FString::Printf(TEXT("Connection to the server failed (%s)"),
+		*FString::Join(Details, TEXT(", ")));
+}
+}
 
 
 std::shared_ptr<AdvViz::SDK::ThreadSafeAccessToken> AITwinServerConnection::GetAccessTokenPtr() const
@@ -88,8 +131,7 @@ bool AITwinServerConnection::CheckRequest(FHttpRequestPtr const& CompletedReques
 
 	if (!connectedSuccessfully || !Response.IsValid())
 	{
-		requestError = TEXT("Connection to the server failed (unreachable?)");
-		//+ EHttpRequestStatus::ToString(CompletedRequest->GetStatus()); <= obviously "Failed", so pointless
+		requestError = DescribeTransportFailure(CompletedRequest, connectedSuccessfully, Response.IsValid(), Response);
 		return false;
 	}
 	else if (!EHttpResponseCodes::IsOk(Response->GetResponseCode()))

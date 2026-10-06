@@ -25,6 +25,7 @@
 #include <atomic>
 #include <deque>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <utility>
@@ -39,7 +40,7 @@ public:
 	bool bIsAvailable{ true };
 	bool bSuccess{ true };
 	bool bTryFromCache{ true };
-	bool bShouldCancel{ false };
+	std::shared_ptr<std::atomic_bool> bShouldCancel = std::make_shared<std::atomic_bool>(false);
 	TSharedPtr<TPromise<void>> AsyncRoutine;
 
 	void Cancel();
@@ -54,6 +55,7 @@ using FUrlArgList = std::vector<std::pair<FString, FString>>;
 using FUrlSubpath = std::vector<FString>;
 using FProcessJsonObject = std::function<void(TSharedPtr<FJsonObject> const&)>;
 using FAllocateRequest = std::function<FHttpRequestPtr()>;
+// Returns whether the response is valid and safe to parse. Returning false keeps retry handling active.
 using FCheckRequest = std::function<bool(FHttpRequestPtr const& /*CompletedRequest*/,
 	FHttpResponsePtr const& /*Response*/, bool /*connectedSuccessfully*/, bool const/*bWillRetry*/)>;
 
@@ -109,6 +111,7 @@ public:
 		std::function<FString()> const& GetBearerToken);
 
 	void ChangeRemoteUrl(FString const& NewRemoteUrl);
+	void BeginShutdown();
 
 	/// Called during game tick to sent new requests and handle request batches in the waiting list
 	void HandlePendingQueries();
