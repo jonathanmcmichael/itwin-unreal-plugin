@@ -273,7 +273,7 @@ public:
 			else
 			{
 				FIModelElementsKey const SubgroupElementsKey(Schedule.NumGroups());
-				ReassignAnimationKeyForSplit(SceneMapping, ElementsSubGroup,
+				Detail::ReassignAnimationKeyForSplit(SceneMapping, ElementsSubGroup,
 					ExistingAnimationKey, SubgroupElementsKey);
 				pSubgroupTimeline = &MainTimeline.ElementTimelineFor(SubgroupElementsKey, ElementsSubGroup);
 				pSubgroupTimeline->AnimationBindings() = ExistingAnimationBindings;
@@ -306,6 +306,16 @@ bool FITwinScheduleTimelineBuilder::IsUnitTesting() const
 {
 	return nullptr == Impl->Owner;
 }
+
+#if WITH_TESTS
+bool FITwinScheduleTimelineBuilder::TestOnlyCreateTimelineKeyframesWithTaskDependencies(
+	FITwinSceneMapping& SceneMapping, FITwinSchedule& Schedule, FITwinElementTimeline& ElemTimeline,
+	std::unordered_set<FElementsGroup>& KeyframedSubgroups)
+{
+	return Impl->CreateTimelineKeyframesWithTaskDependencies(SceneMapping, Schedule, ElemTimeline,
+		0 /*TimelineIndex: unused by the implementation*/, KeyframedSubgroups);
+}
+#endif
 
 void FITwinScheduleTimelineBuilder::OnReceivedScheduleStats(FITwinScheduleStats const& Stats, FSchedLock&)
 {

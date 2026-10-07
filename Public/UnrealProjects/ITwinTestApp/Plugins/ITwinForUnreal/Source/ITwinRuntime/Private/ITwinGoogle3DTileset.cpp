@@ -438,11 +438,12 @@ AITwinGoogle3DTileset::AITwinGoogle3DTileset()
 
 AITwinGoogle3DTileset::~AITwinGoogle3DTileset()
 {
-}
 	if (Impl)
 	{
-		 Impl->ClippingHelper.Reset();
+		Impl->ClippingHelper = nullptr;
 	}
+}
+
 void AITwinGoogle3DTileset::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
@@ -461,12 +462,13 @@ void AITwinGoogle3DTileset::Tick(float DeltaTime)
 
 void AITwinGoogle3DTileset::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
-	Super::EndPlay(EndPlayReason);
-}
 	if (Impl)
 	{
-		 Impl->ClippingHelper.Reset();
+		Impl->ClippingHelper = nullptr;
 	}
+	Super::EndPlay(EndPlayReason);
+}
+
 void AITwinGoogle3DTileset::SetActorHiddenInGame(bool bNewHidden)
 {
 	Super::SetActorHiddenInGame(bNewHidden);

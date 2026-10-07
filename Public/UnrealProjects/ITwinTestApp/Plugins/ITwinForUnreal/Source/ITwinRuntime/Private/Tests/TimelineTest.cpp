@@ -23,6 +23,10 @@
 #include <Timeline/SchedulesStructs.inl>
 #include <Timeline/Definition.h>
 
+#include <Compil/BeforeNonUnrealIncludes.h>
+#	include <SDK/Core/Tools/LockableObject.h>
+#include <Compil/AfterNonUnrealIncludes.h>
+
 #if WITH_TESTS
 
 class FScheduleTimelineBuilderTestAccess
@@ -505,14 +509,14 @@ void MainTimelineAddSpec::Define()
 
 BEGIN_DEFINE_SPEC(HasOnlyNeutralBindingsSpec, "Bentley.ITwinForUnreal.ITwinRuntime.Timeline",
 				  EAutomationTestFlags::EngineFilter | EAutomationTestFlags_ApplicationContextMask)
-	FITwinSchedule Schedule;
+	FITwinSchedule Schedule{ TEXT("TestSchedule"), TEXT("TestSchedule") };
 END_DEFINE_SPEC(HasOnlyNeutralBindingsSpec)
 
 void HasOnlyNeutralBindingsSpec::Define()
 {
 	BeforeEach([this]()
 		{
-			Schedule = {};
+			Schedule = FITwinSchedule(TEXT("TestSchedule"), TEXT("TestSchedule"));
 			Schedule.AppearanceProfiles.resize(3);
 			Schedule.AppearanceProfiles[0].ProfileType = EProfileAction::Neutral;
 			Schedule.AppearanceProfiles[1].ProfileType = EProfileAction::Neutral;
@@ -568,8 +572,10 @@ void TimelineBuilderRegressionSpec::Define()
 	It("can uninitialize a unit-test timeline builder without an owner", [this]()
 		{
 			FITwinCoordConversions CoordConversions;
+			TSceneMappingPtr SceneMappingPtr;
+			SceneMappingPtr = AdvViz::SDK::Tools::MakeSharedLockableData<FITwinSceneMapping>(false);
 			FITwinScheduleTimelineBuilder Builder =
-				FITwinScheduleTimelineBuilder::CreateForUnitTesting(CoordConversions);
+				FITwinScheduleTimelineBuilder::CreateForUnitTesting(SceneMappingPtr, CoordConversions);
 			Builder.Initialize(FOnElementsTimelineModified{});
 			Builder.Uninitialize();
 			TestTrue("unit-test builder cleanup should not require an owner", true);
@@ -578,10 +584,12 @@ void TimelineBuilderRegressionSpec::Define()
 	It("keeps the first divergent element in the split subgroup", [this]()
 		{
 			FITwinCoordConversions CoordConversions;
+			TSceneMappingPtr SceneMappingPtr;
+			SceneMappingPtr = AdvViz::SDK::Tools::MakeSharedLockableData<FITwinSceneMapping>(false);
 			FITwinScheduleTimelineBuilder Builder =
-				FITwinScheduleTimelineBuilder::CreateForUnitTesting(CoordConversions);
+				FITwinScheduleTimelineBuilder::CreateForUnitTesting(SceneMappingPtr, CoordConversions);
 			FITwinSceneMapping SceneMapping(false);
-			FITwinSchedule Schedule;
+			FITwinSchedule Schedule(TEXT("TestSchedule"), TEXT("TestSchedule"));
 
 			Schedule.AppearanceProfiles.resize(2);
 			Schedule.AppearanceProfiles[0].ProfileType = EProfileAction::Neutral;
@@ -649,10 +657,12 @@ void TimelineBuilderRegressionSpec::Define()
 	It("skips task dependency splitting for timelines without resolved elements", [this]()
 		{
 			FITwinCoordConversions CoordConversions;
+			TSceneMappingPtr SceneMappingPtr;
+			SceneMappingPtr = AdvViz::SDK::Tools::MakeSharedLockableData<FITwinSceneMapping>(false);
 			FITwinScheduleTimelineBuilder Builder =
-				FITwinScheduleTimelineBuilder::CreateForUnitTesting(CoordConversions);
+				FITwinScheduleTimelineBuilder::CreateForUnitTesting(SceneMappingPtr, CoordConversions);
 			FITwinSceneMapping SceneMapping(false);
-			FITwinSchedule Schedule;
+			FITwinSchedule Schedule(TEXT("TestSchedule"), TEXT("TestSchedule"));
 
 			Schedule.AppearanceProfiles.resize(2);
 			Schedule.AppearanceProfiles[0].ProfileType = EProfileAction::Neutral;

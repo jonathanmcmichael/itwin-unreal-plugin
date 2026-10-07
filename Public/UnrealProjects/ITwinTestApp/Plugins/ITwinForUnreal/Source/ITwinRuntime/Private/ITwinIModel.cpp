@@ -2931,8 +2931,13 @@ bool AITwinIModel::TryHideElementsWithoutScheduleTasks(int32& OutAffectedElement
   }
 
   auto& Internals = GetInternals(*this);
-  auto ElementIDs = GetElementsWithoutScheduleTasks(Internals.SceneMapping);
-  const int32 TotalElementCount = CountElementsWithValidIDs(Internals.SceneMapping);
+  std::unordered_set<ITwinElementID> ElementIDs;
+  int32 TotalElementCount = 0;
+  {
+    auto SceneMappingLock = Internals.SceneMapping->GetAutoLock();
+    ElementIDs = GetElementsWithoutScheduleTasks(*SceneMappingLock);
+    TotalElementCount = CountElementsWithValidIDs(*SceneMappingLock);
+  }
   if (TotalElementCount > 0 && static_cast<int32>(ElementIDs.size()) >= TotalElementCount)
   {
 	  UE_LOG(LogITwin, Warning,
@@ -2964,15 +2969,19 @@ int32 AITwinIModel::ShowElementsWithoutScheduleTasks(bool bForceUpdate)
   }
 
   auto& Internals = GetInternals(*this);
-  auto ElementIDs = GetElementsWithoutScheduleTasks(Internals.SceneMapping);
+  std::unordered_set<ITwinElementID> ElementIDs;
+  {
+    auto SceneMappingLock = Internals.SceneMapping->GetAutoLock();
+    ElementIDs = GetElementsWithoutScheduleTasks(*SceneMappingLock);
+  }
   Internals.ShowElements(ElementIDs, bForceUpdate);
   return static_cast<int32>(ElementIDs.size());
 }
 
 bool AITwinIModel::HasAnyScheduledElements() const
 {
-  auto& SceneMapping = GetInternals(*const_cast<AITwinIModel*>(this)).SceneMapping;
-  for (auto const& Elem : SceneMapping.GetElements())
+  auto SceneMappingLock = GetInternals(*const_cast<AITwinIModel*>(this)).SceneMapping->GetAutoLock();
+  for (auto const& Elem : SceneMappingLock->GetElements())
   {
 	  if (Elem.ElementID != ITwin::NOT_ELEMENT && !Elem.AnimationKeys.empty())
 		  return true;
