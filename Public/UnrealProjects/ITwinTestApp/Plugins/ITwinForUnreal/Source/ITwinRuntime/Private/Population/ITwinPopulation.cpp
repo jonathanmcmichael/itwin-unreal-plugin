@@ -524,6 +524,25 @@ FTransform AITwinPopulation::GetInstanceTransform(int32 instanceIndex) const
 	return instTM;
 }
 
+bool AITwinPopulation::SetInstanceTransformUEOnly(int32 instanceIndex, const FTransform& tm,
+	bool bMarkRenderStateDirty /*= true*/)
+{
+	bool bValidIndex = false;
+	if (instanceIndex >= 0)
+	{
+		for (auto& FoliageComp : FoliageComponents)
+		{
+			if (instanceIndex < FoliageComp.GetInstanceCount())
+			{
+				FoliageComp.InstancedMeshComponent->UpdateInstanceTransform(instanceIndex, tm,
+					/*bWorldSpace*/true, bMarkRenderStateDirty, /*bTeleport*/true);
+				bValidIndex = true;
+			}
+		}
+	}
+	return bValidIndex;
+}
+
 void AITwinPopulation::NotifyClippingToolOfTransform(int32 instanceIndex, bool bTriggeredFromITS /*= false*/)
 {
 	if (IsClippingPrimitive())

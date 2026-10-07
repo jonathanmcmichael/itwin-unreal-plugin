@@ -18,24 +18,6 @@
 #include <Compil/AfterNonUnrealIncludes.h>
 
 
-inline bool AITwinPopulation::SetInstanceTransformUEOnly(int32 instanceIndex, const FTransform& tm, bool bMarkRenderStateDirty /*= true*/)
-{
-	bool bValidIndex = false;
-	if (instanceIndex >= 0)
-	{
-		for (auto& FoliageComp : FoliageComponents)
-		{
-			if (instanceIndex < FoliageComp.GetInstanceCount())
-			{
-				FoliageComp.InstancedMeshComponent->UpdateInstanceTransform(instanceIndex, tm,
-					/*bWorldSpace*/true, bMarkRenderStateDirty, /*bTeleport*/true);
-				bValidIndex = true;
-			}
-		}
-	}
-	return bValidIndex;
-}
-
 FORCEINLINE void AITwinPopulation::CheckNumCustomDataFloats(UInstancedStaticMeshComponent& MeshComponent)
 {
 	if (MeshComponent.NumCustomDataFloats != NUM_CUSTOM_FLOATS_PER_INSTANCE)

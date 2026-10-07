@@ -126,7 +126,7 @@ public:
 	/// \param bMarkRenderStateDirty If true, the change should be visible immediately. If you are updating
 	///                              many instances you should only set this to true for the last instance.
 	/// (Same meaning as in #UInstancedStaticMeshComponent::UpdateInstanceTransform).
-	inline bool SetInstanceTransformUEOnly(int32 instanceIndex, const FTransform& tm, bool bMarkRenderStateDirty = true);
+	bool SetInstanceTransformUEOnly(int32 instanceIndex, const FTransform& tm, bool bMarkRenderStateDirty = true);
 	/// Mark render state dirty for all foliage components. Can be used when SetInstanceTransformUEOnly is
 	/// called on a batch of instances with bMarkRenderStateDirty as false, to invalidate the render state
 	/// only once for the ISM.
