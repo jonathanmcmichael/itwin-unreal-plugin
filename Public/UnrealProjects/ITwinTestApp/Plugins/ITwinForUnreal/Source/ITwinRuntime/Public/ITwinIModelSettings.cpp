@@ -11,5 +11,5 @@
 
 UITwinIModelSettings::UITwinIModelSettings(const FObjectInitializer& ObjectIniter) : Super(ObjectIniter)
 {
-    CategoryName = FName(TEXT("Engine"));
+	CategoryName = FName(TEXT("Engine"));
 }

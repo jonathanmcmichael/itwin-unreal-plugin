@@ -23,6 +23,7 @@ class UWorld;
 class ITWINRUNTIME_API FITwinGeolocation
 {
 	void CheckInit(UWorld& World);
+
 public:
 	//! The reference used by assets that have geolocation info.
 	//! Note: Former use of a TStrongObjectPtr would prevent the owning ULevel from being garbage collected,

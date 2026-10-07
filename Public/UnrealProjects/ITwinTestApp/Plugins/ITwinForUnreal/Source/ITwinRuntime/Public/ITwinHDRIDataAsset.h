@@ -27,7 +27,6 @@ class ITWINRUNTIME_API UITwinHDRIDataAsset : public UDataAsset
 	GENERATED_BODY()
 
 public:
-
 	/**
 	* All relevant material parameters.
 	*/
